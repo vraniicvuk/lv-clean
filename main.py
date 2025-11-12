@@ -271,6 +271,26 @@ async def on_ready():
         if not mass_reminder_loop.is_running():
             mass_reminder_loop.start()
             print("[INFO] mass_reminder_loop started")
+    @bot.event
+async def on_message(message: discord.Message):
+    # ne reaguje na botove
+    if message.author.bot:
+        return
+
+    content = message.content.strip().lower()
+
+    if content.startswith("!mm"):
+        # loguj kad je poslato u ovom kanalu
+        mm_last_time[message.channel.id] = datetime.utcnow()
+
+        # taguj oba supervizora
+        mentions = " ".join(f"<@{uid}>" for uid in SUPERVISOR_IDS)
+        await message.channel.send(
+            f"{mentions} {message.author.mention} je upravo poslao !mm."
+        )
+
+    # da ne blokira ostale komande
+    await bot.process_commands(message)
 
     except Exception as e:
         print("sync fail:", e)
