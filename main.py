@@ -1,18 +1,28 @@
-# main.py — FINAL: /schedule prvo čisti TEAM-roles (uz KEEP), onda dodeljuje nove
-# + PRIJAVA: koji modeli iz teksta NISU pronađeni (skipped/unknown)
-import os, re, asyncio
+# main.py — FINAL: /schedule auto-clean TEAM rola (uz KEEP), pa dodela novih
+# + PRIJAVA: unknown modeli (skipped/unknown)
+# + !mm detekcija (stopira remindere) + AI/FU auto-predlozi u mm-approval kanalima
+
+import os, re, asyncio, random
+import aiohttp
 import discord
 from discord import app_commands
-from discord.ext import commands, tasks   # <= DODATO tasks
+from discord.ext import commands, tasks
 from discord.ui import Modal, TextInput
 from discord import TextStyle
 from dotenv import load_dotenv
 from datetime import datetime, time, timedelta
 
-
 load_dotenv()
 TOKEN    = os.getenv("DISCORD_TOKEN")
-GUILD_ID = os.getenv("GUILD_ID")  # postavi u .env za instant guild sync (brže)
+GUILD_ID = os.getenv("GUILD_ID")  # opcioni guild-scope sync
+
+# ===== AI/FU podesavanja =====
+USE_AI_FU = True  # stavi False ako zelis samo offline sablone (bez AI poziva)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # dodaj u .env
+OPENAI_MODEL   = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+# samo u kanalima koji u imenu sadrze ovaj snippet ce bot lepiti FUs
+MM_APPROVAL_NAME_SNIPPET = "mm-approval"
 
 if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN nije setovan u .env")
@@ -32,12 +42,12 @@ KEEP_ROLE_NAMES = {
 # ---------- BOT ----------
 INTENTS = discord.Intents.default()
 INTENTS.members = True
-INTENTS.message_content = True   # <= OVO JE OBAVEZNO ZA !mm
+INTENTS.message_content = True   # za !mm detekciju
 bot = commands.Bot(command_prefix="!", intents=INTENTS)
 tree = bot.tree
 GUILD_OBJ = discord.Object(id=int(GUILD_ID)) if GUILD_ID else None
-# ============ MASS REMINDERI + !mm LOGIKA ============
 
+# ============ MASS REMINDERI + !mm LOGIKA ============
 GRAVE_GENERAL_CHANNEL_ID = 1364850505234518067  # #graveyard
 AFTER_GENERAL_CHANNEL_ID = 1364850574205648967  # #afternoon
 MAIN_GENERAL_CHANNEL_ID  = 1364850795215982634  # #main
@@ -58,14 +68,14 @@ SHIFT_FOLLOW_DELAY_MIN = {
     "main":  60,
 }
 
-# vreme PRVOG generala po smeni (od tad se računa "da li je do sada poslat mass")
+# vreme PRVOG generala po smeni (od tad se racuna "da li je do sada poslat mass")
 SHIFT_FIRST_TIME = {
     "grave": time(10, 0),
     "after": time(18, 0),
     "main":  time(2, 0),
 }
 
-# čuvamo kad je zaista poslat prvi general (UTC)
+# cuvamo kad je zaista poslat prvi general (UTC)
 shift_first_sent_at = {
     "grave": None,
     "after": None,
@@ -181,17 +191,13 @@ SCHEDULE = [
     },
 ]
 
-
 def is_mm_approval_channel(channel: discord.abc.GuildChannel) -> bool:
-    """Svaki tekst kanal koji u imenu ima 'mm-approval'."""
+    """svaki tekst kanal koji u imenu ima 'mm-approval'."""
     from discord import TextChannel
-    if not isinstance(channel, TextChannel):
-        return False
-    return "mm-approval" in channel.name.lower()
-
+    return isinstance(channel, TextChannel) and MM_APPROVAL_NAME_SNIPPET in channel.name.lower()
 
 async def send_shift_followups(shift_name: str):
-    """Posle DRUGOG generala: skeniraj sve mm-approval kanale i bumpuj gde fali mass."""
+    """posle DRUGOG generala: skeniraj sve mm-approval kanale i bumpuj gde fali mass."""
     delay = SHIFT_FOLLOW_DELAY_MIN[shift_name]
     await asyncio.sleep(delay * 60)
 
@@ -221,15 +227,12 @@ async def send_shift_followups(shift_name: str):
 
         # nikad nije bilo !mm ili je bilo pre prvog generala → fali mass
         if (last_mm is None) or (last_mm < first_sent):
-            await ch.send(
-                f"<@&{role_id}> fali mass, proverite da li je poslat i pošaljite ga ovde."
-            )
-
+            await ch.send(f"<@&{role_id}> fali mass, proverite da li je poslat i pošaljite ga ovde.")
 
 @tasks.loop(minutes=1)
 async def mass_reminder_loop():
     now_utc = datetime.utcnow()
-    now = (now_utc + timedelta(hours=1)).time()
+    now = (now_utc + timedelta(hours=1)).time()  # EU/BG approx
 
     for item in SCHEDULE:
         t = item["time"]
@@ -242,19 +245,17 @@ async def mass_reminder_loop():
             kind = item.get("kind")
 
             if shift and kind == "first":
-                # zapamti kad je bio prvi general za tu smenu
+                # zapamti kad je bio prvi general za tu smenu (UTC)
                 shift_first_sent_at[shift] = datetime.utcnow()
 
             if shift and kind == "second":
                 # drugi general pali skener posle X minuta
                 bot.loop.create_task(send_shift_followups(shift))
 
-
 @mass_reminder_loop.before_loop
 async def before_mass_reminder_loop():
     await bot.wait_until_ready()
     print("[INFO] Reminder loop ready to start")
-
 
 @bot.event
 async def on_ready():
@@ -268,7 +269,7 @@ async def on_ready():
 
         print(f"✅ logged in as {bot.user}")
 
-        # 🔹 pokreni mass reminder loop tek kad je bot spreman
+        # pokreni mass reminder loop
         if not mass_reminder_loop.is_running():
             mass_reminder_loop.start()
             print("[INFO] mass_reminder_loop started")
@@ -276,21 +277,124 @@ async def on_ready():
     except Exception as e:
         print("sync fail:", e)
 
+# ====== AI/FU HELPERI ======
+def _sanitize_mm_text(s: str) -> str:
+    s = (s or "").lower().strip()
+    # skini emojije (van BMP)
+    s = re.sub(r"[\U00010000-\U0010ffff]", "", s)
+    # zabrana crtica i duge crte
+    s = s.replace("—", " ").replace("-", " ")
+    s = re.sub(r"\s+", " ", s)
+    return s
 
-# 🟩 ovo mora biti VAN on_ready funkcije, levo poravnato
+async def gen_fu_offline(question: str) -> str:
+    q = _sanitize_mm_text(question)
+    if any(k in q for k in ["bath", "shower", "tub"]):
+        fu1 = "fu1: you like it hot or just steamy"
+        fu2 = "fu2: i’ll sit on the edge and make the water useless"
+        fu3 = "fu3: which part do you soap first when i step in"
+    elif any(k in q for k in ["bed", "couch", "sofa", "ride"]):
+        fu1 = "fu1: on your lap or on my face"
+        fu2 = "fu2: i bounce till your legs shake"
+        fu3 = "fu3: how long till you beg me to slow down"
+    elif any(k in q for k in ["minute", "last", "control", "tease"]):
+        fu1 = "fu1: bite or kiss first"
+        fu2 = "fu2: i keep you on the edge till you whine"
+        fu3 = "fu3: where do you lose control the fastest"
+    else:
+        banks = [
+            ("fu1: taster or toucher",
+             "fu2: i’ll keep it just out of reach till you ask nice",
+             "fu3: where do you want me first"),
+            ("fu1: slow or rough tonight",
+             "fu2: i set the pace you just try to keep up",
+             "fu3: what safe word are you not going to use"),
+            ("fu1: hands behind your back or on my hips",
+             "fu2: i make you work for every inch",
+             "fu3: what do you want me to say when you break"),
+        ]
+        fu1, fu2, fu3 = random.choice(banks)
+    return f"!mma\n{q}\n\n{fu1}\n{fu2}\n{fu3}"
+
+async def gen_fu_ai(question: str) -> str:
+    if not (OPENAI_API_KEY and USE_AI_FU):
+        raise RuntimeError("AI disabled or missing key")
+
+    prompt = (
+        "write fusions for an mm message. rules: all lowercase. no emojis. no dashes. "
+        "format exactly:\n"
+        "!mma\n<short question>\n\n"
+        "fu1: <line>\n"
+        "fu2: <line>\n"
+        "fu3: <line>\n"
+        "tone: flirty, dirty-minded, teasing, girly. avoid the phrase 'either way'. "
+        "must reference the question context naturally. keep it concise.\n"
+        f"question: {question.strip().lower()}"
+    )
+
+    url = "https://api.openai.com/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+    body = {
+        "model": OPENAI_MODEL,
+        "messages": [
+            {"role": "system", "content": "you write playful flirty scripts in strict lowercase."},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.9,
+        "max_tokens": 180
+    }
+    timeout = aiohttp.ClientTimeout(total=12)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(url, headers=headers, json=body) as resp:
+            if resp.status != 200:
+                txt = await resp.text()
+                raise RuntimeError(f"openai error {resp.status}: {txt[:200]}")
+            data = await resp.json()
+            out = data["choices"][0]["message"]["content"]
+            out = _sanitize_mm_text(out)
+            # minimal validacija
+            if "!mma" not in out or "fu1:" not in out or "fu2:" not in out or "fu3:" not in out:
+                raise RuntimeError("bad format from ai")
+            if "either way" in out:
+                raise RuntimeError("banned phrase")
+            return out
+
+# 🟩 ovo MORA biti VAN on_ready
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
         return
 
-    content = message.content.strip().lower()
+    content_raw = message.content or ""
+    content = content_raw.strip().lower()
 
     if content.startswith("!mm"):
+        # belezi da je mass poslat (sprečava followup pingove)
         mm_last_time[message.channel.id] = datetime.utcnow()
+
+        # izvuci pitanje posle !mm
+        question = content_raw[3:].strip()
         mentions = " ".join(f"<@{uid}>" for uid in SUPERVISOR_IDS)
-        await message.channel.send(
-            f"{mentions} {message.author.mention} je upravo poslao !mm."
-        )
+
+        # ping supervizore kao i do sada
+        await message.channel.send(f"{mentions} {message.author.mention} je upravo poslao !mm.")
+
+        # generisi FUs SAMO u mm-approval kanalima
+        if is_mm_approval_channel(message.channel):
+            try:
+                txt = await gen_fu_ai(question)
+            except Exception:
+                txt = await gen_fu_offline(question)
+
+            try:
+                reply = await message.reply(txt)
+                await reply.add_reaction("✅")
+                await reply.add_reaction("📝")
+            except:
+                pass
+
+        await bot.process_commands(message)
+        return
 
     await bot.process_commands(message)
 
@@ -305,7 +409,6 @@ def can_touch_role(bot_member: discord.Member, role: discord.Role) -> bool:
     return bot_member.guild_permissions.manage_roles and bot_member.top_role > role
 
 def is_model_role(role: discord.Role) -> bool:
-    # model role = one koje počinju sa "TEAM "
     return role.name.upper().startswith("TEAM ")
 
 def is_keep_role(role: discord.Role) -> bool:
@@ -389,40 +492,32 @@ def build_role_index(guild: discord.Guild):
             by_norm_no_team[norm(stripped)] = r
     return by_norm, by_norm_no_team
 
-# --- alias normalizacija + resolve (DROP-IN BLOK) ---
-
-# ključevi su NORM (A-Z0-9 bez razmaka), vrednosti su kanonsko base ime (bez "TEAM ")
+# alias normalizacija + resolve
 ALIAS_TO_BASE = {
     # anita
     "ANITA2USASOPHIE": "ANITA",
     "ANITA2USA":       "ANITA",
     "ANITA":           "ANITA",
-
     # skylar
     "SKYLARONLYF":     "SKYLAR ONLYF",
     "SKYLARONLYFYY":   "SKYLAR ONLYF",
     "SKYLAR":          "SKYLAR ONLYF",
-
     # amber
     "AMBEREMERSONT":   "AMBER EMERSON T",
     "AMBEREMERSON":    "AMBER EMERSON T",
     "AMBER":           "AMBER EMERSON T",
-
     # dia
     "DIAX":            "DIA",
     "DIAVIP":          "DIA",
     "DIA":             "DIA",
-
     # mia rouge/rogue
     "MIAROUGE":        "MIA ROUGE",
     "MIAROGUE":        "MIA ROUGE",
     "MIA":             "MIA ROUGE",
-
     # kassie
     "KASSIEX":         "KASSIE X",
     "KASSIE":          "KASSIE X",
-
-    # tvoji raniji aliasi (zadržani)
+    # tvoji raniji aliasi (zadrzani)
     "EMILYONLYF":      "EMILY ONLYF",
     "EVAG":            "EVA",
     "LARAG":           "LARA",
@@ -439,9 +534,8 @@ ALIAS_TO_BASE = {
     "MACCMKATIE":      "CCM KATIE",
     "KENDALLTINDER":   "KENDAL TINDER",
 }
-
 ALIAS_KEYS_BY_LEN = sorted(ALIAS_TO_BASE.keys(), key=len, reverse=True)
-NOISE_WORDS_IN_PHRASE = {"YY"}  # dodaj šta ti se šunja
+NOISE_WORDS_IN_PHRASE = {"YY"}
 
 def clean_role_phrase(phrase: str) -> str:
     if not phrase:
@@ -461,8 +555,7 @@ def clean_role_phrase(phrase: str) -> str:
     return s
 
 def _resolve_alias_to_base(base: str) -> str | None:
-    """vrati kanonsko base ime (bez 'TEAM ') ako alias match-uje (contains na norm)."""
-    nb = norm(base)  # A-Z0-9 bez razmaka
+    nb = norm(base)
     for key in ALIAS_KEYS_BY_LEN:
         if key in nb:
             return ALIAS_TO_BASE[key]
@@ -473,12 +566,10 @@ def role_from_phrase(guild: discord.Guild, phrase: str):
     if not base:
         return None
 
-    # 1) alias → kanonski base (npr. 'DIA', 'MIA ROUGE', 'KASSIE X'...)
     resolved = _resolve_alias_to_base(base)
     if resolved:
         base = resolved
 
-    # 2) standard lookup: exact, 'TEAM {base}', norm, indeks
     by_norm, by_no_team = build_role_index(guild)
 
     r = discord.utils.get(guild.roles, name=base)
@@ -502,7 +593,6 @@ def role_from_phrase(guild: discord.Guild, phrase: str):
         return by_no_team[n_base]
 
     return None
-
 
 def member_from_token(guild: discord.Guild, token: str):
     ids = parse_user_ids(token)
@@ -679,8 +769,6 @@ async def farm(interaction: discord.Interaction):
     await interaction.response.send_modal(FarmModal(opener=interaction.user))
 
 # ---------- /schedule — CLEAN-THEN-ASSIGN + unknown models report ----------
-# ---------- /schedule (auto-clean + assign, supports multiple chatters per line) ----------
-# ---------- /schedule — CLEAN-THEN-ASSIGN + unknown models report ----------
 @tree.command(
     name="schedule",
     description="Nalepi raspored (podržava @u1 / @u2), auto: očisti TEAM role pa dodeli nove; apply=false=preview",
@@ -703,7 +791,7 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
     if not raw_blocks:
         return await interaction.followup.send("nisam našao blokove '@user' → role…", ephemeral=True)
 
-    # pomoćne funkcije
+    # pomocne funkcije
     def parse_roles_list_with_unknowns(guild: discord.Guild, roles_text: str):
         txt = (roles_text or "").replace("\\", "/")
         segs = [s.strip() for s in re.split(r"[\/,;|]+", txt) if s.strip()]
@@ -765,7 +853,7 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
                 if r.name.upper().startswith("TEAM ") and (r.name.upper() not in KEEP_ROLE_NAMES) and r not in bot_touchable_model_roles
             ]
 
-            # ASSIGN: samo što bot sme
+            # ASSIGN: samo sto bot sme
             touchable_assign = [r for r in desired_roles if can_touch_role(bot_member, r)]
             blocked_assign   = [r for r in desired_roles if r not in touchable_assign]
 
