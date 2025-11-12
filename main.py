@@ -11,25 +11,22 @@ from discord.ui import Modal, TextInput
 from discord import TextStyle
 from dotenv import load_dotenv
 from datetime import datetime, time, timedelta
-# >>> AI FUs START: imports + env
 from openai import OpenAI
 
+# load .env FIRST
+load_dotenv()
+
+# ---- AI FUs: env + client
 USE_AI_FU = os.getenv("USE_AI_FU", "false").lower() in ("1", "true", "yes", "on")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-
 client = OpenAI(api_key=OPENAI_API_KEY) if (USE_AI_FU and OPENAI_API_KEY) else None
-# <<< AI FUs END
 
-
-load_dotenv()
 TOKEN    = os.getenv("DISCORD_TOKEN")
-GUILD_ID = os.getenv("GUILD_ID")  # opcioni guild-scope sync
+GUILD_ID = os.getenv("GUILD_ID")
+if not TOKEN:
+    raise RuntimeError("DISCORD_TOKEN nije setovan u .env")
 
-# ===== AI/FU podesavanja =====
-USE_AI_FU = True  # stavi False ako zelis samo offline sablone (bez AI poziva)
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # dodaj u .env
-OPENAI_MODEL   = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 # samo u kanalima koji u imenu sadrze ovaj snippet ce bot lepiti FUs
 MM_APPROVAL_NAME_SNIPPET = "mm-approval"
@@ -378,27 +375,30 @@ async def on_message(message: discord.Message):
     content_raw = message.content or ""
     content = content_raw.strip().lower()
 
-       if content.startswith("!mm"):
+    # catch !mm ourselves so discord.py doesn't try to treat it as a text command
+    if content.startswith("!mm"):
         mm_last_time[message.channel.id] = datetime.utcnow()
         mentions = " ".join(f"<@{uid}>" for uid in SUPERVISOR_IDS)
-        await message.channel.send(
-            f"{mentions} {message.author.mention} je upravo poslao !mm."
-        )
+        await message.channel.send(f"{mentions} {message.author.mention} je upravo poslao !mm.")
 
-        # >>> AI FUs START: auto-predlog
+        # auto-FU
         if USE_AI_FU and client:
             mm_line = _mm_text_from_message(message.content)
             if mm_line:
                 try:
                     fus = await generate_fus(mm_line)
                     if fus:
-                        # pošalji kao code block da je copy-ready
                         block = "```\n" + "\n".join(fus) + "\n```"
                         await message.channel.send(block)
                 except Exception as e:
-                    # tih fail, ali loguj u konzolu
                     print("[AI_FU] fail:", e)
-        # <<< AI FUs END
+
+        # do NOT process other prefix commands for this message
+        return
+
+    # for everything else, let slash commands work as usual (no text commands needed)
+    return
+
 
 
 # ---------- HELPERS ----------
