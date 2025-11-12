@@ -252,31 +252,30 @@ async def mass_reminder_loop():
 @mass_reminder_loop.before_loop
 async def before_mass_reminder_loop():
     await bot.wait_until_ready()
-
-
-mass_reminder_loop.start()
+    print("[INFO] Reminder loop ready to start")
 
 
 @bot.event
-async def on_message(message: discord.Message):
-    # ne reaguje na botove
-    if message.author.bot:
-        return
+async def on_ready():
+    try:
+        if GUILD_OBJ:
+            cmds = await tree.sync(guild=GUILD_OBJ)
+            print(f"synced {len(cmds)} slash komandi na server {GUILD_ID}")
+        else:
+            cmds = await tree.sync()
+            print(f"synced {len(cmds)} globalnih slash komandi")
 
-    content = message.content.strip().lower()
+        print(f"✅ logged in as {bot.user}")
 
-    if content.startswith("!mm"):
-        # loguj kad je poslato u ovom kanalu
-        mm_last_time[message.channel.id] = datetime.utcnow()
+        # 🔹 pokreni mass reminder loop tek kad je bot spreman
+        if not mass_reminder_loop.is_running():
+            mass_reminder_loop.start()
+            print("[INFO] mass_reminder_loop started")
 
-        # taguj oba supervizora
-        mentions = " ".join(f"<@{uid}>" for uid in SUPERVISOR_IDS)
-        await message.channel.send(
-            f"{mentions} {message.author.mention} je upravo poslao !mm."
-        )
+    except Exception as e:
+        print("sync fail:", e)
 
-    # da ne blokira ostale komande
-    await bot.process_commands(message)
+    bot.run(TOKEN)
 
 
 # ---------- HELPERS ----------
