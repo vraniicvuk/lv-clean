@@ -61,8 +61,6 @@ MM_SUMMARY_CHANNEL_ID = 1433577356437491774
 
 # ==== anti-spam za AI pozive ====
 AI_BLOCKED_UNTIL = None
-FU_RATE_LIMIT = timedelta(minutes=8)  # po kanalu
-_last_fu_by_channel = {}  # ch_id -> datetime
 
 def ai_available():
     return (AI_BLOCKED_UNTIL is None) or (datetime.utcnow() >= AI_BLOCKED_UNTIL)
@@ -72,25 +70,27 @@ def backoff_ai(minutes=30):
     AI_BLOCKED_UNTIL = datetime.utcnow() + timedelta(minutes=minutes)
 
 async def safe_generate_fus(mm_line: str, channel_id: int) -> list[str]:
-    # rate-limit per channel
-    last = _last_fu_by_channel.get(channel_id)
-    if last and datetime.utcnow() - last < FU_RATE_LIMIT:
-        return []
-    _last_fu_by_channel[channel_id] = datetime.utcnow()
-
-    # ako nema AI ili smo u backoff-u → offline
+    """Proba AI, ako ne moze ili nema AI, pada na offline, bez rate limita."""
+    # ako nema AI ili smo u backoff stanju → offline
     if (not USE_AI_FU) or (not client) or (not ai_available()):
-        return await generate_fus_offline(mm_line)
+        fus = await generate_fus_offline(mm_line)
+        print(f"[AI_FU] offline only, got {len(fus)} fus")
+        return fus
 
     try:
-        return await generate_fus(mm_line)
+        fus = await generate_fus(mm_line)
+        if fus:
+            print(f"[AI_FU] ai ok, got {len(fus)} fus")
+            return fus
+        print("[AI_FU] ai returned empty, using offline fallback")
+        return await generate_fus_offline(mm_line)
     except Exception as e:
         text = str(e).lower()
         if "insufficient_quota" in text or "error code: 429" in text or "quota" in text:
-            backoff_ai(60)  # 1h pauza
-            print("[AI_FU] quota hit → switching to offline for 60min")
-            return await generate_fus_offline(mm_line)
-        print("[AI_FU] fail → offline fallback:", e)
+            backoff_ai(60)
+            print("[AI_FU] quota hit, switching to offline for 60 minutes")
+        else:
+            print("[AI_FU] fail, offline fallback:", e)
         return await generate_fus_offline(mm_line)
 
 async def generate_fus_offline(mm_line: str) -> list[str]:
