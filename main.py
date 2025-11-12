@@ -518,20 +518,6 @@ def member_from_token(guild: discord.Guild, token: str):
             return m
     return None
 
-# ---------- LIFECYCLE ----------
-@bot.event
-async def on_ready():
-    try:
-        if GUILD_OBJ:
-            cmds = await tree.sync(guild=GUILD_OBJ)
-            print(f"synced {len(cmds)} slash komandi na server {GUILD_ID}")
-        else:
-            cmds = await tree.sync()
-            print(f"synced {len(cmds)} globalnih slash komandi")
-        print(f"logged in as {bot.user}")
-    except Exception as e:
-        print("sync fail:", e)
-
 # ---------- BASIC COMMANDS ----------
 @tree.command(description="dodeli više rola jednom useru", guild=GUILD_OBJ)
 @need_manage_roles()
