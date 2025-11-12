@@ -11,6 +11,16 @@ from discord.ui import Modal, TextInput
 from discord import TextStyle
 from dotenv import load_dotenv
 from datetime import datetime, time, timedelta
+# >>> AI FUs START: imports + env
+from openai import OpenAI
+
+USE_AI_FU = os.getenv("USE_AI_FU", "false").lower() in ("1", "true", "yes", "on")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+client = OpenAI(api_key=OPENAI_API_KEY) if (USE_AI_FU and OPENAI_API_KEY) else None
+# <<< AI FUs END
+
 
 load_dotenv()
 TOKEN    = os.getenv("DISCORD_TOKEN")
@@ -368,35 +378,28 @@ async def on_message(message: discord.Message):
     content_raw = message.content or ""
     content = content_raw.strip().lower()
 
-    if content.startswith("!mm"):
-        # belezi da je mass poslat (sprečava followup pingove)
+       if content.startswith("!mm"):
         mm_last_time[message.channel.id] = datetime.utcnow()
-
-        # izvuci pitanje posle !mm
-        question = content_raw[3:].strip()
         mentions = " ".join(f"<@{uid}>" for uid in SUPERVISOR_IDS)
+        await message.channel.send(
+            f"{mentions} {message.author.mention} je upravo poslao !mm."
+        )
 
-        # ping supervizore kao i do sada
-        await message.channel.send(f"{mentions} {message.author.mention} je upravo poslao !mm.")
+        # >>> AI FUs START: auto-predlog
+        if USE_AI_FU and client:
+            mm_line = _mm_text_from_message(message.content)
+            if mm_line:
+                try:
+                    fus = await generate_fus(mm_line)
+                    if fus:
+                        # pošalji kao code block da je copy-ready
+                        block = "```\n" + "\n".join(fus) + "\n```"
+                        await message.channel.send(block)
+                except Exception as e:
+                    # tih fail, ali loguj u konzolu
+                    print("[AI_FU] fail:", e)
+        # <<< AI FUs END
 
-        # generisi FUs SAMO u mm-approval kanalima
-        if is_mm_approval_channel(message.channel):
-            try:
-                txt = await gen_fu_ai(question)
-            except Exception:
-                txt = await gen_fu_offline(question)
-
-            try:
-                reply = await message.reply(txt)
-                await reply.add_reaction("✅")
-                await reply.add_reaction("📝")
-            except:
-                pass
-
-        await bot.process_commands(message)
-        return
-
-    await bot.process_commands(message)
 
 # ---------- HELPERS ----------
 def norm(s: str) -> str:
@@ -480,6 +483,63 @@ async def safe_remove_roles(member: discord.Member, roles: list[discord.Role], r
                 if attempt >= RETRIES: raise
                 await asyncio.sleep(RETRY_BASE_SLEEP * attempt)
     return removed
+
+# >>> AI FUs START: generator
+def _mm_text_from_message(content: str) -> str:
+    # vrati sirovi tekst posle "!mm"
+    raw = content.strip()
+    if raw.lower().startswith("!mm"):
+        return raw[3:].strip(": \n\t")
+    return raw
+
+AI_FU_SYSTEM = (
+    "You generate flirty, playful, dirty-minded follow-ups (FUs) for an OF mass message.\n"
+    "Strict rules:\n"
+    "- all lowercase, no emojis, short and punchy.\n"
+    "- output keys exactly: fu1:, fu1.5:, fu2:, fu2.5: (omit 1.5/2.5 only if it really hurts flow).\n"
+    "- no 'either way'.\n"
+    "- each line must stand alone and be enticing.\n"
+)
+
+def _fu_prompt(mm_line: str) -> str:
+    return (
+        f"mm: {mm_line}\n"
+        "write 2-4 follow-ups that escalate teasing.\n"
+        "keep them simple, girly, bold, and under ~12 words each."
+    )
+
+async def generate_fus(mm_line: str) -> list[str]:
+    if not client:
+        return []
+    prompt = _fu_prompt(mm_line)
+    # OpenAI python lib je sync; izvrši u thread-u da ne blokira event loop
+    def _call():
+        rsp = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": AI_FU_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.9,
+            max_tokens=120,
+        )
+        return rsp.choices[0].message.content.strip()
+    text = await asyncio.to_thread(_call)
+    # očekujemo linije tipa "fu1: ...", itd.
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    # fallback: ako model vrati plain linije, prefiksuj ih
+    labeled, i = [], 1
+    for ln in lines:
+        if ":" in ln[:8].lower():  # već ima fu1: itd
+            labeled.append(ln)
+        else:
+            key = "fu1:" if i == 1 else ("fu1.5:" if i == 2 else ("fu2:" if i == 3 else "fu2.5:"))
+            labeled.append(f"{key} {ln.lower()}")
+        i += 1
+    # maksimalno 4 linije
+    return labeled[:4]
+# <<< AI FUs END
+
 
 # ---------- ROLE LOOKUP ----------
 def build_role_index(guild: discord.Guild):
