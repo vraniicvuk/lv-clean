@@ -275,9 +275,6 @@ async def on_ready():
     except Exception as e:
         print("sync fail:", e)
 
-    bot.run(TOKEN)
-
-
 # ---------- HELPERS ----------
 def norm(s: str) -> str:
     return re.sub(r"[^A-Z0-9]+", "", (s or "").upper())
