@@ -58,6 +58,49 @@ MM_APPROVAL_NAME_SNIPPET = "mm-approval"  # koristi se u is_mm_approval_channel
 # summary kanal (tvoj)
 MM_SUMMARY_CHANNEL_ID = 1433577356437491774
 
+# ==== anti-spam za AI pozive ====
+
+AI_BLOCKED_UNTIL = None
+FU_RATE_LIMIT = timedelta(minutes=8)  # po kanalu
+_last_fu_by_channel = {}  # ch_id -> datetime
+
+def ai_available():
+    return (AI_BLOCKED_UNTIL is None) or (datetime.utcnow() >= AI_BLOCKED_UNTIL)
+
+def backoff_ai(minutes=30):
+    global AI_BLOCKED_UNTIL
+    AI_BLOCKED_UNTIL = datetime.utcnow() + timedelta(minutes=minutes)
+
+async def safe_generate_fus(mm_line: str, channel_id: int) -> list[str]:
+    # rate-limit per channel
+    last = _last_fu_by_channel.get(channel_id)
+    if last and datetime.utcnow() - last < FU_RATE_LIMIT:
+        return []
+    _last_fu_by_channel[channel_id] = datetime.utcnow()
+
+    # ako nema AI ili smo u backoff-u → offline
+    if (not USE_AI_FU) or (not client) or (not ai_available()):
+        return await generate_fus_offline(mm_line)
+
+    try:
+        return await generate_fus(mm_line)  # tvoj postojeći AI generator
+    except Exception as e:
+        text = str(e).lower()
+        # kvota / 429 → prebaci na offline i uključi backoff
+        if "insufficient_quota" in text or "error code: 429" in text or "quota" in text:
+            backoff_ai(60)  # 1h pauza
+            print("[AI_FU] quota hit → switching to offline for 60min")
+            return await generate_fus_offline(mm_line)
+        # bilo koji drugi fail → tih fallback
+        print("[AI_FU] fail → offline fallback:", e)
+        return await generate_fus_offline(mm_line)
+
+async def generate_fus_offline(mm_line: str) -> list[str]:
+    txt = await gen_fu_offline(mm_line)
+    # vrati u listi bez code blocka, po tvom formatu
+    lines = [ln for ln in txt.splitlines() if ln.strip().startswith("fu")]
+    return lines[:4]
+
 
 # ============ MASS REMINDERI + !mm LOGIKA ============
 GRAVE_GENERAL_CHANNEL_ID = 1364850505234518067  # #graveyard
@@ -330,6 +373,7 @@ async def before_mass_reminder_loop():
     await bot.wait_until_ready()
     print("[INFO] Reminder loop ready to start")
 
+
 @bot.event
 async def on_ready():
     try:
@@ -339,23 +383,30 @@ async def on_ready():
         else:
             cmds = await tree.sync()
             print(f"synced {len(cmds)} globalnih slash komandi")
-
         print(f"✅ logged in as {bot.user}")
 
-        # pokreni mass reminder loop
         if not mass_reminder_loop.is_running():
             mass_reminder_loop.start()
             print("[INFO] mass_reminder_loop started")
 
+        if not mm_window_scanner.is_running():
+            mm_window_scanner.start()
+            print("[INFO] mm_window_scanner started")
+
+        if not mm_summary_report.is_running():
+            mm_summary_report.start()
+            print("[INFO] mm_summary_report started")
+
     except Exception as e:
         print("sync fail:", e)
-        @tasks.loop(minutes=1)
+
+
+    @tasks.loop(minutes=1)
 async def mm_summary_report():
-    # grupiše poslednjih ~8h po smeni i šalje u MM_SUMMARY_CHANNEL_ID
     ch = bot.get_channel(MM_SUMMARY_CHANNEL_ID)
     if not ch:
         return
-    now_local = (datetime.utcnow() + timedelta(hours=1))
+    now_local = datetime.utcnow() + timedelta(hours=1)
     h, m = now_local.hour, now_local.minute
 
     def _report_for(shift):
@@ -370,15 +421,17 @@ async def mm_summary_report():
         lines = [f"<@{u}> – {c}x" for u, c in counts.items()]
         return f"rezime {shift} smene:\n" + "\n".join(lines)
 
-    # graveyard u 18:00
     if h == 18 and m == 0:
         await ch.send(_report_for("graveyard"))
-    # main u 10:00
     if h == 10 and m == 0:
         await ch.send(_report_for("main"))
-    # afternoon u 02:00
     if h == 2 and m == 0:
         await ch.send(_report_for("afternoon"))
+
+@mm_summary_report.before_loop
+async def _before_mm_summary_report():
+    await bot.wait_until_ready()
+
 
 @mm_summary_report.before_loop
 async def _before_mm_summary_report():
@@ -476,38 +529,7 @@ async def gen_fu_ai(question: str) -> str:
                 raise RuntimeError("banned phrase")
             return out
 
-# 🟩 ovo MORA biti VAN on_ready
-@bot.event
-async def on_message(message: discord.Message):
-    if message.author.bot:
-        return
 
-    content_raw = message.content or ""
-    content = content_raw.strip().lower()
-
-    # catch !mm ourselves so discord.py doesn't try to treat it as a text command
-    if content.startswith("!mm"):
-    mm_last_time[message.channel.id] = datetime.utcnow()
-    mentions = " ".join(f"<@{uid}>" for uid in [886983698321391667])
-    await message.channel.send(f"{mentions} {message.author.mention} je upravo poslao !mm.")
-
-        # auto-FU
-        if USE_AI_FU and client:
-            mm_line = _mm_text_from_message(message.content)
-            if mm_line:
-                try:
-                    fus = await generate_fus(mm_line)
-                    if fus:
-                        block = "```\n" + "\n".join(fus) + "\n```"
-                        await message.channel.send(block)
-                except Exception as e:
-                    print("[AI_FU] fail:", e)
-
-        # do NOT process other prefix commands for this message
-        return
-
-    # for everything else, let slash commands work as usual (no text commands needed)
-    return
 
 MM_SUMMARY_CHANNEL_ID = 1433577356437491774
 mm_sent_log = []  # (user_id, timestamp_utc, shift_name)
@@ -524,6 +546,7 @@ def _detect_shift_now():
         return "afternoon"
     # main: 02–10
     return "main"
+# 🟩 ovo MORA biti VAN on_ready
 
 @bot.event
 async def on_message(message: discord.Message):
@@ -544,17 +567,13 @@ async def on_message(message: discord.Message):
         await message.channel.send(f"{mentions} {message.author.mention} je upravo poslao !mm.")
 
         # auto-FU (ako je uključeno)
-        if USE_AI_FU and client:
-            mm_line = _mm_text_from_message(message.content)
-            if mm_line:
-                try:
-                    fus = await generate_fus(mm_line)
-                    if fus:
-                        block = "```\n" + "\n".join(fus) + "\n```"
-                        await message.channel.send(block)
-                except Exception as e:
-                    print("[AI_FU] fail:", e)
-        return  # bitno: ne prosleđuj dalje da ne kolje slash komande
+        if USE_AI_FU:
+    mm_line = _mm_text_from_message(message.content)
+    if mm_line:
+        fus = await safe_generate_fus(mm_line, message.channel.id)
+        if fus:
+            block = "```\n" + "\n".join(fus) + "\n```"
+            await message.channel.send(block)
 
     # dozvoli ostalo (slash komande itd.)
     await bot.process_commands(message)
