@@ -3,10 +3,12 @@
 import os, re, asyncio
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks   # <= DODATO tasks
 from discord.ui import Modal, TextInput
 from discord import TextStyle
 from dotenv import load_dotenv
+from datetime import datetime, time       # <= DODATO
+
 
 load_dotenv()
 TOKEN    = os.getenv("DISCORD_TOKEN")
@@ -30,9 +32,252 @@ KEEP_ROLE_NAMES = {
 # ---------- BOT ----------
 INTENTS = discord.Intents.default()
 INTENTS.members = True
+INTENTS.message_content = True   # <= OVO JE OBAVEZNO ZA !mm
 bot = commands.Bot(command_prefix="!", intents=INTENTS)
 tree = bot.tree
 GUILD_OBJ = discord.Object(id=int(GUILD_ID)) if GUILD_ID else None
+# ============ MASS REMINDERI + !mm LOGIKA ============
+
+GRAVE_GENERAL_CHANNEL_ID = 1364850505234518067  # #graveyard
+AFTER_GENERAL_CHANNEL_ID = 1364850574205648967  # #afternoon
+MAIN_GENERAL_CHANNEL_ID  = 1364850795215982634  # #main
+
+GRAVE_ROLE_ID = 1410962300554313870            # @graveyard
+AFTER_ROLE_ID = 1410962344124612710            # @afternoon
+MAIN_ROLE_ID  = 1410962407454675047            # @main
+
+SUPERVISOR_IDS = [
+    886983698321391667,   # ti
+    923657835164889119,   # drugi supervizor
+]
+
+# koliko cekamo posle DRUGOG generala
+SHIFT_FOLLOW_DELAY_MIN = {
+    "grave": 30,
+    "after": 30,
+    "main":  60,
+}
+
+# vreme PRVOG generala po smeni (od tad se računa "da li je do sada poslat mass")
+SHIFT_FIRST_TIME = {
+    "grave": time(10, 0),
+    "after": time(18, 0),
+    "main":  time(2, 0),
+}
+
+# čuvamo kad je zaista poslat prvi general (UTC)
+shift_first_sent_at = {
+    "grave": None,
+    "after": None,
+    "main":  None,
+}
+
+# poslednji !mm po kanalu
+mm_last_time: dict[int, datetime] = {}  # channel_id -> datetime
+
+# raspored svih general poruka
+SCHEDULE = [
+    # ---------- GRAVE ----------
+    # prvi mass
+    {
+        "time": time(10, 0),
+        "channel_id": GRAVE_GENERAL_CHANNEL_ID,
+        "text": f"<@&{GRAVE_ROLE_ID}> molim da prvi mass bude poslat najkasnije do 11:30.",
+        "shift": "grave",
+        "kind": "first",
+    },
+    {
+        "time": time(11, 0),
+        "channel_id": GRAVE_GENERAL_CHANNEL_ID,
+        "text": f"<@&{GRAVE_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.",
+        "shift": "grave",
+        "kind": "second",  # pali skener 11:00–11:30
+    },
+    {
+        "time": time(11, 30),
+        "channel_id": GRAVE_GENERAL_CHANNEL_ID,
+        "text": f"<@&{GRAVE_ROLE_ID}> molim da proverite da li nekom modelu nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.",
+        "shift": None,
+        "kind": None,
+    },
+
+    # drugi mass (bez auto skenera, samo general)
+    {
+        "time": time(14, 0),
+        "channel_id": GRAVE_GENERAL_CHANNEL_ID,
+        "text": f"<@&{GRAVE_ROLE_ID}> ukoliko drugi mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.",
+        "shift": None,
+        "kind": None,
+    },
+    {
+        "time": time(14, 30),
+        "channel_id": GRAVE_GENERAL_CHANNEL_ID,
+        "text": f"<@&{GRAVE_ROLE_ID}> molim da proverite da li nekom modelu nedostaje drugi mass; ukoliko nedostaje, pošaljite ga odmah.",
+        "shift": None,
+        "kind": None,
+    },
+
+    # ---------- AFTERNOON ----------
+    # prvi mass
+    {
+        "time": time(18, 0),
+        "channel_id": AFTER_GENERAL_CHANNEL_ID,
+        "text": f"<@&{AFTER_ROLE_ID}> molim da mass bude poslat najkasnije do 19:30.",
+        "shift": "after",
+        "kind": "first",
+    },
+    # drugi general + skener 19:00–19:30
+    {
+        "time": time(19, 0),
+        "channel_id": AFTER_GENERAL_CHANNEL_ID,
+        "text": f"<@&{AFTER_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.",
+        "shift": "after",
+        "kind": "second",
+    },
+    {
+        "time": time(19, 30),
+        "channel_id": AFTER_GENERAL_CHANNEL_ID,
+        "text": f"<@&{AFTER_ROLE_ID}> molim da proverite da li nekom modelu nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.",
+        "shift": None,
+        "kind": None,
+    },
+    # dodatni drugi general + skener 22:00–22:30
+    {
+        "time": time(22, 0),
+        "channel_id": AFTER_GENERAL_CHANNEL_ID,
+        "text": f"<@&{AFTER_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.",
+        "shift": "after",
+        "kind": "second",
+    },
+    {
+        "time": time(22, 30),
+        "channel_id": AFTER_GENERAL_CHANNEL_ID,
+        "text": f"<@&{AFTER_ROLE_ID}> molim da proverite da li nekom modelu i dalje nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.",
+        "shift": None,
+        "kind": None,
+    },
+
+    # ---------- MAIN ----------
+    {
+        "time": time(2, 0),
+        "channel_id": MAIN_GENERAL_CHANNEL_ID,
+        "text": f"<@&{MAIN_ROLE_ID}> molim da mass bude poslat najkasnije do 4:00.",
+        "shift": "main",
+        "kind": "first",
+    },
+    {
+        "time": time(3, 0),
+        "channel_id": MAIN_GENERAL_CHANNEL_ID,
+        "text": f"<@&{MAIN_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih sat vremena.",
+        "shift": "main",
+        "kind": "second",  # skener 3:00–4:00
+    },
+    {
+        "time": time(4, 0),
+        "channel_id": MAIN_GENERAL_CHANNEL_ID,
+        "text": f"<@&{MAIN_ROLE_ID}> molim da proverite da li nekom modelu nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.",
+        "shift": None,
+        "kind": None,
+    },
+]
+
+
+def is_mm_approval_channel(channel: discord.abc.GuildChannel) -> bool:
+    """Svaki tekst kanal koji u imenu ima 'mm-approval'."""
+    from discord import TextChannel
+    if not isinstance(channel, TextChannel):
+        return False
+    return "mm-approval" in channel.name.lower()
+
+
+async def send_shift_followups(shift_name: str):
+    """Posle DRUGOG generala: skeniraj sve mm-approval kanale i bumpuj gde fali mass."""
+    delay = SHIFT_FOLLOW_DELAY_MIN[shift_name]
+    await asyncio.sleep(delay * 60)
+
+    first_sent = shift_first_sent_at.get(shift_name)
+    if not first_sent:
+        return
+
+    guild_id_int = int(GUILD_ID) if GUILD_ID else None
+    if not guild_id_int:
+        return
+
+    guild = bot.get_guild(guild_id_int)
+    if not guild:
+        return
+
+    role_id = {
+        "grave": GRAVE_ROLE_ID,
+        "after": AFTER_ROLE_ID,
+        "main":  MAIN_ROLE_ID,
+    }[shift_name]
+
+    for ch in guild.text_channels:
+        if not is_mm_approval_channel(ch):
+            continue
+
+        last_mm = mm_last_time.get(ch.id)
+
+        # nikad nije bilo !mm ili je bilo pre prvog generala → fali mass
+        if (last_mm is None) or (last_mm < first_sent):
+            await ch.send(
+                f"<@&{role_id}> fali mass, proverite da li je poslat i pošaljite ga ovde."
+            )
+
+
+@tasks.loop(minutes=1)
+async def mass_reminder_loop():
+    now = datetime.now().time()
+
+    for item in SCHEDULE:
+        t = item["time"]
+        if now.hour == t.hour and now.minute == t.minute:
+            ch = bot.get_channel(item["channel_id"])
+            if ch:
+                await ch.send(item["text"])
+
+            shift = item.get("shift")
+            kind = item.get("kind")
+
+            if shift and kind == "first":
+                # zapamti kad je bio prvi general za tu smenu
+                shift_first_sent_at[shift] = datetime.utcnow()
+
+            if shift and kind == "second":
+                # drugi general pali skener posle X minuta
+                bot.loop.create_task(send_shift_followups(shift))
+
+
+@mass_reminder_loop.before_loop
+async def before_mass_reminder_loop():
+    await bot.wait_until_ready()
+
+
+mass_reminder_loop.start()
+
+
+@bot.event
+async def on_message(message: discord.Message):
+    # ne reaguje na botove
+    if message.author.bot:
+        return
+
+    content = message.content.strip().lower()
+
+    if content.startswith("!mm"):
+        # loguj kad je poslato u ovom kanalu
+        mm_last_time[message.channel.id] = datetime.utcnow()
+
+        # taguj oba supervizora
+        mentions = " ".join(f"<@{uid}>" for uid in SUPERVISOR_IDS)
+        await message.channel.send(
+            f"{mentions} {message.author.mention} je upravo poslao !mm."
+        )
+
+    # da ne blokira ostale komande
+    await bot.process_commands(message)
+
 
 # ---------- HELPERS ----------
 def norm(s: str) -> str:
