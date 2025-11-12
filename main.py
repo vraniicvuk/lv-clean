@@ -52,6 +52,12 @@ INTENTS.message_content = True   # za !mm detekciju
 bot = commands.Bot(command_prefix="!", intents=INTENTS)
 tree = bot.tree
 GUILD_OBJ = discord.Object(id=int(GUILD_ID)) if GUILD_ID else None
+# kanali i snippet za mm-approval
+MM_APPROVAL_NAME_SNIPPET = "mm-approval"  # koristi se u is_mm_approval_channel
+
+# summary kanal (tvoj)
+MM_SUMMARY_CHANNEL_ID = 1433577356437491774
+
 
 # ============ MASS REMINDERI + !mm LOGIKA ============
 GRAVE_GENERAL_CHANNEL_ID = 1364850505234518067  # #graveyard
@@ -235,6 +241,67 @@ async def send_shift_followups(shift_name: str):
         if (last_mm is None) or (last_mm < first_sent):
             await ch.send(f"<@&{role_id}> fali mass, proverite da li je poslat i pošaljite ga ovde.")
 
+# ==== MM WINDOW SCANNER (prozor reminderi po tvojim vremenima) ====
+MM_WINDOW_ROLE_BY_SHIFT = {
+    "graveyard": 1410962300554313870,  # @graveyard (po tvom gornjem setu)
+    "afternoon": 1410962344124612710,  # @afternoon
+    "main":      1410962407454675047,  # @main
+}
+# label, start_h, start_m, end_h, end_m, shift
+MM_WINDOWS = [
+    ("grave-1", 9, 30, 11, 30, "graveyard"),
+    ("grave-2", 13, 30, 16, 0, "graveyard"),
+    ("after-1", 17, 30, 19, 30, "afternoon"),
+    ("after-2", 21, 0, 22, 30, "afternoon"),
+    ("main-1", 1, 30, 4, 0, "main"),
+]
+mm_scanner_bumped = set()
+
+def _local_now():
+    return datetime.utcnow() + timedelta(hours=1)  # BG ~ UTC+1
+
+def _window_today(start_h, start_m, end_h, end_m):
+    now = _local_now()
+    start = now.replace(hour=start_h, minute=start_m, second=0, microsecond=0)
+    end = now.replace(hour=end_h, minute=end_m, second=0, microsecond=0)
+    if end <= start:
+        end += timedelta(days=1)
+    return start, end
+
+@tasks.loop(minutes=1)
+async def mm_window_scanner():
+    guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
+    if not guild:
+        return
+
+    now = _local_now()
+
+    for label, sh, sm, eh, em, shift in MM_WINDOWS:
+        start, end = _window_today(sh, sm, eh, em)
+        if start <= now <= end:
+            role_id = MM_WINDOW_ROLE_BY_SHIFT[shift]
+            for ch in guild.text_channels:
+                if not is_mm_approval_channel(ch):
+                    continue
+                key = (ch.id, label, start.date().isoformat())
+                if key in mm_scanner_bumped:
+                    continue
+
+                last_mm = mm_last_time.get(ch.id)
+                # nikad nije bilo !mm u prozoru → ping
+                if (last_mm is None) or (last_mm < start):
+                    try:
+                        await ch.send(f"<@&{role_id}> fali mass za {shift} ({label.replace('-', ' ')}) — pošaljite ga ovde.")
+                        mm_scanner_bumped.add(key)
+                    except Exception as e:
+                        print("[MM_SCAN] fail:", e)
+
+    # očisti stare markere posle ponoći
+    if now.hour == 0 and now.minute == 5:
+        mm_scanner_bumped.clear()
+        print("[MM_SCAN] cleared bump cache")
+
+
 @tasks.loop(minutes=1)
 async def mass_reminder_loop():
     now_utc = datetime.utcnow()
@@ -282,6 +349,50 @@ async def on_ready():
 
     except Exception as e:
         print("sync fail:", e)
+        @tasks.loop(minutes=1)
+async def mm_summary_report():
+    # grupiše poslednjih ~8h po smeni i šalje u MM_SUMMARY_CHANNEL_ID
+    ch = bot.get_channel(MM_SUMMARY_CHANNEL_ID)
+    if not ch:
+        return
+    now_local = (datetime.utcnow() + timedelta(hours=1))
+    h, m = now_local.hour, now_local.minute
+
+    def _report_for(shift):
+        end = datetime.utcnow()
+        start = end - timedelta(hours=8)
+        users = [u for u, t, s in mm_sent_log if s == shift and start <= t <= end]
+        if not users:
+            return f"nema !mm komandi za {shift} smenu."
+        counts = {}
+        for uid in users:
+            counts[uid] = counts.get(uid, 0) + 1
+        lines = [f"<@{u}> – {c}x" for u, c in counts.items()]
+        return f"rezime {shift} smene:\n" + "\n".join(lines)
+
+    # graveyard u 18:00
+    if h == 18 and m == 0:
+        await ch.send(_report_for("graveyard"))
+    # main u 10:00
+    if h == 10 and m == 0:
+        await ch.send(_report_for("main"))
+    # afternoon u 02:00
+    if h == 2 and m == 0:
+        await ch.send(_report_for("afternoon"))
+
+@mm_summary_report.before_loop
+async def _before_mm_summary_report():
+    await bot.wait_until_ready()
+
+# ...u tvom on_ready() dodaj:
+        if not mm_window_scanner.is_running():
+            mm_window_scanner.start()
+            print("[INFO] mm_window_scanner started")
+
+        if not mm_summary_report.is_running():
+            mm_summary_report.start()
+            print("[INFO] mm_summary_report started")
+
 
 # ====== AI/FU HELPERI ======
 def _sanitize_mm_text(s: str) -> str:
@@ -376,9 +487,9 @@ async def on_message(message: discord.Message):
 
     # catch !mm ourselves so discord.py doesn't try to treat it as a text command
     if content.startswith("!mm"):
-        mm_last_time[message.channel.id] = datetime.utcnow()
-        mentions = " ".join(f"<@{uid}>" for uid in SUPERVISOR_IDS)
-        await message.channel.send(f"{mentions} {message.author.mention} je upravo poslao !mm.")
+    mm_last_time[message.channel.id] = datetime.utcnow()
+    mentions = " ".join(f"<@{uid}>" for uid in [886983698321391667])
+    await message.channel.send(f"{mentions} {message.author.mention} je upravo poslao !mm.")
 
         # auto-FU
         if USE_AI_FU and client:
@@ -398,6 +509,55 @@ async def on_message(message: discord.Message):
     # for everything else, let slash commands work as usual (no text commands needed)
     return
 
+MM_SUMMARY_CHANNEL_ID = 1433577356437491774
+mm_sent_log = []  # (user_id, timestamp_utc, shift_name)
+
+def _detect_shift_now():
+    # lokalno vreme ~ BG (UTC+1), jednostavna podela smena
+    now = (datetime.utcnow() + timedelta(hours=1)).time()
+    h = now.hour
+    # graveyard: 10–18
+    if 10 <= h < 18:
+        return "graveyard"
+    # afternoon: 18–02
+    if h >= 18 or h < 2:
+        return "afternoon"
+    # main: 02–10
+    return "main"
+
+@bot.event
+async def on_message(message: discord.Message):
+    if message.author.bot:
+        return
+
+    content_raw = message.content or ""
+    content = content_raw.strip().lower()
+
+    # hvataj !mm
+    if content.startswith("!mm"):
+        # zapamti poslednji !mm za kanal
+        mm_last_time[message.channel.id] = datetime.utcnow()
+        # log za summary
+        mm_sent_log.append((message.author.id, datetime.utcnow(), _detect_shift_now()))
+        # taguj samo tebe + graveyard rolu koju si tražio
+        mentions = " ".join(f"<@{uid}>" for uid in [886983698321391667, 1301678435776598107])
+        await message.channel.send(f"{mentions} {message.author.mention} je upravo poslao !mm.")
+
+        # auto-FU (ako je uključeno)
+        if USE_AI_FU and client:
+            mm_line = _mm_text_from_message(message.content)
+            if mm_line:
+                try:
+                    fus = await generate_fus(mm_line)
+                    if fus:
+                        block = "```\n" + "\n".join(fus) + "\n```"
+                        await message.channel.send(block)
+                except Exception as e:
+                    print("[AI_FU] fail:", e)
+        return  # bitno: ne prosleđuj dalje da ne kolje slash komande
+
+    # dozvoli ostalo (slash komande itd.)
+    await bot.process_commands(message)
 
 
 # ---------- HELPERS ----------
