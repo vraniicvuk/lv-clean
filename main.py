@@ -1,4 +1,5 @@
-# main.py — FINAL: /schedule auto-clean TEAM rola (uz KEEP), pa dodela novih
+# main.py — FINAL
+# /schedule auto-clean TEAM rola (uz KEEP), pa dodela novih
 # + PRIJAVA: unknown modeli (skipped/unknown)
 # + !mm detekcija (stopira remindere) + AI/FU auto-predlozi u mm-approval kanalima
 
@@ -6,7 +7,6 @@ import os
 import re
 import asyncio
 import random
-import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
@@ -52,14 +52,14 @@ INTENTS.message_content = True   # za !mm detekciju
 bot = commands.Bot(command_prefix="!", intents=INTENTS)
 tree = bot.tree
 GUILD_OBJ = discord.Object(id=int(GUILD_ID)) if GUILD_ID else None
+
 # kanali i snippet za mm-approval
-MM_APPROVAL_NAME_SNIPPET = "mm-approval"  # koristi se u is_mm_approval_channel
+MM_APPROVAL_NAME_SNIPPET = "mm-approval"
 
 # summary kanal (tvoj)
 MM_SUMMARY_CHANNEL_ID = 1433577356437491774
 
 # ==== anti-spam za AI pozive ====
-
 AI_BLOCKED_UNTIL = None
 FU_RATE_LIMIT = timedelta(minutes=8)  # po kanalu
 _last_fu_by_channel = {}  # ch_id -> datetime
@@ -83,21 +83,18 @@ async def safe_generate_fus(mm_line: str, channel_id: int) -> list[str]:
         return await generate_fus_offline(mm_line)
 
     try:
-        return await generate_fus(mm_line)  # tvoj postojeći AI generator
+        return await generate_fus(mm_line)
     except Exception as e:
         text = str(e).lower()
-        # kvota / 429 → prebaci na offline i uključi backoff
         if "insufficient_quota" in text or "error code: 429" in text or "quota" in text:
             backoff_ai(60)  # 1h pauza
             print("[AI_FU] quota hit → switching to offline for 60min")
             return await generate_fus_offline(mm_line)
-        # bilo koji drugi fail → tih fallback
         print("[AI_FU] fail → offline fallback:", e)
         return await generate_fus_offline(mm_line)
 
 async def generate_fus_offline(mm_line: str) -> list[str]:
     txt = await gen_fu_offline(mm_line)
-    # vrati u listi bez code blocka, po tvom formatu
     lines = [ln for ln in txt.splitlines() if ln.strip().startswith("fu")]
     return lines[:4]
 
@@ -123,7 +120,7 @@ SHIFT_FOLLOW_DELAY_MIN = {
     "main":  60,
 }
 
-# vreme PRVOG generala po smeni (od tad se racuna "da li je do sada poslat mass")
+# vreme PRVOG generala po smeni
 SHIFT_FIRST_TIME = {
     "grave": time(10, 0),
     "after": time(18, 0),
@@ -143,116 +140,30 @@ mm_last_time: dict[int, datetime] = {}  # channel_id -> datetime
 # raspored svih general poruka
 SCHEDULE = [
     # ---------- GRAVE ----------
-    # prvi mass
-    {
-        "time": time(10, 0),
-        "channel_id": GRAVE_GENERAL_CHANNEL_ID,
-        "text": f"<@&{GRAVE_ROLE_ID}> molim da prvi mass bude poslat najkasnije do 11:30.",
-        "shift": "grave",
-        "kind": "first",
-    },
-    {
-        "time": time(11, 0),
-        "channel_id": GRAVE_GENERAL_CHANNEL_ID,
-        "text": f"<@&{GRAVE_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.",
-        "shift": "grave",
-        "kind": "second",  # pali skener 11:00–11:30
-    },
-    {
-        "time": time(11, 30),
-        "channel_id": GRAVE_GENERAL_CHANNEL_ID,
-        "text": f"<@&{GRAVE_ROLE_ID}> molim da proverite da li nekom modelu nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.",
-        "shift": None,
-        "kind": None,
-    },
-
-    # drugi mass (bez auto skenera, samo general)
-    {
-        "time": time(14, 0),
-        "channel_id": GRAVE_GENERAL_CHANNEL_ID,
-        "text": f"<@&{GRAVE_ROLE_ID}> ukoliko drugi mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.",
-        "shift": None,
-        "kind": None,
-    },
-    {
-        "time": time(14, 30),
-        "channel_id": GRAVE_GENERAL_CHANNEL_ID,
-        "text": f"<@&{GRAVE_ROLE_ID}> molim da proverite da li nekom modelu nedostaje drugi mass; ukoliko nedostaje, pošaljite ga odmah.",
-        "shift": None,
-        "kind": None,
-    },
+    {"time": time(10, 0), "channel_id": GRAVE_GENERAL_CHANNEL_ID, "text": f"<@&{GRAVE_ROLE_ID}> molim da prvi mass bude poslat najkasnije do 11:30.", "shift": "grave", "kind": "first"},
+    {"time": time(11, 0), "channel_id": GRAVE_GENERAL_CHANNEL_ID, "text": f"<@&{GRAVE_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.", "shift": "grave", "kind": "second"},
+    {"time": time(11, 30), "channel_id": GRAVE_GENERAL_CHANNEL_ID, "text": f"<@&{GRAVE_ROLE_ID}> molim da proverite da li nekom modelu nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.", "shift": None, "kind": None},
+    {"time": time(14, 0), "channel_id": GRAVE_GENERAL_CHANNEL_ID, "text": f"<@&{GRAVE_ROLE_ID}> ukoliko drugi mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.", "shift": None, "kind": None},
+    {"time": time(14, 30), "channel_id": GRAVE_GENERAL_CHANNEL_ID, "text": f"<@&{GRAVE_ROLE_ID}> molim da proverite da li nekom modelu nedostaje drugi mass; ukoliko nedostaje, pošaljite ga odmah.", "shift": None, "kind": None},
 
     # ---------- AFTERNOON ----------
-    # prvi mass
-    {
-        "time": time(18, 0),
-        "channel_id": AFTER_GENERAL_CHANNEL_ID,
-        "text": f"<@&{AFTER_ROLE_ID}> molim da mass bude poslat najkasnije do 19:30.",
-        "shift": "after",
-        "kind": "first",
-    },
-    # drugi general + skener 19:00–19:30
-    {
-        "time": time(19, 0),
-        "channel_id": AFTER_GENERAL_CHANNEL_ID,
-        "text": f"<@&{AFTER_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.",
-        "shift": "after",
-        "kind": "second",
-    },
-    {
-        "time": time(19, 30),
-        "channel_id": AFTER_GENERAL_CHANNEL_ID,
-        "text": f"<@&{AFTER_ROLE_ID}> molim da proverite da li nekom modelu nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.",
-        "shift": None,
-        "kind": None,
-    },
-    # dodatni drugi general + skener 22:00–22:30
-    {
-        "time": time(22, 0),
-        "channel_id": AFTER_GENERAL_CHANNEL_ID,
-        "text": f"<@&{AFTER_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.",
-        "shift": "after",
-        "kind": "second",
-    },
-    {
-        "time": time(22, 30),
-        "channel_id": AFTER_GENERAL_CHANNEL_ID,
-        "text": f"<@&{AFTER_ROLE_ID}> molim da proverite da li nekom modelu i dalje nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.",
-        "shift": None,
-        "kind": None,
-    },
+    {"time": time(18, 0), "channel_id": AFTER_GENERAL_CHANNEL_ID, "text": f"<@&{AFTER_ROLE_ID}> molim da mass bude poslat najkasnije do 19:30.", "shift": "after", "kind": "first"},
+    {"time": time(19, 0), "channel_id": AFTER_GENERAL_CHANNEL_ID, "text": f"<@&{AFTER_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.", "shift": "after", "kind": "second"},
+    {"time": time(19, 30), "channel_id": AFTER_GENERAL_CHANNEL_ID, "text": f"<@&{AFTER_ROLE_ID}> molim da proverite da li nekom modelu nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.", "shift": None, "kind": None},
+    {"time": time(22, 0), "channel_id": AFTER_GENERAL_CHANNEL_ID, "text": f"<@&{AFTER_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.", "shift": "after", "kind": "second"},
+    {"time": time(22, 30), "channel_id": AFTER_GENERAL_CHANNEL_ID, "text": f"<@&{AFTER_ROLE_ID}> molim da proverite da li nekom modelu i dalje nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.", "shift": None, "kind": None},
 
     # ---------- MAIN ----------
-    {
-        "time": time(2, 0),
-        "channel_id": MAIN_GENERAL_CHANNEL_ID,
-        "text": f"<@&{MAIN_ROLE_ID}> molim da mass bude poslat najkasnije do 4:00.",
-        "shift": "main",
-        "kind": "first",
-    },
-    {
-        "time": time(3, 0),
-        "channel_id": MAIN_GENERAL_CHANNEL_ID,
-        "text": f"<@&{MAIN_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih sat vremena.",
-        "shift": "main",
-        "kind": "second",  # skener 3:00–4:00
-    },
-    {
-        "time": time(4, 0),
-        "channel_id": MAIN_GENERAL_CHANNEL_ID,
-        "text": f"<@&{MAIN_ROLE_ID}> molim da proverite da li nekom modelu nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.",
-        "shift": None,
-        "kind": None,
-    },
+    {"time": time(2, 0), "channel_id": MAIN_GENERAL_CHANNEL_ID, "text": f"<@&{MAIN_ROLE_ID}> molim da mass bude poslat najkasnije do 4:00.", "shift": "main", "kind": "first"},
+    {"time": time(3, 0), "channel_id": MAIN_GENERAL_CHANNEL_ID, "text": f"<@&{MAIN_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih sat vremena.", "shift": "main", "kind": "second"},
+    {"time": time(4, 0), "channel_id": MAIN_GENERAL_CHANNEL_ID, "text": f"<@&{MAIN_ROLE_ID}> molim da proverite da li nekom modelu nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.", "shift": None, "kind": None},
 ]
 
 def is_mm_approval_channel(channel: discord.abc.GuildChannel) -> bool:
-    """svaki tekst kanal koji u imenu ima 'mm-approval'."""
     from discord import TextChannel
     return isinstance(channel, TextChannel) and MM_APPROVAL_NAME_SNIPPET in channel.name.lower()
 
 async def send_shift_followups(shift_name: str):
-    """posle DRUGOG generala: skeniraj sve mm-approval kanale i bumpuj gde fali mass."""
     delay = SHIFT_FOLLOW_DELAY_MIN[shift_name]
     await asyncio.sleep(delay * 60)
 
@@ -286,9 +197,9 @@ async def send_shift_followups(shift_name: str):
 
 # ==== MM WINDOW SCANNER (prozor reminderi po tvojim vremenima) ====
 MM_WINDOW_ROLE_BY_SHIFT = {
-    "graveyard": 1410962300554313870,  # @graveyard (po tvom gornjem setu)
-    "afternoon": 1410962344124612710,  # @afternoon
-    "main":      1410962407454675047,  # @main
+    "graveyard": 1410962300554313870,
+    "afternoon": 1410962344124612710,
+    "main":      1410962407454675047,
 }
 # label, start_h, start_m, end_h, end_m, shift
 MM_WINDOWS = [
@@ -344,7 +255,6 @@ async def mm_window_scanner():
         mm_scanner_bumped.clear()
         print("[MM_SCAN] cleared bump cache")
 
-
 @tasks.loop(minutes=1)
 async def mass_reminder_loop():
     now_utc = datetime.utcnow()
@@ -361,11 +271,9 @@ async def mass_reminder_loop():
             kind = item.get("kind")
 
             if shift and kind == "first":
-                # zapamti kad je bio prvi general za tu smenu (UTC)
                 shift_first_sent_at[shift] = datetime.utcnow()
 
             if shift and kind == "second":
-                # drugi general pali skener posle X minuta
                 bot.loop.create_task(send_shift_followups(shift))
 
 @mass_reminder_loop.before_loop
@@ -374,34 +282,10 @@ async def before_mass_reminder_loop():
     print("[INFO] Reminder loop ready to start")
 
 
-@bot.event
-async def on_ready():
-    try:
-        if GUILD_OBJ:
-            cmds = await tree.sync(guild=GUILD_OBJ)
-            print(f"synced {len(cmds)} slash komandi na server {GUILD_ID}")
-        else:
-            cmds = await tree.sync()
-            print(f"synced {len(cmds)} globalnih slash komandi")
-        print(f"✅ logged in as {bot.user}")
+# ---------- SUMMARY REPORT (def before on_ready) ----------
+mm_sent_log = []  # (user_id, timestamp_utc, shift_name)
 
-        if not mass_reminder_loop.is_running():
-            mass_reminder_loop.start()
-            print("[INFO] mass_reminder_loop started")
-
-        if not mm_window_scanner.is_running():
-            mm_window_scanner.start()
-            print("[INFO] mm_window_scanner started")
-
-        if not mm_summary_report.is_running():
-            mm_summary_report.start()
-            print("[INFO] mm_summary_report started")
-
-    except Exception as e:
-        print("sync fail:", e)
-
-
-    @tasks.loop(minutes=1)
+@tasks.loop(minutes=1)
 async def mm_summary_report():
     ch = bot.get_channel(MM_SUMMARY_CHANNEL_ID)
     if not ch:
@@ -409,13 +293,13 @@ async def mm_summary_report():
     now_local = datetime.utcnow() + timedelta(hours=1)
     h, m = now_local.hour, now_local.minute
 
-    def _report_for(shift):
+    def _report_for(shift: str) -> str:
         end = datetime.utcnow()
         start = end - timedelta(hours=8)
         users = [u for u, t, s in mm_sent_log if s == shift and start <= t <= end]
         if not users:
             return f"nema !mm komandi za {shift} smenu."
-        counts = {}
+        counts: dict[int, int] = {}
         for uid in users:
             counts[uid] = counts.get(uid, 0) + 1
         lines = [f"<@{u}> – {c}x" for u, c in counts.items()]
@@ -433,27 +317,11 @@ async def _before_mm_summary_report():
     await bot.wait_until_ready()
 
 
-@mm_summary_report.before_loop
-async def _before_mm_summary_report():
-    await bot.wait_until_ready()
-
-# ...u tvom on_ready() dodaj:
-        if not mm_window_scanner.is_running():
-            mm_window_scanner.start()
-            print("[INFO] mm_window_scanner started")
-
-        if not mm_summary_report.is_running():
-            mm_summary_report.start()
-            print("[INFO] mm_summary_report started")
-
-
 # ====== AI/FU HELPERI ======
 def _sanitize_mm_text(s: str) -> str:
     s = (s or "").lower().strip()
-    # skini emojije (van BMP)
-    s = re.sub(r"[\U00010000-\U0010ffff]", "", s)
-    # zabrana crtica i duge crte
-    s = s.replace("—", " ").replace("-", " ")
+    s = re.sub(r"[\U00010000-\U0010ffff]", "", s)  # skini emojije (van BMP)
+    s = s.replace("—", " ").replace("-", " ")      # zabrana crtica i duge crte
     s = re.sub(r"\s+", " ", s)
     return s
 
@@ -486,122 +354,156 @@ async def gen_fu_offline(question: str) -> str:
         fu1, fu2, fu3 = random.choice(banks)
     return f"!mma\n{q}\n\n{fu1}\n{fu2}\n{fu3}"
 
-async def gen_fu_ai(question: str) -> str:
-    if not (OPENAI_API_KEY and USE_AI_FU):
-        raise RuntimeError("AI disabled or missing key")
+AI_FU_SYSTEM = (
+    "You generate flirty, playful, dirty-minded follow-ups (FUs) for an OF mass message.\n"
+    "Strict rules:\n"
+    "- all lowercase, no emojis, short and punchy.\n"
+    "- output keys exactly: fu1:, fu1.5:, fu2:, fu2.5: (omit 1.5/2.5 only if it really hurts flow).\n"
+    "- no 'either way'.\n"
+    "- each line must stand alone and be enticing.\n"
+)
 
-    prompt = (
-        "write fusions for an mm message. rules: all lowercase. no emojis. no dashes. "
-        "format exactly:\n"
-        "!mma\n<short question>\n\n"
-        "fu1: <line>\n"
-        "fu2: <line>\n"
-        "fu3: <line>\n"
-        "tone: flirty, dirty-minded, teasing, girly. avoid the phrase 'either way'. "
-        "must reference the question context naturally. keep it concise.\n"
-        f"question: {question.strip().lower()}"
+def _fu_prompt(mm_line: str) -> str:
+    return (
+        f"mm: {mm_line}\n"
+        "write 2-4 follow-ups that escalate teasing.\n"
+        "keep them simple, girly, bold, and under ~12 words each."
     )
 
-    url = "https://api.openai.com/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-    body = {
-        "model": OPENAI_MODEL,
-        "messages": [
-            {"role": "system", "content": "you write playful flirty scripts in strict lowercase."},
-            {"role": "user", "content": prompt}
-        ],
-        "temperature": 0.9,
-        "max_tokens": 180
-    }
-    timeout = aiohttp.ClientTimeout(total=12)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(url, headers=headers, json=body) as resp:
-            if resp.status != 200:
-                txt = await resp.text()
-                raise RuntimeError(f"openai error {resp.status}: {txt[:200]}")
-            data = await resp.json()
-            out = data["choices"][0]["message"]["content"]
-            out = _sanitize_mm_text(out)
-            # minimal validacija
-            if "!mma" not in out or "fu1:" not in out or "fu2:" not in out or "fu3:" not in out:
-                raise RuntimeError("bad format from ai")
-            if "either way" in out:
-                raise RuntimeError("banned phrase")
-            return out
+async def generate_fus(mm_line: str) -> list[str]:
+    if not client:
+        return []
+    prompt = _fu_prompt(mm_line)
+    # OpenAI python lib je sync; izvrši u thread-u da ne blokira event loop
+    def _call():
+        rsp = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": AI_FU_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.9,
+            max_tokens=120,
+        )
+        return rsp.choices[0].message.content.strip()
+    text = await asyncio.to_thread(_call)
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    labeled, i = [], 1
+    for ln in lines:
+        if ":" in ln[:8].lower():
+            labeled.append(ln)
+        else:
+            key = "fu1:" if i == 1 else ("fu1.5:" if i == 2 else ("fu2:" if i == 3 else "fu2.5:"))
+            labeled.append(f"{key} {ln.lower()}")
+        i += 1
+    return labeled[:4]
 
 
-
-MM_SUMMARY_CHANNEL_ID = 1433577356437491774
-mm_sent_log = []  # (user_id, timestamp_utc, shift_name)
-
-def _detect_shift_now():
-    # lokalno vreme ~ BG (UTC+1), jednostavna podela smena
-    now = (datetime.utcnow() + timedelta(hours=1)).time()
-    h = now.hour
-    # graveyard: 10–18
-    if 10 <= h < 18:
-        return "graveyard"
-    # afternoon: 18–02
-    if h >= 18 or h < 2:
-        return "afternoon"
-    # main: 02–10
-    return "main"
-# 🟩 ovo MORA biti VAN on_ready
-
-@bot.event
-async def on_message(message: discord.Message):
-    if message.author.bot:
-        return
-
-    content_raw = message.content or ""
-    content = content_raw.strip().lower()
-
-    # hvataj !mm
-    if content.startswith("!mm"):
-        # zapamti poslednji !mm za kanal
-        mm_last_time[message.channel.id] = datetime.utcnow()
-        # log za summary
-        mm_sent_log.append((message.author.id, datetime.utcnow(), _detect_shift_now()))
-        # taguj samo tebe + graveyard rolu koju si tražio
-        mentions = " ".join(f"<@{uid}>" for uid in [886983698321391667, 1301678435776598107])
-        await message.channel.send(f"{mentions} {message.author.mention} je upravo poslao !mm.")
-
-        # auto-FU (ako je uključeno)
-        if USE_AI_FU:
-    mm_line = _mm_text_from_message(message.content)
-    if mm_line:
-        fus = await safe_generate_fus(mm_line, message.channel.id)
-        if fus:
-            block = "```\n" + "\n".join(fus) + "\n```"
-            await message.channel.send(block)
-
-    # dozvoli ostalo (slash komande itd.)
-    await bot.process_commands(message)
-
-
-# ---------- HELPERS ----------
+# ---------- ROLE LOOKUP ----------
 def norm(s: str) -> str:
     return re.sub(r"[^A-Z0-9]+", "", (s or "").upper())
 
-def can_touch_role(bot_member: discord.Member, role: discord.Role) -> bool:
-    if role is None: return False
-    if role.is_default(): return False
-    if role.managed: return False
-    return bot_member.guild_permissions.manage_roles and bot_member.top_role > role
+def build_role_index(guild: discord.Guild):
+    by_norm = {}
+    by_norm_no_team = {}
+    for r in guild.roles:
+        by_norm[norm(r.name)] = r
+        if r.name.upper().startswith("TEAM "):
+            stripped = r.name[5:]
+            by_norm_no_team[norm(stripped)] = r
+    return by_norm, by_norm_no_team
 
-def is_model_role(role: discord.Role) -> bool:
-    return role.name.upper().startswith("TEAM ")
+# alias normalizacija + resolve
+ALIAS_TO_BASE = {
+    "ANITA2USASOPHIE": "ANITA",
+    "ANITA2USA":       "ANITA",
+    "ANITA":           "ANITA",
+    "SKYLARONLYF":     "SKYLAR ONLYF",
+    "SKYLARONLYFYY":   "SKYLAR ONLYF",
+    "SKYLAR":          "SKYLAR ONLYF",
+    "AMBEREMERSONT":   "AMBER EMERSON T",
+    "AMBEREMERSON":    "AMBER EMERSON T",
+    "AMBER":           "AMBER EMERSON T",
+    "DIAX":            "DIA",
+    "DIAVIP":          "DIA",
+    "DIA":             "DIA",
+    "MIAROUGE":        "MIA ROUGE",
+    "MIAROGUE":        "MIA ROUGE",
+    "MIA":             "MIA ROUGE",
+    "KASSIEX":         "KASSIE X",
+    "KASSIE":          "KASSIE X",
+    "EMILYONLYF":      "EMILY ONLYF",
+    "EVAG":            "EVA",
+    "LARAG":           "LARA",
+    "MAYAFOXEY":       "MAYA FOXY",
+    "SKAYLARONLYF":    "SKYLAR ONLYF",
+    "SYNDEY":          "SYDNEY",
+    "HANAS":           "HANNAS",
+    "MIAPOZZZP":       "MIAPOZZZ P",
+    "LEKESSIAT":       "LEKESSIA",
+    "EMILYKOIVC":      "EMILYKOI",
+    "MOLLYVC":         "MOLLY",
+    "RAVENSA":         "RAVEN",
+    "MIAPOPZZ":        "MIAPOZZZ P",
+    "MACCMKATIE":      "CCM KATIE",
+    "KENDALLTINDER":   "KENDAL TINDER",
+}
+ALIAS_KEYS_BY_LEN = sorted(ALIAS_TO_BASE.keys(), key=len, reverse=True)
+NOISE_WORDS_IN_PHRASE = {"YY"}
 
-def is_keep_role(role: discord.Role) -> bool:
-    return role.name.upper() in KEEP_ROLE_NAMES
+def clean_role_phrase(phrase: str) -> str:
+    if not phrase:
+        return ""
+    s = phrase.strip()
+    if s.upper() in {"X"}:
+        return ""
+    s = re.sub(r"\b(inbox|inb)\s*([0-9]+)\b", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\b(inbox[0-9]+|inb[0-9]+)\b", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\b(free|paid|full)\b", "", s, flags=re.IGNORECASE)
+    toks = [t for t in re.split(r"\s+", s) if t and t.upper() not in NOISE_WORDS_IN_PHRASE]
+    s = " ".join(toks).strip()
+    s = re.sub(r"\b([A-Za-z]+)\s+2\b", r"\1", s)
+    return s
 
-def why_blocked(bot_member: discord.Member, role: discord.Role):
-    r = []
-    if role.is_default(): r.append("everyone")
-    if role.managed: r.append("managed")
-    if not bot_member.guild_permissions.manage_roles: r.append("no Manage Roles")
-    if bot_member.top_role <= role: r.append("bot below role")
-    return r or ["ok"]
+def _resolve_alias_to_base(base: str) -> str | None:
+    nb = norm(base)
+    for key in ALIAS_KEYS_BY_LEN:
+        if key in nb:
+            return ALIAS_TO_BASE[key]
+    return None
+
+def role_from_phrase(guild: discord.Guild, phrase: str):
+    base = clean_role_phrase(phrase)
+    if not base:
+        return None
+
+    resolved = _resolve_alias_to_base(base)
+    if resolved:
+        base = resolved
+
+    by_norm, by_no_team = build_role_index(guild)
+
+    r = discord.utils.get(guild.roles, name=base)
+    if r:
+        return r
+
+    team_name = f"TEAM {base}"
+    r = discord.utils.get(guild.roles, name=team_name)
+    if r:
+        return r
+
+    n_base = norm(base)
+    if n_base in by_norm:
+        return by_norm[n_base]
+
+    n_team = norm(team_name)
+    if n_team in by_norm:
+        return by_norm[n_team]
+
+    if n_base in by_no_team:
+        return by_no_team[n_base]
+
+    return None
 
 def parse_roles_from_text(guild: discord.Guild, text: str) -> list[discord.Role]:
     ids = re.findall(r"<@&(\d+)>", text or "")
@@ -618,6 +520,43 @@ async def ensure_member(guild: discord.Guild, user_id: int):
     except:
         return None
 
+def member_from_token(guild: discord.Guild, token: str):
+    ids = parse_user_ids(token)
+    if ids:
+        return guild.get_member(ids[0]) or None
+    cleaned = token.replace("@", "").strip()
+    if not cleaned: return None
+    for m in guild.members:
+        if m.display_name.lower() == cleaned.lower() or (m.name and m.name.lower() == cleaned.lower()):
+            return m
+    target = norm(cleaned)
+    for m in guild.members:
+        if norm(m.display_name) == target or norm(m.name) == target:
+            return m
+    return None
+
+def can_touch_role(bot_member: discord.Member, role: discord.Role) -> bool:
+    if role is None: return False
+    if role.is_default(): return False
+    if role.managed: return False
+    return bot_member.guild_permissions.manage_roles and bot_member.top_role > role
+
+def why_blocked(bot_member: discord.Member, role: discord.Role):
+    r = []
+    if role.is_default(): r.append("everyone")
+    if role.managed: r.append("managed")
+    if not bot_member.guild_permissions.manage_roles: r.append("no Manage Roles")
+    if bot_member.top_role <= role: r.append("bot below role")
+    return r or ["ok"]
+
+def is_model_role(role: discord.Role) -> bool:
+    return role.name.upper().startswith("TEAM ")
+
+def is_keep_role(role: discord.Role) -> bool:
+    return role.name.upper() in KEEP_ROLE_NAMES
+
+
+# ---------- /assign /deassign /clean /a /cleanmulti ----------
 def need_manage_roles():
     def predicate(interaction: discord.Interaction):
         gp = interaction.user.guild_permissions
@@ -662,192 +601,6 @@ async def safe_remove_roles(member: discord.Member, roles: list[discord.Role], r
                 await asyncio.sleep(RETRY_BASE_SLEEP * attempt)
     return removed
 
-# >>> AI FUs START: generator
-def _mm_text_from_message(content: str) -> str:
-    # vrati sirovi tekst posle "!mm"
-    raw = content.strip()
-    if raw.lower().startswith("!mm"):
-        return raw[3:].strip(": \n\t")
-    return raw
-
-AI_FU_SYSTEM = (
-    "You generate flirty, playful, dirty-minded follow-ups (FUs) for an OF mass message.\n"
-    "Strict rules:\n"
-    "- all lowercase, no emojis, short and punchy.\n"
-    "- output keys exactly: fu1:, fu1.5:, fu2:, fu2.5: (omit 1.5/2.5 only if it really hurts flow).\n"
-    "- no 'either way'.\n"
-    "- each line must stand alone and be enticing.\n"
-)
-
-def _fu_prompt(mm_line: str) -> str:
-    return (
-        f"mm: {mm_line}\n"
-        "write 2-4 follow-ups that escalate teasing.\n"
-        "keep them simple, girly, bold, and under ~12 words each."
-    )
-
-async def generate_fus(mm_line: str) -> list[str]:
-    if not client:
-        return []
-    prompt = _fu_prompt(mm_line)
-    # OpenAI python lib je sync; izvrši u thread-u da ne blokira event loop
-    def _call():
-        rsp = client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": AI_FU_SYSTEM},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.9,
-            max_tokens=120,
-        )
-        return rsp.choices[0].message.content.strip()
-    text = await asyncio.to_thread(_call)
-    # očekujemo linije tipa "fu1: ...", itd.
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    # fallback: ako model vrati plain linije, prefiksuj ih
-    labeled, i = [], 1
-    for ln in lines:
-        if ":" in ln[:8].lower():  # već ima fu1: itd
-            labeled.append(ln)
-        else:
-            key = "fu1:" if i == 1 else ("fu1.5:" if i == 2 else ("fu2:" if i == 3 else "fu2.5:"))
-            labeled.append(f"{key} {ln.lower()}")
-        i += 1
-    # maksimalno 4 linije
-    return labeled[:4]
-# <<< AI FUs END
-
-
-# ---------- ROLE LOOKUP ----------
-def build_role_index(guild: discord.Guild):
-    by_norm = {}
-    by_norm_no_team = {}
-    for r in guild.roles:
-        by_norm[norm(r.name)] = r
-        if r.name.upper().startswith("TEAM "):
-            stripped = r.name[5:]
-            by_norm_no_team[norm(stripped)] = r
-    return by_norm, by_norm_no_team
-
-# alias normalizacija + resolve
-ALIAS_TO_BASE = {
-    # anita
-    "ANITA2USASOPHIE": "ANITA",
-    "ANITA2USA":       "ANITA",
-    "ANITA":           "ANITA",
-    # skylar
-    "SKYLARONLYF":     "SKYLAR ONLYF",
-    "SKYLARONLYFYY":   "SKYLAR ONLYF",
-    "SKYLAR":          "SKYLAR ONLYF",
-    # amber
-    "AMBEREMERSONT":   "AMBER EMERSON T",
-    "AMBEREMERSON":    "AMBER EMERSON T",
-    "AMBER":           "AMBER EMERSON T",
-    # dia
-    "DIAX":            "DIA",
-    "DIAVIP":          "DIA",
-    "DIA":             "DIA",
-    # mia rouge/rogue
-    "MIAROUGE":        "MIA ROUGE",
-    "MIAROGUE":        "MIA ROUGE",
-    "MIA":             "MIA ROUGE",
-    # kassie
-    "KASSIEX":         "KASSIE X",
-    "KASSIE":          "KASSIE X",
-    # tvoji raniji aliasi (zadrzani)
-    "EMILYONLYF":      "EMILY ONLYF",
-    "EVAG":            "EVA",
-    "LARAG":           "LARA",
-    "MAYAFOXEY":       "MAYA FOXY",
-    "SKAYLARONLYF":    "SKYLAR ONLYF",
-    "SYNDEY":          "SYDNEY",
-    "HANAS":           "HANNAS",
-    "MIAPOZZZP":       "MIAPOZZZ P",
-    "LEKESSIAT":       "LEKESSIA",
-    "EMILYKOIVC":      "EMILYKOI",
-    "MOLLYVC":         "MOLLY",
-    "RAVENSA":         "RAVEN",
-    "MIAPOPZZ":        "MIAPOZZZ P",
-    "MACCMKATIE":      "CCM KATIE",
-    "KENDALLTINDER":   "KENDAL TINDER",
-}
-ALIAS_KEYS_BY_LEN = sorted(ALIAS_TO_BASE.keys(), key=len, reverse=True)
-NOISE_WORDS_IN_PHRASE = {"YY"}
-
-def clean_role_phrase(phrase: str) -> str:
-    if not phrase:
-        return ""
-    s = phrase.strip()
-    if s.upper() in {"X"}:
-        return ""
-    # skini inbox/inb, free/paid/full
-    s = re.sub(r"\b(inbox|inb)\s*([0-9]+)\b", "", s, flags=re.IGNORECASE)
-    s = re.sub(r"\b(inbox[0-9]+|inb[0-9]+)\b", "", s, flags=re.IGNORECASE)
-    s = re.sub(r"\b(free|paid|full)\b", "", s, flags=re.IGNORECASE)
-    # skini noise tokene (yy i sl.)
-    toks = [t for t in re.split(r"\s+", s) if t and t.upper() not in NOISE_WORDS_IN_PHRASE]
-    s = " ".join(toks).strip()
-    # skini pattern "... 2"
-    s = re.sub(r"\b([A-Za-z]+)\s+2\b", r"\1", s)
-    return s
-
-def _resolve_alias_to_base(base: str) -> str | None:
-    nb = norm(base)
-    for key in ALIAS_KEYS_BY_LEN:
-        if key in nb:
-            return ALIAS_TO_BASE[key]
-    return None
-
-def role_from_phrase(guild: discord.Guild, phrase: str):
-    base = clean_role_phrase(phrase)
-    if not base:
-        return None
-
-    resolved = _resolve_alias_to_base(base)
-    if resolved:
-        base = resolved
-
-    by_norm, by_no_team = build_role_index(guild)
-
-    r = discord.utils.get(guild.roles, name=base)
-    if r:
-        return r
-
-    team_name = f"TEAM {base}"
-    r = discord.utils.get(guild.roles, name=team_name)
-    if r:
-        return r
-
-    n_base = norm(base)
-    if n_base in by_norm:
-        return by_norm[n_base]
-
-    n_team = norm(team_name)
-    if n_team in by_norm:
-        return by_norm[n_team]
-
-    if n_base in by_no_team:
-        return by_no_team[n_base]
-
-    return None
-
-def member_from_token(guild: discord.Guild, token: str):
-    ids = parse_user_ids(token)
-    if ids:
-        return guild.get_member(ids[0]) or None
-    cleaned = token.replace("@", "").strip()
-    if not cleaned: return None
-    for m in guild.members:
-        if m.display_name.lower() == cleaned.lower() or (m.name and m.name.lower() == cleaned.lower()):
-            return m
-    target = norm(cleaned)
-    for m in guild.members:
-        if norm(m.display_name) == target or norm(m.name) == target:
-            return m
-    return None
-
-# ---------- BASIC COMMANDS ----------
 @tree.command(description="dodeli više rola jednom useru", guild=GUILD_OBJ)
 @need_manage_roles()
 async def assign(interaction: discord.Interaction, user: discord.Member, roles: str):
@@ -974,6 +727,7 @@ async def clean_multi(interaction: discord.Interaction, users: str, keep: str = 
     for i in range(0, len(msg), 1800):
         await interaction.followup.send(f"```\n{msg[i:i+1800]}\n```", ephemeral=True)
 
+
 # ---------- /farm (modal forma) ----------
 class FarmModal(Modal, title="Farm unos"):
     def __init__(self, opener: discord.Member):
@@ -1005,6 +759,7 @@ class FarmModal(Modal, title="Farm unos"):
 @tree.command(name="farm", description="Otvori formu za farm unos", guild=GUILD_OBJ)
 async def farm(interaction: discord.Interaction):
     await interaction.response.send_modal(FarmModal(opener=interaction.user))
+
 
 # ---------- /schedule — CLEAN-THEN-ASSIGN + unknown models report ----------
 @tree.command(
@@ -1144,6 +899,7 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
     for i in range(0, len(out), 1800):
         await interaction.followup.send(f"```\n{out[i:i+1800]}\n```", ephemeral=True)
 
+
 # ---------- /resync ----------
 @tree.command(name="resync", description="force purge global + resync guild", guild=GUILD_OBJ)
 @need_manage_roles()
@@ -1160,6 +916,7 @@ async def resync(interaction: discord.Interaction):
     except Exception as e:
         await interaction.followup.send(f"Resync FAIL: {e}", ephemeral=True)
 
+
 # ---------- global error ----------
 @tree.error
 async def on_app_command_error(interaction: discord.Interaction, error):
@@ -1168,4 +925,69 @@ async def on_app_command_error(interaction: discord.Interaction, error):
     except:
         await interaction.followup.send(f"greška: {error}", ephemeral=True)
 
+
+# ---------- MM HOOKS ----------
+def _mm_text_from_message(content: str) -> str:
+    raw = (content or "").strip()
+    if raw.lower().startswith("!mm"):
+        return raw[3:].strip(": \n\t")
+    return raw
+
+def _detect_shift_now():
+    now = (datetime.utcnow() + timedelta(hours=1)).time()
+    h = now.hour
+    if 10 <= h < 18:
+        return "graveyard"
+    if h >= 18 or h < 2:
+        return "afternoon"
+    return "main"
+
+@bot.event
+async def on_message(message: discord.Message):
+    if message.author.bot:
+        return
+
+    content_raw = message.content or ""
+    content = content_raw.strip().lower()
+
+    if content.startswith("!mm"):
+        mm_last_time[message.channel.id] = datetime.utcnow()
+        mm_sent_log.append((message.author.id, datetime.utcnow(), _detect_shift_now()))
+        mentions = " ".join(f"<@{uid}>" for uid in [886983698321391667, 1301678435776598107])
+        await message.channel.send(f"{mentions} {message.author.mention} je upravo poslao !mm.")
+
+        # auto-FU: uvek probamo (AI ili offline, safe fallback)
+        mm_line = _mm_text_from_message(message.content)
+        if mm_line:
+            fus = await safe_generate_fus(mm_line, message.channel.id)
+            if fus:
+                block = "```\n" + "\n".join(fus) + "\n```"
+                await message.channel.send(block)
+
+    await bot.process_commands(message)
+
+
+# ---------- on_ready ----------
+@bot.event
+async def on_ready():
+    try:
+        if GUILD_OBJ:
+            cmds = await tree.sync(guild=GUILD_OBJ)
+            print(f"synced {len(cmds)} slash komandi na server {GUILD_ID}")
+        else:
+            cmds = await tree.sync()
+            print(f"synced {len(cmds)} globalnih slash komandi")
+        print(f"✅ logged in as {bot.user}")
+
+        if not mass_reminder_loop.is_running():
+            mass_reminder_loop.start()
+        if not mm_window_scanner.is_running():
+            mm_window_scanner.start()
+        if not mm_summary_report.is_running():
+            mm_summary_report.start()
+    except Exception as e:
+        print("sync fail:", e)
+
+
+# ---------- RUN ----------
 bot.run(TOKEN)
