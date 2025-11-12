@@ -225,11 +225,14 @@ def _local_now():
     return datetime.utcnow() + timedelta(hours=1)
 
 def _window_today(start_h, start_m, end_h, end_m):
-    now = _local_now()
+    now = _local_now()  # datetime, ne .time()
+
     start = now.replace(hour=start_h, minute=start_m, second=0, microsecond=0)
     end   = now.replace(hour=end_h,   minute=end_m,   second=0, microsecond=0)
+
     if end <= start:
         end += timedelta(days=1)
+
     return start, end
 
 @tasks.loop(minutes=1)
@@ -241,7 +244,7 @@ async def mm_window_scanner():
     if not guild:
         return
 
-    now = _local_now()
+    now = _local_now()  # datetime
 
     for label, sh, sm, eh, em, shift in MM_WINDOWS:
         start, end = _window_today(sh, sm, eh, em)
@@ -261,12 +264,10 @@ async def mm_window_scanner():
                 if (last_mm is None) or (last_mm < start):
                     try:
                         role_id = MM_WINDOW_ROLE_BY_SHIFT[shift]
-                        # poruka identična stilu koji već koristiš
                         await ch.send(f"<@&{role_id}> fali mass za {shift} ({label.replace('-', ' ')}) — pošaljite ga ovde.")
                     except Exception as e:
                         print("[MM_SCAN] send fail:", e)
 
-                # bilo pingovano ili ne, markiramo da je prozor obrađen (da ne spamuje)
                 mm_scanner_bumped.add(key)
 
     # očisti stare markere malo posle ponoći lokalno
@@ -278,21 +279,69 @@ async def mm_window_scanner():
 async def _before_mm_window_scanner():
     await bot.wait_until_ready()
 
+# ====== MASS REMINDERI (glavni loop) ======
+@tasks.loop(minutes=1)
+async def mass_reminder_loop():
+    """Šalje general mass reminder poruke po SCHEDULE
+       i setuje shift_first_sent_at za 'first' poruke."""
+    now_local = _local_now()
+    h, m = now_local.hour, now_local.minute
+
+    guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
+    if not guild:
+        return
+
+    for entry in SCHEDULE:
+        t: time = entry["time"]
+        if h == t.hour and m == t.minute:
+            channel_id = entry["channel_id"]
+            text       = entry["text"]
+            shift      = entry.get("shift")
+            kind       = entry.get("kind")
+
+            ch = bot.get_channel(channel_id)
+            if not ch:
+                try:
+                    ch = await guild.fetch_channel(channel_id)
+                except Exception as e:
+                    print("[MASS_LOOP] ne mogu da nadjem kanal", channel_id, e)
+                    continue
+
+            try:
+                await ch.send(text)
+            except Exception as e:
+                print("[MASS_LOOP] send fail:", e)
+                continue
+
+            # ako je prvi general za smenu → zapamti vreme i pokreni followup checker
+            if shift and kind == "first":
+                # radimo u lokalnom vremenu, da bude u istom sistemu kao mm_window_scanner
+                shift_first_sent_at[shift] = now_local
+                try:
+                    asyncio.create_task(send_shift_followups(shift))
+                except Exception as e:
+                    print("[MASS_LOOP] followup task fail:", e)
+
+@mass_reminder_loop.before_loop
+async def _before_mass_reminder_loop():
+    await bot.wait_until_ready()
+
 
 
 # ---------- SUMMARY REPORT (def before on_ready) ----------
-mm_sent_log = []  # (user_id, timestamp_utc, shift_name)
+mm_sent_log = []  # (user_id, timestamp_local, shift_name)
 
 @tasks.loop(minutes=1)
 async def mm_summary_report():
     ch = bot.get_channel(MM_SUMMARY_CHANNEL_ID)
     if not ch:
         return
-    now_local = datetime.utcnow() + timedelta(hours=1)
+
+    now_local = _local_now()
     h, m = now_local.hour, now_local.minute
 
     def _report_for(shift: str) -> str:
-        end = datetime.utcnow()
+        end = _local_now()
         start = end - timedelta(hours=8)
         users = [u for u, t, s in mm_sent_log if s == shift and start <= t <= end]
         if not users:
@@ -313,6 +362,7 @@ async def mm_summary_report():
 @mm_summary_report.before_loop
 async def _before_mm_summary_report():
     await bot.wait_until_ready()
+
 
 
 # ====== AI/FU HELPERI ======
@@ -932,7 +982,7 @@ def _mm_text_from_message(content: str) -> str:
     return raw
 
 def _detect_shift_now():
-    now = (datetime.utcnow() + timedelta(hours=1)).time()
+    now = _local_now().time()
     h = now.hour
     if 10 <= h < 18:
         return "graveyard"
@@ -949,12 +999,14 @@ async def on_message(message: discord.Message):
     content = content_raw.strip().lower()
 
     if content.startswith("!mm"):
-        mm_last_time[message.channel.id] = datetime.utcnow()
-        mm_sent_log.append((message.author.id, datetime.utcnow(), _detect_shift_now()))
+        now_local = _local_now()
+        mm_last_time[message.channel.id] = now_local
+        mm_sent_log.append((message.author.id, now_local, _detect_shift_now()))
+
         mentions = " ".join(f"<@{uid}>" for uid in [886983698321391667, 1301678435776598107])
         await message.channel.send(f"{mentions} {message.author.mention} je upravo poslao !mm.")
 
-        # auto-FU: uvek probamo (AI ili offline, safe fallback)
+        # auto FU
         mm_line = _mm_text_from_message(message.content)
         if mm_line:
             fus = await safe_generate_fus(mm_line, message.channel.id)
@@ -963,7 +1015,6 @@ async def on_message(message: discord.Message):
                 await message.channel.send(block)
 
     await bot.process_commands(message)
-
 
 # ---------- on_ready ----------
 @bot.event
