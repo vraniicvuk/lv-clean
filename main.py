@@ -7,7 +7,7 @@ from discord.ext import commands, tasks   # <= DODATO tasks
 from discord.ui import Modal, TextInput
 from discord import TextStyle
 from dotenv import load_dotenv
-from datetime import datetime, time       # <= DODATO
+from datetime import datetime, time, timedelta
 
 
 load_dotenv()
@@ -228,7 +228,8 @@ async def send_shift_followups(shift_name: str):
 
 @tasks.loop(minutes=1)
 async def mass_reminder_loop():
-    now = datetime.now().time()
+    now_utc = datetime.utcnow()
+    now = (now_utc + timedelta(hours=1)).time()
 
     for item in SCHEDULE:
         t = item["time"]
