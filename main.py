@@ -2,7 +2,10 @@
 # + PRIJAVA: unknown modeli (skipped/unknown)
 # + !mm detekcija (stopira remindere) + AI/FU auto-predlozi u mm-approval kanalima
 
-import os, re, asyncio, random
+import os
+import re
+import asyncio
+import random
 import aiohttp
 import discord
 from discord import app_commands
@@ -13,26 +16,22 @@ from dotenv import load_dotenv
 from datetime import datetime, time, timedelta
 from openai import OpenAI
 
-# load .env FIRST
+# --- env first ---
 load_dotenv()
-
-# ---- AI FUs: env + client
-USE_AI_FU = os.getenv("USE_AI_FU", "false").lower() in ("1", "true", "yes", "on")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-client = OpenAI(api_key=OPENAI_API_KEY) if (USE_AI_FU and OPENAI_API_KEY) else None
 
 TOKEN    = os.getenv("DISCORD_TOKEN")
 GUILD_ID = os.getenv("GUILD_ID")
+
+USE_AI_FU      = os.getenv("USE_AI_FU", "false").lower() in ("1","true","yes","on")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL   = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+# build client only after env is loaded
+client = OpenAI(api_key=OPENAI_API_KEY) if (USE_AI_FU and OPENAI_API_KEY) else None
+
 if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN nije setovan u .env")
 
-
-# samo u kanalima koji u imenu sadrze ovaj snippet ce bot lepiti FUs
-MM_APPROVAL_NAME_SNIPPET = "mm-approval"
-
-if not TOKEN:
-    raise RuntimeError("DISCORD_TOKEN nije setovan u .env")
 
 # ---------- TUNABLES ----------
 SLEEP_BETWEEN_CALLS = 0.35
