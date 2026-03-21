@@ -363,7 +363,60 @@ async def mm_summary_report():
 async def _before_mm_summary_report():
     await bot.wait_until_ready()
 
+async def sort_team_roles(guild):
 
+    bot_member = guild.me
+
+    non_team = [
+        r for r in guild.roles
+        if not r.name.upper().startswith("TEAM ")
+    ]
+
+    team = [
+        r for r in guild.roles
+        if r.name.upper().startswith("TEAM ")
+        and r < bot_member.top_role
+    ]
+
+    team_sorted = sorted(team, key=lambda r: r.name.lower())
+
+    start_pos = max(r.position for r in non_team)
+
+    pos = start_pos + 1
+
+    for role in team_sorted:
+        await role.edit(position=pos)
+        pos += 1
+        await asyncio.sleep(0.35)
+
+    print("TEAM roles sorted")
+
+async def sort_team_categories(guild):
+
+    categories = guild.categories
+
+    non_team = [
+        c for c in categories
+        if not c.name.upper().startswith("TEAM ")
+    ]
+
+    team = [
+        c for c in categories
+        if c.name.upper().startswith("TEAM ")
+    ]
+
+    team_sorted = sorted(team, key=lambda c: c.name.lower())
+
+    start_pos = max(c.position for c in non_team)
+
+    pos = start_pos + 1
+
+    for cat in team_sorted:
+        await cat.edit(position=pos)
+        pos += 1
+        await asyncio.sleep(0.35)
+
+    print("TEAM categories sorted")
 
 # ====== AI/FU HELPERI ======
 def _sanitize_mm_text(s: str) -> str:
@@ -974,6 +1027,15 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
     for i in range(0, len(out), 1800):
         await interaction.followup.send(f"```\n{out[i:i+1800]}\n```", ephemeral=True)
 
+@tree.command(name="sortteam", description="sort TEAM stvari", guild=GUILD_OBJ)
+async def sortteam(interaction: discord.Interaction):
+
+    await interaction.response.defer(ephemeral=True)
+
+    await sort_team_roles(interaction.guild)
+    await sort_team_categories(interaction.guild)
+
+    await interaction.followup.send("TEAM sortiran ✅", ephemeral=True)
 
 # ---------- /resync ----------
 @tree.command(name="resync", description="force purge global + resync guild", guild=GUILD_OBJ)
