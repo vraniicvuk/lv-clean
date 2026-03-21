@@ -1038,6 +1038,42 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
     for i in range(0, len(out), 1800):
         await interaction.followup.send(f"```\n{out[i:i+1800]}\n```", ephemeral=True)
 
+@tree.command(name="sortteamcats", description="Sort TEAM categories block A-Z", guild=GUILD_OBJ)
+@need_manage_channels()
+async def sortteamcats(interaction: discord.Interaction):
+
+    await interaction.response.defer(ephemeral=True)
+
+    guild = interaction.guild
+
+    team_cats = [
+        c for c in guild.categories
+        if c.name.startswith("TEAM")
+    ]
+
+    non_team_cats = [
+        c for c in guild.categories
+        if not c.name.startswith("TEAM")
+    ]
+
+    if not non_team_cats:
+        return await interaction.followup.send("Nema NON TEAM kategorija.", ephemeral=True)
+
+    anchor_pos = max(c.position for c in non_team_cats)
+
+    team_sorted = sorted(team_cats, key=lambda c: c.name.lower())
+
+    moved = 0
+
+    for i, cat in enumerate(team_sorted):
+        try:
+            await cat.edit(position=anchor_pos + 1 + i)
+            moved += 1
+        except:
+            pass
+
+    await interaction.followup.send(f"Sorted {moved} TEAM categories.", ephemeral=True)
+
 @tree.command(name="sortteamroles", description="Sort TEAM roles block A-Z", guild=GUILD_OBJ)
 @need_manage_roles()
 async def sortteamroles(interaction: discord.Interaction):
@@ -1078,42 +1114,6 @@ async def sortteamroles(interaction: discord.Interaction):
             pass
 
     await interaction.followup.send(f"Sorted {moved} TEAM roles block.", ephemeral=True)
-
-@tree.command(name="sortteamcats", description="Sort TEAM categories block A-Z", guild=GUILD_OBJ)
-@need_manage_channels()
-async def sortteamcats(interaction: discord.Interaction):
-
-    await interaction.response.defer(ephemeral=True)
-
-    guild = interaction.guild
-
-    team_cats = [
-        c for c in guild.categories
-        if c.name.startswith("TEAM")
-    ]
-
-    non_team_cats = [
-        c for c in guild.categories
-        if not c.name.startswith("TEAM")
-    ]
-
-    if not non_team_cats:
-        return await interaction.followup.send("Nema NON TEAM kategorija.", ephemeral=True)
-
-    anchor_pos = max(c.position for c in non_team_cats)
-
-    team_sorted = sorted(team_cats, key=lambda c: c.name.lower())
-
-    moved = 0
-
-    for i, cat in enumerate(team_sorted):
-        try:
-            await cat.edit(position=anchor_pos + 1 + i)
-            moved += 1
-        except:
-            pass
-
-    await interaction.followup.send(f"Sorted {moved} TEAM categories.", ephemeral=True)
 
 # ---------- /resync ----------
 @tree.command(name="resync", description="force guild sync instant", guild=GUILD_OBJ)
