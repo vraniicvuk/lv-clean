@@ -1038,18 +1038,29 @@ async def sortteam(interaction: discord.Interaction):
     await interaction.followup.send("TEAM sortiran ✅", ephemeral=True)
 
 # ---------- /resync ----------
-@tree.command(name="resync", description="force purge global + resync guild", guild=GUILD_OBJ)
+@tree.command(name="resync", description="force guild sync instant", guild=GUILD_OBJ)
 @need_manage_roles()
 async def resync(interaction: discord.Interaction):
+
     await interaction.response.defer(ephemeral=True, thinking=True)
+
     try:
-        tree.clear_commands(guild=None); await tree.sync()  # global = 0
+
         if GUILD_OBJ is None:
-            return await interaction.followup.send("Nema GUILD_ID u .env — ne mogu guild resync.", ephemeral=True)
-        tree.clear_commands(guild=GUILD_OBJ)
+            return await interaction.followup.send("GUILD_ID nije setovan.", ephemeral=True)
+
+        # FORCE COPY GLOBAL → GUILD
+        tree.copy_global_to(guild=GUILD_OBJ)
+
         cmds = await tree.sync(guild=GUILD_OBJ)
+
         names = ", ".join(sorted(c.name for c in cmds))
-        await interaction.followup.send(f"Resync OK. Global: 0. Guild: {len(cmds)} → {names}", ephemeral=True)
+
+        await interaction.followup.send(
+            f"Guild sync OK. {len(cmds)} komandi → {names}",
+            ephemeral=True
+        )
+
     except Exception as e:
         await interaction.followup.send(f"Resync FAIL: {e}", ephemeral=True)
 
