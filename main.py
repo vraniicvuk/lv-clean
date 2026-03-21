@@ -625,6 +625,7 @@ def _resolve_alias_to_base(base: str) -> str | None:
 
 def role_from_phrase(guild: discord.Guild, phrase: str):
     base = clean_role_phrase(phrase)
+    base = base.strip()
     if not base:
         return None
 
