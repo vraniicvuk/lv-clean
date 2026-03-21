@@ -693,6 +693,17 @@ def need_manage_roles():
         raise app_commands.CheckFailure("treba ti Manage Roles.")
     return app_commands.check(predicate)
 
+def need_manage_channels():
+    async def predicate(interaction: discord.Interaction):
+        if not interaction.user.guild_permissions.manage_channels:
+            await interaction.response.send_message(
+                "Nemaš Manage Channels permisiju.",
+                ephemeral=True
+            )
+            return False
+        return True
+    return app_commands.check(predicate)
+
 async def safe_add_roles(member: discord.Member, roles: list[discord.Role], reason: str):
     added = []
     for i in range(0, len(roles), CHUNK_SIZE):
