@@ -526,6 +526,29 @@ async def generate_fus(mm_line: str) -> list[str]:
         i += 1
     return labeled[:4]
 
+STATUS_WORDS = {
+    "ra","n","vip","x","oll","ock","inb","zzz","vf","eep",
+    "jsn","bcl","bk","hnq","jaa","sa","ggn","yll","oftv",
+    "rco","tvn","tsu","kct","yr","oll"
+}
+
+def extract_model_name(entry: str) -> str:
+
+    words = entry.lower().strip().split()
+
+    model_parts = []
+
+    for w in words:
+
+        if w.isdigit():
+            continue
+
+        if w in STATUS_WORDS:
+            break
+
+        model_parts.append(w)
+
+    return " ".join(model_parts)
 
 # ---------- ROLE LOOKUP ----------
 def norm(s: str) -> str:
@@ -561,16 +584,16 @@ ALIAS_TO_BASE = {
     "KASSIEX":         "KASSIE X",
     "KASSIE":          "KASSIE X",
     "EMILYONLYF":      "EMILY ONLYF",
-    "EVAG":            "EVA",
-    "LARAG":           "LARA",
+    "EVAG":            "EVA G",
+    "LARAG":           "LARA G",
     "MAYAFOXEY":       "MAYA FOXY",
     "SKAYLARONLYF":    "SKYLAR ONLYF",
     "SYNDEY":          "SYDNEY",
     "HANAS":           "HANNAS",
     "MIAPOZZZP":       "MIAPOZZZ P",
     "LEKESSIAT":       "LEKESSIA",
-    "EMILYKOIVC":      "EMILYKOI",
-    "MOLLYVC":         "MOLLY",
+    "EMILYKOIVC":      "EMILYKOI V C",
+    "MOLLYVC":         "MOLLY V C",
     "RAVENSA":         "RAVEN",
     "MIAPOPZZ":        "MIAPOZZZ P",
     "MACCMKATIE":      "CCM KATIE",
@@ -925,20 +948,34 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
 
     # pomocne funkcije
     def parse_roles_list_with_unknowns(guild: discord.Guild, roles_text: str):
-        txt = (roles_text or "").replace("\\", "/")
-        segs = [s.strip() for s in re.split(r"[\/,;|]+", txt) if s.strip()]
-        wanted, unknown, seen = [], [], set()
-        for seg in segs:
-            base = clean_role_phrase(seg)
-            if not base:
-                continue
-            r = role_from_phrase(guild, base)
-            if r:
-                if r.id not in seen:
-                    wanted.append(r); seen.add(r.id)
-            else:
-                unknown.append(base)
-        return wanted, unknown
+
+    txt = (roles_text or "").replace("\\", "/")
+
+    segs = [s.strip() for s in re.split(r"[\/,;|]+", txt) if s.strip()]
+
+    wanted = []
+    unknown = []
+    seen = set()
+
+    for seg in segs:
+
+        model = extract_model_name(seg)
+
+        base = clean_role_phrase(model)
+
+        if not base:
+            continue
+
+        r = role_from_phrase(guild, base)
+
+        if r:
+            if r.id not in seen:
+                wanted.append(r)
+                seen.add(r.id)
+        else:
+            unknown.append(base)
+
+    return wanted, unknown
 
     def split_assignees_and_roles(first_user: str, tail: str):
         roles_text = tail
