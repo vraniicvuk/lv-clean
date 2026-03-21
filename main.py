@@ -1075,7 +1075,7 @@ async def sortteamcats(interaction: discord.Interaction):
 
     await interaction.followup.send(f"Sorted {moved} TEAM categories.", ephemeral=True)
 
-@tree.command(name="sortteamroles", description="Sort TEAM roles under NON TEAM", guild=GUILD_OBJ)
+@tree.command(name="sortteamroles", description="Bulk sort TEAM roles", guild=GUILD_OBJ)
 @need_manage_roles()
 async def sortteamroles(interaction: discord.Interaction):
 
@@ -1084,38 +1084,30 @@ async def sortteamroles(interaction: discord.Interaction):
     guild = interaction.guild
     bot_top = guild.me.top_role.position
 
-    editable_roles = [
+    editable = [
         r for r in guild.roles
         if not r.managed
         and r != guild.default_role
         and r.position < bot_top
     ]
 
-    team_roles = [r for r in editable_roles if r.name.startswith("TEAM ")]
-    non_team_roles = [r for r in editable_roles if not r.name.startswith("TEAM ")]
+    team = sorted(
+        [r for r in editable if r.name.startswith("TEAM ")],
+        key=lambda r: r.name.lower()
+    )
 
-    if not team_roles:
-        return await interaction.followup.send("TEAM roles not found.", ephemeral=True)
+    non_team = [r for r in editable if not r.name.startswith("TEAM ")]
 
-    # 🔥 SORT
-    team_roles_sorted = sorted(team_roles, key=lambda r: r.name.lower())
+    final_stack = non_team + team
 
-    # 🔥 FINAL STACK (NON TEAM pa TEAM)
-    final_stack = non_team_roles + team_roles_sorted
+    payload = {
+        role: i+1
+        for i, role in enumerate(final_stack)
+    }
 
-    moved = 0
-    pos = 1
+    await guild.edit_role_positions(payload)
 
-    for role in final_stack:
-        try:
-            await role.edit(position=pos)
-            pos += 1
-            moved += 1
-            await asyncio.sleep(1.1)
-        except Exception as e:
-            print("FAIL", role.name, e)
-
-    await interaction.followup.send(f"Rebuilt stack. Roles moved: {moved}", ephemeral=True)
+    await interaction.followup.send("TEAM roles bulk sorted.", ephemeral=True)
 
 # ---------- /resync ----------
 @tree.command(name="resync", description="force guild sync instant", guild=GUILD_OBJ)
