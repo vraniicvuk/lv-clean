@@ -947,8 +947,8 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
     if not raw_blocks:
         return await interaction.followup.send("nisam našao blokove '@user' → role…", ephemeral=True)
 
-    # pomocne funkcije
-    def parse_roles_list_with_unknowns(guild: discord.Guild, roles_text: str):
+# pomocne funkcije
+def parse_roles_list_with_unknowns(guild: discord.Guild, roles_text: str):
 
     txt = (roles_text or "").replace("\\", "/")
 
@@ -978,7 +978,7 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
 
     return wanted, unknown
 
-    def split_assignees_and_roles(first_user: str, tail: str):
+def split_assignees_and_roles(first_user: str, tail: str):
         roles_text = tail
         header_left = ""
         # format "@u1 / @u2 : roles..." ili "@u1 / @u2 roles..."
