@@ -947,52 +947,52 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
     if not raw_blocks:
         return await interaction.followup.send("nisam našao blokove '@user' → role…", ephemeral=True)
 
-# pomocne funkcije
-def parse_roles_list_with_unknowns(guild: discord.Guild, roles_text: str):
+    # pomocne funkcije
+    def parse_roles_list_with_unknowns(guild: discord.Guild, roles_text: str):
 
-    txt = (roles_text or "").replace("\\", "/")
+        txt = (roles_text or "").replace("\\", "/")
 
-    segs = [s.strip() for s in re.split(r"[\/,;|]+", txt) if s.strip()]
+        segs = [s.strip() for s in re.split(r"[\/,;|]+", txt) if s.strip()]
 
-    wanted = []
-    unknown = []
-    seen = set()
+        wanted = []
+        unknown = []
+        seen = set()
 
-    for seg in segs:
+        for seg in segs:
 
-        model = extract_model_name(seg)
+            model = extract_model_name(seg)
 
-        base = clean_role_phrase(model)
+            base = clean_role_phrase(model)
 
-        if not base:
-            continue
+            if not base:
+                continue
 
-        r = role_from_phrase(guild, base)
+            r = role_from_phrase(guild, base)
 
-        if r:
-            if r.id not in seen:
-                wanted.append(r)
-                seen.add(r.id)
-        else:
-            unknown.append(base)
+            if r:
+                if r.id not in seen:
+                    wanted.append(r)
+                    seen.add(r.id)
+            else:
+                unknown.append(base)
 
-    return wanted, unknown
+        return wanted, unknown
 
-def split_assignees_and_roles(first_user: str, tail: str):
-        roles_text = tail
-        header_left = ""
-        # format "@u1 / @u2 : roles..." ili "@u1 / @u2 roles..."
-        if ":" in tail:
-            header_left, roles_text = tail.split(":", 1)
-        else:
-            m2 = re.match(r"^\s*((?:[@<].*?>|\@\S+)(?:\s*[/,;|]\s*(?:[@<].*?>|\@\S+))*)\s+(.*)$", tail)
-            if m2:
-                header_left = m2.group(1)
-                roles_text  = m2.group(2)
-        assignees = [first_user]
-        if header_left:
-            assignees += re.findall(r"(@\S+|\<@!?[\d]+\>)", header_left)
-        return assignees, roles_text.strip()
+    def split_assignees_and_roles(first_user: str, tail: str):
+            roles_text = tail
+            header_left = ""
+            # format "@u1 / @u2 : roles..." ili "@u1 / @u2 roles..."
+            if ":" in tail:
+                header_left, roles_text = tail.split(":", 1)
+            else:
+                m2 = re.match(r"^\s*((?:[@<].*?>|\@\S+)(?:\s*[/,;|]\s*(?:[@<].*?>|\@\S+))*)\s+(.*)$", tail)
+                if m2:
+                    header_left = m2.group(1)
+                    roles_text  = m2.group(2)
+            assignees = [first_user]
+            if header_left:
+                assignees += re.findall(r"(@\S+|\<@!?[\d]+\>)", header_left)
+            return assignees, roles_text.strip()
 
     report = []
     total_ops_add = 0
