@@ -1096,18 +1096,25 @@ async def sortteamroles(interaction: discord.Interaction):
         key=lambda r: r.name.lower()
     )
 
-    non_team = [r for r in editable if not r.name.startswith("TEAM ")]
+    non_team = sorted(
+        [r for r in editable if not r.name.startswith("TEAM ")],
+        key=lambda r: r.position,
+        reverse=True   # da zadrži postojeći red gore
+    )
 
     final_stack = non_team + team
 
+    # 🔥 OVO JE KLJUČ
+    final_stack.reverse()
+
     payload = {
-        role: i+1
+        role: i + 1
         for i, role in enumerate(final_stack)
     }
 
     await guild.edit_role_positions(payload)
 
-    await interaction.followup.send("TEAM roles bulk sorted.", ephemeral=True)
+    await interaction.followup.send("Roles sorted: NON TEAM top → TEAM A-Z bottom", ephemeral=True)
 
 # ---------- /resync ----------
 @tree.command(name="resync", description="force guild sync instant", guild=GUILD_OBJ)
