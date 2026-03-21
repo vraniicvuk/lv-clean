@@ -1048,18 +1048,18 @@ async def sortteamcats(interaction: discord.Interaction):
 
     team_cats = [
         c for c in guild.categories
-        if c.name.startswith("TEAM")
+        if c.name.upper().startswith("TEAM ")
     ]
 
     non_team_cats = [
         c for c in guild.categories
-        if not c.name.startswith("TEAM")
+        if not c.name.upper().startswith("TEAM ")
     ]
 
     if not non_team_cats:
         return await interaction.followup.send("Nema NON TEAM kategorija.", ephemeral=True)
 
-    anchor_pos = max(c.position for c in non_team_cats)
+    anchor = max(c.position for c in non_team_cats)
 
     team_sorted = sorted(team_cats, key=lambda c: c.name.lower())
 
@@ -1067,8 +1067,9 @@ async def sortteamcats(interaction: discord.Interaction):
 
     for i, cat in enumerate(team_sorted):
         try:
-            await cat.edit(position=anchor_pos + 1 + i)
+            await cat.edit(position = anchor + 1 + i)
             moved += 1
+            await asyncio.sleep(0.4)
         except:
             pass
 
@@ -1085,14 +1086,14 @@ async def sortteamroles(interaction: discord.Interaction):
 
     team_roles = [
         r for r in guild.roles
-        if r.name.startswith("TEAM")
+        if r.name.upper().startswith("TEAM ")
         and not r.managed
         and r.position < bot_top
     ]
 
     non_team_roles = [
         r for r in guild.roles
-        if not r.name.startswith("TEAM")
+        if not r.name.upper().startswith("TEAM ")
         and not r.managed
         and r.position < bot_top
     ]
@@ -1100,7 +1101,7 @@ async def sortteamroles(interaction: discord.Interaction):
     if not non_team_roles:
         return await interaction.followup.send("Nema anchor NON TEAM role.", ephemeral=True)
 
-    anchor_pos = min(r.position for r in non_team_roles)
+    anchor = max(r.position for r in non_team_roles)
 
     team_sorted = sorted(team_roles, key=lambda r: r.name.lower())
 
@@ -1108,12 +1109,13 @@ async def sortteamroles(interaction: discord.Interaction):
 
     for i, role in enumerate(team_sorted):
         try:
-            await role.edit(position=anchor_pos - 1 - i)
+            await role.edit(position = anchor + 1 + i)
             moved += 1
+            await asyncio.sleep(0.4)
         except:
             pass
 
-    await interaction.followup.send(f"Sorted {moved} TEAM roles block.", ephemeral=True)
+    await interaction.followup.send(f"Sorted {moved} TEAM roles.", ephemeral=True)
 
 # ---------- /resync ----------
 @tree.command(name="resync", description="force guild sync instant", guild=GUILD_OBJ)
