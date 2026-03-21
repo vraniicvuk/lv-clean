@@ -1075,7 +1075,7 @@ async def sortteamcats(interaction: discord.Interaction):
 
     await interaction.followup.send(f"Sorted {moved} TEAM categories.", ephemeral=True)
 
-@tree.command(name="sortteamroles", description="Sort TEAM roles block A-Z", guild=GUILD_OBJ)
+@tree.command(name="sortteamroles", description="Sort TEAM roles under NON TEAM", guild=GUILD_OBJ)
 @need_manage_roles()
 async def sortteamroles(interaction: discord.Interaction):
 
@@ -1084,24 +1084,31 @@ async def sortteamroles(interaction: discord.Interaction):
     guild = interaction.guild
     bot_top = guild.me.top_role.position
 
+    def is_team(role):
+        return role.name.strip().upper().startswith("TEAM")
+
     team_roles = [
         r for r in guild.roles
-        if r.name.upper().startswith("TEAM ")
+        if is_team(r)
         and not r.managed
         and r.position < bot_top
+        and r != guild.default_role
     ]
 
     non_team_roles = [
         r for r in guild.roles
-        if not r.name.upper().startswith("TEAM ")
+        if not is_team(r)
         and not r.managed
         and r.position < bot_top
+        and r != guild.default_role
     ]
 
-    if not non_team_roles:
-        return await interaction.followup.send("No NON TEAM roles.", ephemeral=True)
+    if not team_roles:
+        return await interaction.followup.send(
+            f"Nijedna TEAM rola nije pronađena. Roles total: {len(guild.roles)}",
+            ephemeral=True
+        )
 
-    # 👇 OVO JE KLJUČ
     anchor = min(r.position for r in non_team_roles)
 
     team_sorted = sorted(team_roles, key=lambda r: r.name.lower())
@@ -1111,12 +1118,12 @@ async def sortteamroles(interaction: discord.Interaction):
 
     for role in team_sorted:
         try:
-            await role.edit(position = pos)
+            await role.edit(position=pos)
             pos -= 1
             moved += 1
-            await asyncio.sleep(1)
-        except:
-            pass
+            await asyncio.sleep(1.2)
+        except Exception as e:
+            print("FAIL:", role.name, e)
 
     await interaction.followup.send(f"Sorted {moved} TEAM roles.", ephemeral=True)
 
