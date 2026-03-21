@@ -1099,19 +1099,22 @@ async def sortteamroles(interaction: discord.Interaction):
     ]
 
     if not non_team_roles:
-        return await interaction.followup.send("Nema anchor NON TEAM role.", ephemeral=True)
+        return await interaction.followup.send("No NON TEAM roles.", ephemeral=True)
 
-    anchor = max(r.position for r in non_team_roles)
+    # 👇 OVO JE KLJUČ
+    anchor = min(r.position for r in non_team_roles)
 
     team_sorted = sorted(team_roles, key=lambda r: r.name.lower())
 
     moved = 0
+    pos = anchor - 1
 
-    for i, role in enumerate(team_sorted):
+    for role in team_sorted:
         try:
-            await role.edit(position = anchor + 1 + i)
+            await role.edit(position = pos)
+            pos -= 1
             moved += 1
-            await asyncio.sleep(0.4)
+            await asyncio.sleep(1)
         except:
             pass
 
