@@ -1128,9 +1128,6 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
               f"SCHEDULE APPLY done (removed={total_ops_rm}, added={total_ops_add})\n")
     out = header + "\n".join(report)
 
-if suggestions:
-    report_line += f" (maybe: {', '.join(suggestions[:3])})"
-
     if global_unknown:
         dedup = sorted({u for u in global_unknown})
         out += "\n\nUNKNOWN MODELS (no matching role found):\n- " + "\n- ".join(dedup)
