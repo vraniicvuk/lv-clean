@@ -5,6 +5,7 @@
 
 import os
 import re
+import unicodedata
 import asyncio
 import random
 import discord
@@ -33,6 +34,11 @@ client = OpenAI(api_key=OPENAI_API_KEY) if (USE_AI_FU and OPENAI_API_KEY) else N
 if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN nije setovan u .env")
 
+STOPWORDS = {
+    "vip","free","paid","oll","ock","ra","inb","eep","tsu","jsn",
+    "vf","ggn","bcl","hnq","bk","sa","tvn","yll","oftv","kct",
+    "trans","sexy","zzz","x","c","g"
+}
 
 # ---------- TUNABLES ----------
 SLEEP_BETWEEN_CALLS = 0.35
@@ -45,6 +51,7 @@ PROGRESS_EVERY_N    = 5
 KEEP_ROLE_NAMES = {
     "AFTERNOON", "GRAVEYARD", "MAIN", "OBUKA", "LV CHATTER"
 }
+role_index = {}
 
 # ---------- BOT ----------
 INTENTS = discord.Intents.default()
@@ -62,6 +69,31 @@ MM_SUMMARY_CHANNEL_ID = 1433577356437491774
 
 # ==== anti-spam za AI pozive ====
 AI_BLOCKED_UNTIL = None
+
+def extract_core_name(name: str):
+
+    name = name.lower()
+    name = name.replace("/", " ")
+    name = re.sub(r"\d+", " ", name)
+
+    parts = name.split()
+
+    clean = []
+
+    for p in parts:
+
+        if len(p) <= 2:
+            continue
+
+        if p in STOPWORDS:
+            continue
+
+        clean.append(p)
+
+    if not clean:
+        return name.strip()
+
+    return clean[0]
 
 def ai_available():
     return (AI_BLOCKED_UNTIL is None) or (datetime.utcnow() >= AI_BLOCKED_UNTIL)
@@ -551,16 +583,16 @@ def extract_model_name(entry: str) -> str:
 
     return " ".join(model_parts)
 
-def normalize_model_name(s: str):
+def normalize_model_name(name: str):
 
-    s = s.lower()
+    core = extract_core_name(name)
 
-    s = re.sub(r"[^a-z0-9\s]", " ", s)
+    core = unicodedata.normalize("NFKD", core)
+    core = "".join(c for c in core if not unicodedata.combining(c))
 
-    s = re.sub(r"\s+", " ", s).strip()
+    core = re.sub(r"[^a-z0-9]", "", core)
 
-    return s
-
+    return core
 
 def similarity(a: str, b: str):
 
@@ -643,51 +675,24 @@ def role_from_phrase(guild, phrase):
 
     base = normalize_model_name(phrase)
 
-    candidates = []
+    if base in role_index:
+        return role_index[base][0]
 
-    for r in guild.roles:
+    best = None
+    best_score = 0
 
-        name = r.name.lower()
+    for k, roles in role_index.items():
 
-        if not name.startswith("team "):
-            continue
+        score = similarity(base, k)
 
-        role_model = normalize_model_name(name.replace("team ", ""))
+        if score > best_score:
+            best_score = score
+            best = roles[0]
 
-        # 1️⃣ perfect match
-        if role_model == base:
-            return r
+    if best_score >= 0.72:
+        return best
 
-        # 2️⃣ whole word match protection (millie vs millie moon)
-        if base in role_model.split():
-            candidates.append((0.85, r))
-            continue
-
-        # 3️⃣ prefix match (axel vs axel y dani)
-        if role_model.startswith(base + " "):
-            candidates.append((0.9, r))
-            continue
-
-        # 4️⃣ similarity
-        score = similarity(base, role_model)
-
-        if score >= 0.82:
-            candidates.append((score, r))
-
-    if not candidates:
-        return None
-
-    # uzmi najbolji score
-    candidates.sort(key=lambda x: x[0], reverse=True)
-
-    best_score, best_role = candidates[0]
-
-    # safety: ako ima drugi blizu — ne matchuj
-    if len(candidates) > 1:
-        if abs(best_score - candidates[1][0]) < 0.05:
-            return None
-
-    return best_role
+    return None
 
 def parse_roles_from_text(guild: discord.Guild, text: str) -> list[discord.Role]:
     ids = re.findall(r"<@&(\d+)>", text or "")
@@ -962,8 +967,31 @@ async def farm(interaction: discord.Interaction):
     description="Nalepi raspored (podržava @u1 / @u2), auto: očisti TEAM role pa dodeli nove; apply=false=preview",
     guild=GUILD_OBJ
 )
+role_index = {}
 @need_manage_roles()
 async def schedule(interaction: discord.Interaction, text: str, apply: bool = False):
+
+    global role_index
+    role_index = {}
+
+    for r in guild.roles:
+
+        if not r.name.lower().startswith("team "):
+            continue
+
+        base = normalize_model_name(r.name[5:])
+        role_index.setdefault(base, []).append(r)
+
+    if not role_index:
+
+        for r in guild.roles:
+
+            if not r.name.lower().startswith("team "):
+                continue
+
+            base = normalize_model_name(r.name[5:])
+            role_index.setdefault(base, []).append(r)
+    
     await interaction.response.defer(ephemeral=True, thinking=True)
     guild = interaction.guild
     bot_member = guild.me
@@ -1069,7 +1097,6 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
                     msg += f" | unknown: {', '.join(unknown_here)}"
                 report.append(msg)
                 continue
-
             # APPLY
             try:
                 if bot_touchable_model_roles:
@@ -1100,6 +1127,9 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
               if not apply else
               f"SCHEDULE APPLY done (removed={total_ops_rm}, added={total_ops_add})\n")
     out = header + "\n".join(report)
+
+if suggestions:
+    report_line += f" (maybe: {', '.join(suggestions[:3])})"
 
     if global_unknown:
         dedup = sorted({u for u in global_unknown})
