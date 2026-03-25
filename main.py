@@ -971,6 +971,9 @@ async def farm(interaction: discord.Interaction):
 @need_manage_roles()
 async def schedule(interaction: discord.Interaction, text: str, apply: bool = False):
 
+    guild = interaction.guild
+    bot_member = guild.me
+    
     global role_index
     role_index = {}
 
@@ -993,8 +996,6 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
             role_index.setdefault(base, []).append(r)
     
     await interaction.response.defer(ephemeral=True, thinking=True)
-    guild = interaction.guild
-    bot_member = guild.me
 
     # normalizacija slash / i razbijanje po blokovima @user...
     text_norm = (text or "").replace("⁄", "/").replace("／", "/")
