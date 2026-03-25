@@ -15,6 +15,7 @@ from discord import TextStyle
 from dotenv import load_dotenv
 from datetime import datetime, time, timedelta
 from openai import OpenAI
+from difflib import SequenceMatcher
 
 # --- env first ---
 load_dotenv()
@@ -550,6 +551,21 @@ def extract_model_name(entry: str) -> str:
 
     return " ".join(model_parts)
 
+def normalize_model_name(s: str):
+
+    s = s.lower()
+
+    s = re.sub(r"[^a-z0-9\s]", " ", s)
+
+    s = re.sub(r"\s+", " ", s).strip()
+
+    return s
+
+
+def similarity(a: str, b: str):
+
+    return SequenceMatcher(None, a, b).ratio()
+
 # ---------- ROLE LOOKUP ----------
 def norm(s: str) -> str:
     return re.sub(r"[^A-Z0-9]+", "", (s or "").upper())
@@ -623,39 +639,55 @@ def _resolve_alias_to_base(base: str) -> str | None:
             return ALIAS_TO_BASE[key]
     return None
 
-def role_from_phrase(guild: discord.Guild, phrase: str):
-    base = clean_role_phrase(phrase)
-    base = base.strip()
-    if not base:
+def role_from_phrase(guild, phrase):
+
+    base = normalize_model_name(phrase)
+
+    candidates = []
+
+    for r in guild.roles:
+
+        name = r.name.lower()
+
+        if not name.startswith("team "):
+            continue
+
+        role_model = normalize_model_name(name.replace("team ", ""))
+
+        # 1️⃣ perfect match
+        if role_model == base:
+            return r
+
+        # 2️⃣ whole word match protection (millie vs millie moon)
+        if base in role_model.split():
+            candidates.append((0.85, r))
+            continue
+
+        # 3️⃣ prefix match (axel vs axel y dani)
+        if role_model.startswith(base + " "):
+            candidates.append((0.9, r))
+            continue
+
+        # 4️⃣ similarity
+        score = similarity(base, role_model)
+
+        if score >= 0.82:
+            candidates.append((score, r))
+
+    if not candidates:
         return None
 
-    resolved = _resolve_alias_to_base(base)
-    if resolved:
-        base = resolved
+    # uzmi najbolji score
+    candidates.sort(key=lambda x: x[0], reverse=True)
 
-    by_norm, by_no_team = build_role_index(guild)
+    best_score, best_role = candidates[0]
 
-    r = discord.utils.get(guild.roles, name=base)
-    if r:
-        return r
+    # safety: ako ima drugi blizu — ne matchuj
+    if len(candidates) > 1:
+        if abs(best_score - candidates[1][0]) < 0.05:
+            return None
 
-    team_name = f"TEAM {base}"
-    r = discord.utils.get(guild.roles, name=team_name)
-    if r:
-        return r
-
-    n_base = norm(base)
-    if n_base in by_norm:
-        return by_norm[n_base]
-
-    n_team = norm(team_name)
-    if n_team in by_norm:
-        return by_norm[n_team]
-
-    if n_base in by_no_team:
-        return by_no_team[n_base]
-
-    return None
+    return best_role
 
 def parse_roles_from_text(guild: discord.Guild, text: str) -> list[discord.Role]:
     ids = re.findall(r"<@&(\d+)>", text or "")
