@@ -967,7 +967,7 @@ async def farm(interaction: discord.Interaction):
     description="Nalepi raspored (podržava @u1 / @u2), auto: očisti TEAM role pa dodeli nove; apply=false=preview",
     guild=GUILD_OBJ
 )
-role_index = {}
+
 @need_manage_roles()
 async def schedule(interaction: discord.Interaction, text: str, apply: bool = False):
 
