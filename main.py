@@ -1214,6 +1214,102 @@ async def sortteamroles(interaction: discord.Interaction):
 
     await interaction.followup.send("Roles sorted: NON TEAM top → TEAM A-Z bottom", ephemeral=True)
 
+# ========== /newm - NOVI MODEL (rola + kategorija + kanali + welcome poruka) ==========
+@tree.command(
+    name="newm",
+    description="Napravi novi model: TEAM rolu + TEAM kategoriju + #general i #whales + welcome poruku",
+    guild=GUILD_OBJ
+)
+@need_manage_roles()
+@need_manage_channels()
+async def new_model(interaction: discord.Interaction, ime: str):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    guild = interaction.guild
+
+    # --- čišćenje imena ---
+    model_name = ime.strip()
+    if not model_name:
+        return await interaction.followup.send("❌ Ime modela ne može biti prazno.", ephemeral=True)
+
+    role_name = f"TEAM {model_name.title()}"
+    category_name = f"TEAM {model_name.title()}"
+
+    # --- provera da li već postoji ---
+    if discord.utils.get(guild.roles, name=role_name):
+        return await interaction.followup.send(f"❌ Rola **{role_name}** već postoji!", ephemeral=True)
+    if discord.utils.get(guild.categories, name=category_name):
+        return await interaction.followup.send(f"❌ Kategorija **{category_name}** već postoji!", ephemeral=True)
+
+    try:
+        # 1. Kreiraj rolu
+        new_role = await guild.create_role(
+            name=role_name,
+            colour=discord.Colour(0x2b2d31),
+            mentionable=True,
+            reason=f"Novi model kreiran preko /newm od {interaction.user}"
+        )
+
+        # 2. Kreiraj kategoriju (samo nova rola ima pristup)
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            new_role: discord.PermissionOverwrite(view_channel=True)
+        }
+
+        new_category = await guild.create_category(
+            name=category_name,
+            overwrites=overwrites,
+            reason=f"Novi model kreiran preko /newm od {interaction.user}"
+        )
+
+        # 3. Kreiraj kanale
+        general = await new_category.create_text_channel(
+            "general",
+            reason=f"Novi model kreiran preko /newm od {interaction.user}"
+        )
+
+        whales = await new_category.create_text_channel(
+            "whales",
+            reason=f"Novi model kreiran preko /newm od {interaction.user}"
+        )
+
+        # 4. Pošalji welcome poruku u #general
+        welcome_message = (
+            "Ovo je kanal u koji se upisuju sve bitne stavke vezane za model, spendere, ostale fanove i slično.\n\n"
+            "Ukoliko ste imali farmu, nju upisujete u kanalu **#whales** koristeći komandu `/farm` uz sve adekvatne podatke.\n\n"
+            "Ako vam je potrebno više informacija od onih koje već imate o modelu, obavezno to napišite u grupnom chatu vaše smene na Telegramu, "
+            "uz odgovarajuće tagove (supervizor / management communications – npr. joshiepooh, daddysmurf itd.).\n\n"
+            "Što se tiče customa – ako nema dovoljno informacija, a fan je mali spender, možete odokativno napraviti pitch za nešto „ekskluzivno“ za određenu sumu. "
+            "Ako prođe i uzmu se pare, tada se dodatni detalji mogu tražiti u grupi.\n\n"
+            "Ne pitati za custome fanove koji su potrošili 0 ili su tek došli.\n\n"
+            "Za sve lične podatke koji nisu navedeni u postojećim informacijama, dozvoljeno je odokativno improvizovati, uz obavezno upisivanje u notes šta je izmišljeno. "
+            "**Bitno: ne lagati o ozbiljnim i lako proverljivim stvarima (npr. porodica, osetljive teme). Sitnice poput omiljene boje su okej.**"
+        )
+
+        await general.send(welcome_message)
+
+        # 5. Sortiraj role i kategorije
+        await sort_team_roles(guild)
+        await sort_team_categories(guild)
+
+        # --- finalni embed odgovor ---
+        embed = discord.Embed(
+            title="✅ Novi model uspešno kreiran!",
+            color=0x00ff00
+        )
+        embed.add_field(name="Rola", value=f"`{new_role.name}`", inline=False)
+        embed.add_field(name="Kategorija", value=f"`{new_category.name}`", inline=False)
+        embed.add_field(name="Kanali", value=f"{general.mention}\n{whales.mention}", inline=False)
+        embed.add_field(name="Welcome poruka", value="Poslata u #general", inline=False)
+        embed.set_footer(text=f"Kreirao: {interaction.user}")
+
+        await interaction.followup.send(embed=embed)
+        print(f"[NEW MODEL] Uspešno kreiran: {role_name} | {category_name}")
+
+    except discord.Forbidden:
+        await interaction.followup.send("❌ Nemam dovoljne dozvole (Manage Roles + Manage Channels).", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Došlo je do greške: {e}", ephemeral=True)
+
 # ---------- /resync ----------
 @tree.command(name="resync", description="force guild sync instant", guild=GUILD_OBJ)
 @need_manage_roles()
