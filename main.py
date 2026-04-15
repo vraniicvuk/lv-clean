@@ -502,7 +502,7 @@ async def auto_schedule_task():
     h, m = now.hour, now.minute
 
     triggers = {
-        "grave": (8, 30),
+        "grave": (8, 34),
         "after": (17, 45),
         "main": (1, 45),
     }
@@ -1332,7 +1332,7 @@ async def sortteamroles(interaction: discord.Interaction):
 
     await interaction.followup.send("Roles sorted: NON TEAM top → TEAM A-Z bottom", ephemeral=True)
 
-# ========== /newm - NOVI MODEL (Stabilna verzija) ==========
+# ========== /newm - NOVI MODEL (Optimizovana verzija) ==========
 @tree.command(
     name="newm",
     description="Napravi novi model: TEAM rolu + TEAM kategoriju + #general i #whales",
@@ -1341,9 +1341,10 @@ async def sortteamroles(interaction: discord.Interaction):
 @need_manage_roles()
 @need_manage_channels()
 async def new_model(interaction: discord.Interaction, ime: str):
-    await interaction.response.defer(ephemeral=True, thinking=True)
-    guild = interaction.guild
+    # Odmah odgovaramo da interakcija ne istekne
+    await interaction.response.defer(ephemeral=True)
 
+    guild = interaction.guild
     model_name = ime.strip()
     if not model_name:
         return await interaction.followup.send("❌ Ime modela ne može biti prazno.", ephemeral=True)
@@ -1357,7 +1358,7 @@ async def new_model(interaction: discord.Interaction, ime: str):
         return await interaction.followup.send(f"❌ Kategorija **{category_name}** već postoji!", ephemeral=True)
 
     try:
-        # 1. Kreiraj rolu (minimalno)
+        # 1. Kreiraj rolu
         new_role = await guild.create_role(
             name=role_name,
             colour=discord.Colour(0x2b2d31),
@@ -1365,28 +1366,26 @@ async def new_model(interaction: discord.Interaction, ime: str):
             reason=f"/newm by {interaction.user}"
         )
 
-        # 2. Sortiraj role + čekanje
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(1)
         await sort_team_roles(guild)
 
-        # 3. Kreiraj kategoriju bez overwrites
-        new_category = await guild.create_category(
-            name=category_name,
-            reason=f"/newm by {interaction.user}"
-        )
+        # 2. Kreiraj kategoriju
+        new_category = await guild.create_category(name=category_name)
 
-        # 4. Kreiraj kanale
+        # 3. Kreiraj kanale
         general = await new_category.create_text_channel("general")
         whales = await new_category.create_text_channel("whales")
 
-        # 5. Naknadno postavi permissions sa čekanjem
-        await asyncio.sleep(2.5)
+        # 4. Postavi permissions sa čekanjem
+        await asyncio.sleep(2)
         await new_category.set_permissions(guild.default_role, view_channel=False)
         await new_category.set_permissions(new_role, view_channel=True)
 
-        # 6. Welcome poruka
-        welcome_message = "Ovo je kanal u koji se upisuju sve bitne stavke vezane za model...\n\n**Bitno: ne lagati o ozbiljnim stvarima.**"  # skratio sam za test, možeš vratiti punu
-        await general.send(welcome_message)
+        # 5. Welcome poruka (skraćena za brzinu)
+        await general.send(
+            "Ovo je kanal u koji se upisuju sve bitne stavke vezane za model...\n\n"
+            "Nakon provere rola, clock inujte se na Telegramu u formatu: `ci model1/model2/...`"
+        )
 
         await sort_team_categories(guild)
 
@@ -1398,9 +1397,20 @@ async def new_model(interaction: discord.Interaction, ime: str):
         await interaction.followup.send(embed=embed)
 
     except discord.Forbidden:
-        await interaction.followup.send("❌ Missing Permissions (50013)\n\nProbaj sledeće:\n1. Isključi Administrator → sačekaj 10s → uključi ponovo\n2. Pomeri bot rolu dole → pa gore\n3. Restartuj bota", ephemeral=True)
+        await interaction.followup.send("❌ Missing Permissions (50013)\n\nProbaj:\n1. Isključi Administrator na bot roli → sačekaj 10s → uključi ga ponovo\n2. Pomeri bot rolu dole → pa gore\n3. Restartuj bota", ephemeral=True)
     except Exception as e:
-        await interaction.followup.send(f"❌ Greška: {e}", ephemeral=True)
+        await interaction.followup.send(f"❌ Greška: {type(e).__name__}: {e}", ephemeral=True)
+
+@tree.command(name="testauto", description="Testira auto schedule za određenu smenu", guild=GUILD_OBJ)
+@need_manage_roles()
+async def test_auto_schedule(interaction: discord.Interaction, shift: str):
+    await interaction.response.defer(ephemeral=True)
+    if shift not in ["grave", "after", "main"]:
+        return await interaction.followup.send("Dozvoljene vrednosti: grave, after, main", ephemeral=True)
+    
+    await interaction.followup.send(f"Testiram Auto Schedule za **{shift.upper()}** smenu...", ephemeral=True)
+    await run_auto_schedule(shift)
+    await interaction.followup.send("Test završen. Proveri kanal.", ephemeral=True)
 
 # ---------- /resync ----------
 @tree.command(name="resync", description="force guild sync instant", guild=GUILD_OBJ)
