@@ -1560,10 +1560,9 @@ async def sortteamroles(interaction: discord.Interaction):
     )
 
 # /newm
-# ========== /newm - NOVI MODEL (rola + kategorija + kanali + welcome poruka) ==========
 @tree.command(
-    name="newm",    name="newm",
-    description="Napravi novi model: TEAM rolu + TEAM kategoriju + #general i #whales + welcome poruku",
+    name="newm",
+    description="Napravi novi model",
     guild=GUILD_OBJ
 )
 @need_manage_roles()
@@ -1572,19 +1571,12 @@ async def new_model(interaction: discord.Interaction, ime: str):
     await interaction.response.defer(ephemeral=True, thinking=True)
     guild = interaction.guild
 
-    model_name = ime.strip().title()
-
-    if not model_name:
-        return await interaction.followup.send("❌ Ime modela ne može biti prazno.", ephemeral=True)
-
+    model_name = ime.strip().upper()
     role_name = f"TEAM {model_name}"
     category_name = f"TEAM {model_name}"
 
-
     if discord.utils.get(guild.roles, name=role_name):
         return await interaction.followup.send(f"❌ Rola **{role_name}** već postoji!", ephemeral=True)
-    if discord.utils.get(guild.categories, name=category_name):
-        return await interaction.followup.send(f"❌ Kategorija **{category_name}** već postoji!", ephemeral=True)
 
     try:
         # 1. Kreiraj rolu
@@ -1592,31 +1584,24 @@ async def new_model(interaction: discord.Interaction, ime: str):
             name=role_name,
             colour=discord.Colour(0x2b2d31),
             mentionable=True,
-            reason=f"/newm by {interaction.user}"            reason=f"/newm by {interaction.user}"
+            reason=f"/newm by {interaction.user}"
         )
 
-        # 2. Kreiraj kategoriju BEZ overwrites prvo
+        await asyncio.sleep(3)
+        await sort_team_roles(guild)
 
-
-
-
-
-        new_category = await guild.create_category(
-            name=category_name,
-            reason=f"/newm by {interaction.user}"            reason=f"/newm by {interaction.user}"
-
-        )
+        # 2. Kreiraj kategoriju (bez overwrites)
+        new_category = await guild.create_category(name=category_name)
 
         # 3. Kreiraj kanale
         general = await new_category.create_text_channel("general")
         whales = await new_category.create_text_channel("whales")
 
-
-
-        # 4. Naknadno postavi permissions (ovo je ključni deo koji rešava grešku)
+        # 4. Postavi permisije sa dužim čekanjem
+        await asyncio.sleep(5)
         await new_category.set_permissions(guild.default_role, view_channel=False)
+        await asyncio.sleep(3)
         await new_category.set_permissions(new_role, view_channel=True)
-
 
         # 5. Welcome poruka
         welcome_message = (
@@ -1630,29 +1615,24 @@ async def new_model(interaction: discord.Interaction, ime: str):
             "Za sve lične podatke koji nisu navedeni u postojećim informacijama, dozvoljeno je odokativno improvizovati, uz obavezno upisivanje u notes šta je izmišljeno. "
             "**Bitno: ne lagati o ozbiljnim i lako proverljivim stvarima (npr. porodica, osetljive teme). Sitnice poput omiljene boje su okej.**"
         )
-
         await general.send(welcome_message)
 
-        # 6. Sortiranje
-        await sort_team_roles(guild)
         await sort_team_categories(guild)
 
         embed = discord.Embed(title="✅ Novi model uspešno kreiran!", color=0x00ff00)
         embed.add_field(name="Rola", value=f"`{role_name}`", inline=False)
         embed.add_field(name="Kategorija", value=f"`{category_name}`", inline=False)
-
-
-
-
         embed.add_field(name="Kanali", value=f"{general.mention}\n{whales.mention}", inline=False)
-
-        embed.set_footer(text=f"Kreirao: {interaction.user}")
-
         await interaction.followup.send(embed=embed)
-        print(f"[NEW MODEL] Uspešno: {role_name}")
 
     except discord.Forbidden as e:
-        await interaction.followup.send(f"❌ Missing Permissions: {e}\n\nProveri da li je botova rola **iznad** svih TEAM rola i ima Administrator.", ephemeral=True)
+        await interaction.followup.send(
+            f"❌ **Missing Permissions (50013)**\n\n"
+            "Bot nema prava da kreira kategoriju/kanale.\n"
+            "Proveri da li bot rola ima **Manage Channels** i da je **skroz na vrhu** liste rola.\n"
+            "Pokušaj da pomeriš rolu dole pa nazad gore i restartuj bota.",
+            ephemeral=True
+        )
     except Exception as e:
         await interaction.followup.send(f"❌ Greška: {e}", ephemeral=True)
 
