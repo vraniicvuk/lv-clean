@@ -1560,7 +1560,6 @@ async def sortteamroles(interaction: discord.Interaction):
     )
 
 
-# ========== /newm - PUNA VERZIJA SA BOLJIM HANDLINGOM ==========
 @tree.command(name="newm", description="Napravi novi model (rola + kategorija + kanali)", guild=GUILD_OBJ)
 @need_manage_roles()
 @need_manage_channels()
@@ -1579,61 +1578,65 @@ async def new_model(interaction: discord.Interaction, ime: str):
             mentionable=True,
             reason=f"/newm by {interaction.user}"
         )
-        print(f"[NEW M] Kreirana rola: {role_name}")
+        print(f"[NEW M] Rola kreirana: {role_name}")
 
-        # 2. Sortiraj role (da bot bude iznad nove role)
+        # 2. Više puta sortiraj role (da bot bude sigurno iznad)
         await asyncio.sleep(2)
         await sort_team_roles(guild)
+        await asyncio.sleep(2)
+        await sort_team_roles(guild)   # ponovimo još jednom
 
-        # 3. Kreiraj kategoriju
-        new_category = await guild.create_category(
-            name=category_name,
-            reason=f"/newm by {interaction.user}"
-        )
-        print(f"[NEW M] Kreirana kategorija: {category_name}")
+        # 3. Kreiraj kategoriju BEZ overwrites prvo
+        new_category = await guild.create_category(name=category_name)
+        print(f"[NEW M] Kategorija kreirana: {category_name}")
 
-        # 4. Kreiraj kanale unutar kategorije
+        # 4. Kreiraj kanale
         general = await new_category.create_text_channel("general")
         whales = await new_category.create_text_channel("whales")
-        print(f"[NEW M] Kreirani kanali: general i whales")
+        print("[NEW M] Kanali kreirani")
 
-        # 5. Postavi permisije
-        await asyncio.sleep(3)
+        # 5. Postavi permisije sa delay-em
+        await asyncio.sleep(4)
         await new_category.set_permissions(guild.default_role, view_channel=False)
+        await asyncio.sleep(2)
         await new_category.set_permissions(new_role, view_channel=True)
         print("[NEW M] Permisije postavljene")
 
-        # 6. Pošalji welcome poruku u #general
-        welcome_text = (
-            "Ovo je kanal u koji se upisuju sve bitne stavke vezane za model, spendere, ostale fanove i slično.\n\n"
-            "Ukoliko ste imali farmu, nju upisujete u kanalu #whales koristeći komandu /farm uz sve adekvatne podatke.\n"
-            "Ako vam je potrebno više informacija od onih koje već imate o modelu, obavezno to napišite u grupnom chatu vaše smene na Telegramu, uz odgovarajuće tagove (supervizor / management communications – npr. joshiepooh, daddysmurf itd.).\n\n"
-            "Što se tiče customa – ako nema dovoljno informacija, a fan je mali spender, možete odokativno napraviti pitch za nešto “ekskluzivno” za određenu sumu. Ako prođe i uzmu se pare, tada se dodatni detalji mogu tražiti u grupi.\n"
-            "Ne pitati za custome fanove koji su potrošili 0 ili su tek došli.\n\n"
-            "Za sve lične podatke koji nisu navedeni u postojećim informacijama, dozvoljeno je odokativno improvizovati, uz obavezno upisivanje u notes šta je izmišljeno. Bitno: ne lagati o ozbiljnim i lako proverljivim stvarima (npr. porodica, osetljive teme). Sitnice poput omiljene boje su okej."
-        )
+        # 6. Welcome poruka
+        welcome_text = """Ovo je kanal u koji se upisuju sve bitne stavke vezane za model, spendere, ostale fanove i slično.
+
+Ukoliko ste imali farmu, nju upisujete u kanalu #whales koristeći komandu /farm uz sve adekvatne podatke.
+
+Ako vam je potrebno više informacija od onih koje već imate o modelu, obavezno to napišite u grupnom chatu vaše smene na Telegramu, uz odgovarajuće tagove (supervizor / management communications – npr. joshiepooh, daddysmurf itd.).
+
+Što se tiče customa – ako nema dovoljno informacija, a fan je mali spender, možete odokativno napraviti pitch za nešto “ekskluzivno” za određenu sumu. Ako prođe i uzmu se pare, tada se dodatni detalji mogu tražiti u grupi.
+Ne pitati za custome fanove koji su potrošili 0 ili su tek došli.
+
+Za sve lične podatke koji nisu navedeni u postojećim informacijama, dozvoljeno je odokativno improvizovati, uz obavezno upisivanje u notes šta je izmišljeno. Bitno: ne lagati o ozbiljnim i lako proverljivim stvarima (npr. porodica, osetljive teme). Sitnice poput omiljene boje su okej."""
+
         await general.send(welcome_text)
 
-        # 7. Potvrdi uspeh korisniku
+        # 7. Uspešan odgovor
         embed = discord.Embed(title="✅ Model uspešno kreiran", color=0x00ff00)
         embed.add_field(name="Rola", value=role_name, inline=False)
         embed.add_field(name="Kategorija", value=category_name, inline=False)
         embed.add_field(name="Kanali", value=f"{general.mention}\n{whales.mention}", inline=False)
         await interaction.followup.send(embed=embed)
 
-        print(f"[NEW M] Sve završeno za model: {model_name}")
-
     except discord.Forbidden as e:
         await interaction.followup.send(
-            "❌ **Missing Permissions (50013)**\n"
-            "Bot nema dovoljna prava da napravi kategoriju/kanale.\n"
-            "**Rešenje:** Pomeri bot rolu na **sam vrh** liste rola u Server Settings → Roles.",
+            "❌ **Missing Permissions (50013)**\n\n"
+            "Bot nema prava da kreira kategoriju/kanale.\n"
+            "Čak i sa Administrator pravima, proveri sledeće:\n"
+            "1. Bot rola je **skroz na vrhu** liste rola?\n"
+            "2. Restartuj bota posle pomeranja role.\n"
+            "3. Pokušaj ponovo za 10-20 sekundi.",
             ephemeral=True
         )
-        print(f"[NEW M] Forbidden greška: {e}")
+        print(f"[NEW M] Forbidden: {e}")
     except Exception as e:
         await interaction.followup.send(f"❌ Neočekivana greška: {e}", ephemeral=True)
-        print(f"[NEW M] Greška: {e}")
+        print(f"[NEW M] Greška: {type(e).__name__}: {e}")
 
 
 # ========== TESTAUTO - Ručno testiranje auto schedule ==========
