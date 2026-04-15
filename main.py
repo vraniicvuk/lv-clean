@@ -1333,10 +1333,10 @@ async def sortteamroles(interaction: discord.Interaction):
     await interaction.followup.send("Roles sorted: NON TEAM top → TEAM A-Z bottom", ephemeral=True)
 
 # ========== /newm - NOVI MODEL (rola + kategorija + kanali + welcome poruka) ==========
-# ========== /newm - NOVI MODEL (FIXED 50013 + ALL CAPS) ==========
+# ========== /newm - NOVI MODEL (Minimalna rola + naknadni permissions) ==========
 @tree.command(
     name="newm",
-    description="Napravi novi model: TEAM rolu + TEAM kategoriju + #general i #whales + welcome poruku",
+    description="Napravi novi model: TEAM rolu + TEAM kategoriju + #general i #whales",
     guild=GUILD_OBJ
 )
 @need_manage_roles()
@@ -1358,7 +1358,7 @@ async def new_model(interaction: discord.Interaction, ime: str):
         return await interaction.followup.send(f"❌ Kategorija **{category_name}** već postoji!", ephemeral=True)
 
     try:
-        # 1. Kreiraj rolu
+        # 1. Kreiraj rolu - minimalno, samo estetski
         new_role = await guild.create_role(
             name=role_name,
             colour=discord.Colour(0x2b2d31),
@@ -1366,26 +1366,26 @@ async def new_model(interaction: discord.Interaction, ime: str):
             reason=f"/newm by {interaction.user}"
         )
 
-        # 🔥 NAJVAŽNIJE: odmah sortiraj role da bot bude iznad nove role
+        # 2. Sortiraj role da bot bude iznad
+        await asyncio.sleep(1)  # malo čekanja
         await sort_team_roles(guild)
 
-        # 2. Kreiraj kategoriju sa overwrites
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            new_role: discord.PermissionOverwrite(view_channel=True)
-        }
-
+        # 3. Kreiraj kategoriju bez overwrites
         new_category = await guild.create_category(
             name=category_name,
-            overwrites=overwrites,
             reason=f"/newm by {interaction.user}"
         )
 
-        # 3. Kreiraj kanale
+        # 4. Kreiraj kanale
         general = await new_category.create_text_channel("general")
         whales = await new_category.create_text_channel("whales")
 
-        # 4. Welcome poruka
+        # 5. Naknadno postavi permissions (ovo je ključ)
+        await asyncio.sleep(2)  # važno čekanje
+        await new_category.set_permissions(guild.default_role, view_channel=False)
+        await new_category.set_permissions(new_role, view_channel=True)
+
+        # 6. Welcome poruka
         welcome_message = (
             "Ovo je kanal u koji se upisuju sve bitne stavke vezane za model, spendere, ostale fanove i slično.\n\n"
             "Ukoliko ste imali farmu, nju upisujete u kanalu **#whales** koristeći komandu `/farm` uz sve adekvatne podatke.\n\n"
@@ -1411,9 +1411,16 @@ async def new_model(interaction: discord.Interaction, ime: str):
         print(f"[NEW MODEL] Uspešno kreiran: {role_name}")
 
     except discord.Forbidden as e:
-        await interaction.followup.send(f"❌ Missing Permissions (50013)\n\n1. Pomeri bot rolu skroz dole pa opet skroz gore\n2. Uključi Administrator na bot roli\n3. Restartuj bota", ephemeral=True)
+        await interaction.followup.send(
+            "❌ **Missing Permissions (50013)**\n\n"
+            "Čak i sa Administratorom ovo se dešava zbog Discord cache-a.\n\n"
+            "**Rešenja koja obično rade:**\n"
+            "1. Isključi Administrator na bot roli, sačekaj 10s, pa ga ponovo uključi\n"
+            "2. Pomeri bot rolu skroz dole, sačekaj 5s, pa je vrati skroz gore\n"
+            "3. Restartuj bota\n"
+            "4. Probaj ponovo /newm", ephemeral=True)
     except Exception as e:
-        await interaction.followup.send(f"❌ Greška: {e}", ephemeral=True)
+        await interaction.followup.send(f"❌ Neočekivana greška: {e}", ephemeral=True)
 
 # ---------- /resync ----------
 @tree.command(name="resync", description="force guild sync instant", guild=GUILD_OBJ)
