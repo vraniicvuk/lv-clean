@@ -69,6 +69,23 @@ GRAVE_ROLE_ID = 1410962300554313870
 AFTER_ROLE_ID = 1410962344124612710
 MAIN_ROLE_ID = 1410962407454675047
 
+# ==================== PERMISSION CHECKS ====================
+def need_manage_roles():
+    def predicate(interaction: discord.Interaction):
+        gp = interaction.user.guild_permissions
+        if gp.manage_roles or gp.administrator:
+            return True
+        raise app_commands.CheckFailure("treba ti Manage Roles.")
+    return app_commands.check(predicate)
+
+def need_manage_channels():
+    async def predicate(interaction: discord.Interaction):
+        if not interaction.user.guild_permissions.manage_channels:
+            await interaction.response.send_message("Nemaš Manage Channels permisiju.", ephemeral=True)
+            return False
+        return True
+    return app_commands.check(predicate)
+
 # ==================== AUTO SCHEDULE ====================
 @tasks.loop(minutes=1)
 async def auto_schedule_task():
