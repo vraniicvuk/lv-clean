@@ -1192,22 +1192,19 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
 
         return wanted, unknown
 
-        def split_assignees_and_roles(first_user: str, tail: str):
-        """Popravljena verzija za tvoj tačan format: @user1 / @user2 modeli... ili @user1 / @user2 : modeli"""
+    def split_assignees_and_roles(first_user: str, tail: str):
+        "Popravljena verzija za format: @user1 / @user2 : modeli ili @user1 / @user2 modeli"
         roles_text = tail.strip()
         header = ""
 
-        # Ako ima ":", sve levo od : su chatteri
         if ":" in roles_text:
             header, roles_text = roles_text.split(":", 1)
         else:
-            # Ako nema :, uzimamo sve do prvog modela
             m = re.match(r"^(\s*(?:@\S+|\<@!?[\d]+\>)(?:\s*[\/,|]\s*(?:@\S+|\<@!?[\d]+\>))*)", roles_text)
             if m:
                 header = m.group(1).strip()
                 roles_text = roles_text[len(header):].strip()
 
-        # Razbijamo sve @user-e
         assignees = re.findall(r"(@\S+|\<@!?[\d]+\>)", header or first_user)
         if not assignees:
             assignees = [first_user]
