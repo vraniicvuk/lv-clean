@@ -142,6 +142,13 @@ GRAVE_ROLE_ID = 1410962300554313870            # @graveyard
 AFTER_ROLE_ID = 1410962344124612710            # @afternoon
 MAIN_ROLE_ID  = 1410962407454675047            # @main
 
+# Kanal u koji se šalje raspored za svaku smenu
+SCHEDULE_CHANNEL = {
+    "grave": 1364850505234518067,   # graveyard
+    "after": 1364850574205648967,   # afternoon
+    "main": 1364850795215982634     # main
+}
+
 SUPERVISOR_IDS = [
     886983698321391667,   # ti
     923657835164889119,   # drugi supervizor
@@ -487,6 +494,91 @@ async def sort_team_categories(guild):
         await asyncio.sleep(0.35)
 
     print("TEAM categories sorted")
+
+# ========== AUTO SCHEDULE (15 min pre smene) ==========
+@tasks.loop(minutes=1)
+async def auto_schedule_task():
+    """Automatski pokreće schedule 15 minuta pre početka smene"""
+    now = _local_now()
+    h, m = now.hour, now.minute
+
+    triggers = {
+        "grave": (9, 45),
+        "after": (17, 45),
+        "main": (1, 45),
+    }
+
+    for shift, (th, tm) in triggers.items():
+        if h == th and m == tm:
+            await run_auto_schedule(shift)
+            break
+
+
+async def run_auto_schedule(shift: str):
+    """Glavna funkcija za auto schedule"""
+    guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
+    if not guild:
+        return
+
+    channel_id = SCHEDULE_CHANNEL.get(shift)
+    if not channel_id:
+        return
+
+    channel = bot.get_channel(channel_id)
+    if not channel:
+        return
+
+    try:
+        # Uzimamo poslednjih 30 poruka
+        messages = [msg async for msg in channel.history(limit=30)]
+
+        if not messages:
+            return
+
+        # Pronalazimo najnoviju validnu poruku sa rasporedom
+        schedule_msg = None
+        for msg in messages:
+            content = msg.content.lower()
+            if ("@" in content or "<@" in content) and any(x in content for x in [":", "/", ","]):
+                age = (_local_now() - msg.created_at.replace(tzinfo=ZoneInfo("Europe/Belgrade"))).total_seconds()
+                if age < 86400:   # 24 sata
+                    schedule_msg = msg
+                    break
+
+        if not schedule_msg:
+            await channel.send(f"⚠️ Auto Schedule za **{shift.upper()}** — nije pronađen validan raspored u poslednjih 24h.")
+            return
+
+        schedule_text = schedule_msg.content.strip()
+
+        print(f"[AUTO SCHEDULE] Pokrećem za {shift.upper()} smenu...")
+
+        # === POZIVAMO PRAVU /schedule logiku sa apply=True ===
+        # Koristimo interakciju da simuliramo poziv komande
+        fake_interaction = type('obj', (object,), {
+            'guild': guild,
+            'user': bot.user,
+            'response': type('obj', (object,), {'defer': lambda *a,**k: None, 'followup': type('obj', (object,), {'send': lambda *a,**k: None})})()
+        })()
+
+        # Pozivamo schedule funkciju
+        await schedule(fake_interaction, text=schedule_text, apply=True)
+
+        # === ZAVRŠNA PORUKA ===
+        finish_message = (
+            "✅ **Role za modele koje imate na rasporedu su vam dodeljene.**\n\n"
+            "Ukoliko vam fali role za nekog modela, molim vas da se obratite direktno nekome iz tima.\n\n"
+            "Nakon provere rola, **clock inujte se** na Telegram kanalu vaše smene u formatu:\n"
+            "`ci model1/model2/model3/...`"
+        )
+
+        await channel.send(finish_message)
+
+        print(f"[AUTO SCHEDULE] Uspešno završeno za {shift.upper()} smenu.")
+
+    except Exception as e:
+        print(f"[AUTO SCHEDULE] Greška za {shift}: {e}")
+        await channel.send(f"❌ Auto Schedule greška za {shift.upper()}: {e}")
 
 # ====== AI/FU HELPERI ======
 def _sanitize_mm_text(s: str) -> str:
@@ -1077,20 +1169,26 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
         return wanted, unknown
 
     def split_assignees_and_roles(first_user: str, tail: str):
-            roles_text = tail
-            header_left = ""
-            # format "@u1 / @u2 : roles..." ili "@u1 / @u2 roles..."
-            if ":" in tail:
-                header_left, roles_text = tail.split(":", 1)
-            else:
-                m2 = re.match(r"^\s*((?:[@<].*?>|\@\S+)(?:\s*[/,;|]\s*(?:[@<].*?>|\@\S+))*)\s+(.*)$", tail)
-                if m2:
-                    header_left = m2.group(1)
-                    roles_text  = m2.group(2)
+        """Poboljšana verzija koja pravilno handluje '@chatter1 / @chatter2 : modeli'"""
+        roles_text = tail
+        header_left = ""
+
+        # ako ima ":", sve levo od : su chatteri
+        if ":" in tail:
+            header_left, roles_text = tail.split(":", 1)
+        else:
+            # fallback za stare formate
+            m2 = re.match(r"^\s*((?:[@<].*?>|\@\S+)(?:\s*[/,;|]\s*(?:[@<].*?>|\@\S+))*)\s+(.*)$", tail)
+            if m2:
+                header_left = m2.group(1)
+                roles_text = m2.group(2)
+
+        # razbijemo sve chatter-e po / , ;
+        assignees = re.findall(r"(@\S+|\<@!?[\d]+\>)", header_left or first_user)
+        if not assignees:
             assignees = [first_user]
-            if header_left:
-                assignees += re.findall(r"(@\S+|\<@!?[\d]+\>)", header_left)
-            return assignees, roles_text.strip()
+
+        return assignees, roles_text.strip()
 
     report = []
     total_ops_add = 0
@@ -1252,7 +1350,7 @@ async def sortteamroles(interaction: discord.Interaction):
     await interaction.followup.send("Roles sorted: NON TEAM top → TEAM A-Z bottom", ephemeral=True)
 
 # ========== /newm - NOVI MODEL (rola + kategorija + kanali + welcome poruka) ==========
-# ========== /newm - NOVI MODEL (ALL CAPS + fixed permissions) ==========
+# ========== /newm - NOVI MODEL (ALL CAPS + FIXED 50013) ==========
 @tree.command(
     name="newm",
     description="Napravi novi model: TEAM rolu + TEAM kategoriju + #general i #whales + welcome poruku",
@@ -1268,7 +1366,6 @@ async def new_model(interaction: discord.Interaction, ime: str):
     if not model_name:
         return await interaction.followup.send("❌ Ime modela ne može biti prazno.", ephemeral=True)
 
-    # SVE VELIKIM SLOVIMA
     role_name = f"TEAM {model_name.upper()}"
     category_name = f"TEAM {model_name.upper()}"
 
@@ -1286,9 +1383,18 @@ async def new_model(interaction: discord.Interaction, ime: str):
             reason=f"/newm by {interaction.user}"
         )
 
-        # 2. Kreiraj kategoriju
+        # 🔥 KLJUČNO: odmah sortiraj role da botova rola bude iznad nove
+        await sort_team_roles(guild)
+
+        # 2. Kreiraj kategoriju sa pravim dozvolama
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            new_role: discord.PermissionOverwrite(view_channel=True)
+        }
+
         new_category = await guild.create_category(
             name=category_name,
+            overwrites=overwrites,
             reason=f"/newm by {interaction.user}"
         )
 
@@ -1296,11 +1402,7 @@ async def new_model(interaction: discord.Interaction, ime: str):
         general = await new_category.create_text_channel("general")
         whales = await new_category.create_text_channel("whales")
 
-        # 4. Postavi permissions
-        await new_category.set_permissions(guild.default_role, view_channel=False)
-        await new_category.set_permissions(new_role, view_channel=True)
-
-        # 5. Welcome poruka
+        # 4. Welcome poruka
         welcome_message = (
             "Ovo je kanal u koji se upisuju sve bitne stavke vezane za model, spendere, ostale fanove i slično.\n\n"
             "Ukoliko ste imali farmu, nju upisujete u kanalu **#whales** koristeći komandu `/farm` uz sve adekvatne podatke.\n\n"
@@ -1314,8 +1416,7 @@ async def new_model(interaction: discord.Interaction, ime: str):
         )
         await general.send(welcome_message)
 
-        # 6. Sortiranje
-        await sort_team_roles(guild)
+        # 5. Još jednom sortiraj (sigurnost)
         await sort_team_categories(guild)
 
         embed = discord.Embed(title="✅ Novi model uspešno kreiran!", color=0x00ff00)
@@ -1328,7 +1429,7 @@ async def new_model(interaction: discord.Interaction, ime: str):
         print(f"[NEW MODEL] Uspešno kreiran: {role_name}")
 
     except discord.Forbidden as e:
-        await interaction.followup.send(f"❌ Missing Permissions (50013)\n\n1. Pomeri bot rolu skroz dole pa opet skroz gore\n2. Uključi Administrator na bot roli\n3. Restartuj bota", ephemeral=True)
+        await interaction.followup.send(f"❌ Missing Permissions (50013)\n\nUradi ovo:\n1. Pomeri bot rolu skroz dole pa opet skroz gore\n2. Uključi Administrator na bot roli\n3. Restartuj bota", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"❌ Greška: {e}", ephemeral=True)
 
@@ -1429,9 +1530,11 @@ async def on_ready():
             mm_window_scanner.start()
         if not mm_summary_report.is_running():
             mm_summary_report.start()
+        if not auto_schedule_task.is_running():
+            auto_schedule_task.start()
+            print("✅ Auto Schedule task je pokrenut")
     except Exception as e:
         print("sync fail:", e)
-
 
 # ---------- RUN ----------
 bot.run(TOKEN)
