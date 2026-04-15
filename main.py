@@ -15,6 +15,7 @@ from discord.ui import Modal, TextInput
 from discord import TextStyle
 from dotenv import load_dotenv
 from datetime import datetime, time, timedelta
+from zoneinfo import ZoneInfo
 from openai import OpenAI
 from difflib import SequenceMatcher
 
@@ -170,26 +171,62 @@ shift_first_sent_at = {
 # poslednji !mm po kanalu
 mm_last_time: dict[int, datetime] = {}  # channel_id -> datetime
 
-# raspored svih general poruka
+# raspored svih general poruka (sa opomenama i penalima)
 SCHEDULE = [
     # ---------- GRAVE ----------
-    {"time": time(10, 0), "channel_id": GRAVE_GENERAL_CHANNEL_ID, "text": f"<@&{GRAVE_ROLE_ID}> molim da prvi mass bude poslat najkasnije do 11:30.", "shift": "grave", "kind": "first"},
-    {"time": time(11, 0), "channel_id": GRAVE_GENERAL_CHANNEL_ID, "text": f"<@&{GRAVE_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.", "shift": "grave", "kind": "second"},
-    {"time": time(11, 30), "channel_id": GRAVE_GENERAL_CHANNEL_ID, "text": f"<@&{GRAVE_ROLE_ID}> molim da proverite da li nekom modelu nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.", "shift": None, "kind": None},
-    {"time": time(14, 0), "channel_id": GRAVE_GENERAL_CHANNEL_ID, "text": f"<@&{GRAVE_ROLE_ID}> ukoliko drugi mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.", "shift": None, "kind": None},
-    {"time": time(14, 30), "channel_id": GRAVE_GENERAL_CHANNEL_ID, "text": f"<@&{GRAVE_ROLE_ID}> molim da proverite da li nekom modelu nedostaje drugi mass; ukoliko nedostaje, pošaljite ga odmah.", "shift": None, "kind": None},
+    {"time": time(10, 0), "channel_id": GRAVE_GENERAL_CHANNEL_ID, 
+     "text": f"<@&{GRAVE_ROLE_ID}> molim da mass bude poslat najkasnije do 11:30.\nU slučaju neispunjavanja obaveze, sledi opomena. Ukoliko se prekršaj ponovi, ide penal od 50$.", 
+     "shift": "grave", "kind": "first"},
+    
+    {"time": time(11, 0), "channel_id": GRAVE_GENERAL_CHANNEL_ID, 
+     "text": f"<@&{GRAVE_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.\nNeispunjavanje obaveze rezultira opomenom, a ponavljanje prekršaja penalom od 50$.", 
+     "shift": "grave", "kind": "second"},
+    
+    {"time": time(11, 30), "channel_id": GRAVE_GENERAL_CHANNEL_ID, 
+     "text": f"<@&{GRAVE_ROLE_ID}> molim da proverite da li nekom modelu nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.\nUkoliko mass i dalje nije poslat, sledi opomena, a pri ponavljanju prekršaja penal od 50$.", 
+     "shift": None, "kind": None},
+    
+    {"time": time(14, 0), "channel_id": GRAVE_GENERAL_CHANNEL_ID, 
+     "text": f"<@&{GRAVE_ROLE_ID}> ukoliko drugi mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.\nNeispunjavanje obaveze rezultira opomenom, a ponavljanje prekršaja penalom od 50$.", 
+     "shift": None, "kind": None},
+    
+    {"time": time(14, 30), "channel_id": GRAVE_GENERAL_CHANNEL_ID, 
+     "text": f"<@&{GRAVE_ROLE_ID}> molim da proverite da li nekom modelu nedostaje drugi mass; ukoliko nedostaje, pošaljite ga odmah.\nUkoliko mass i dalje nije poslat, sledi opomena, a pri ponavljanju prekršaja penal od 50$.", 
+     "shift": None, "kind": None},
 
     # ---------- AFTERNOON ----------
-    {"time": time(18, 0), "channel_id": AFTER_GENERAL_CHANNEL_ID, "text": f"<@&{AFTER_ROLE_ID}> molim da mass bude poslat najkasnije do 19:30.", "shift": "after", "kind": "first"},
-    {"time": time(19, 0), "channel_id": AFTER_GENERAL_CHANNEL_ID, "text": f"<@&{AFTER_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.", "shift": "after", "kind": "second"},
-    {"time": time(19, 30), "channel_id": AFTER_GENERAL_CHANNEL_ID, "text": f"<@&{AFTER_ROLE_ID}> molim da proverite da li nekom modelu nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.", "shift": None, "kind": None},
-    {"time": time(22, 0), "channel_id": AFTER_GENERAL_CHANNEL_ID, "text": f"<@&{AFTER_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.", "shift": "after", "kind": "second"},
-    {"time": time(22, 30), "channel_id": AFTER_GENERAL_CHANNEL_ID, "text": f"<@&{AFTER_ROLE_ID}> molim da proverite da li nekom modelu i dalje nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.", "shift": None, "kind": None},
+    {"time": time(18, 0), "channel_id": AFTER_GENERAL_CHANNEL_ID, 
+     "text": f"<@&{AFTER_ROLE_ID}> molim da mass bude poslat najkasnije do 19:30.\nU slučaju neispunjavanja obaveze, sledi opomena. Ukoliko se prekršaj ponovi, ide penal od 50$.", 
+     "shift": "after", "kind": "first"},
+    
+    {"time": time(19, 0), "channel_id": AFTER_GENERAL_CHANNEL_ID, 
+     "text": f"<@&{AFTER_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.\nNeispunjavanje obaveze rezultira opomenom, a ponavljanje prekršaja penalom od 50$.", 
+     "shift": "after", "kind": "second"},
+    
+    {"time": time(19, 30), "channel_id": AFTER_GENERAL_CHANNEL_ID, 
+     "text": f"<@&{AFTER_ROLE_ID}> molim da proverite da li nekom modelu nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.\nUkoliko mass i dalje nije poslat, sledi opomena, a pri ponavljanju prekršaja penal od 50$.", 
+     "shift": None, "kind": None},
+    
+    {"time": time(22, 0), "channel_id": AFTER_GENERAL_CHANNEL_ID, 
+     "text": f"<@&{AFTER_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.\nNeispunjavanje obaveze rezultira opomenom, a ponavljanje prekršaja penalom od 50$.", 
+     "shift": "after", "kind": "second"},
+    
+    {"time": time(22, 30), "channel_id": AFTER_GENERAL_CHANNEL_ID, 
+     "text": f"<@&{AFTER_ROLE_ID}> molim da proverite da li nekom modelu i dalje nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.\nUkoliko mass i dalje nije poslat, sledi opomena, a pri ponavljanju prekršaja penal od 50$.", 
+     "shift": None, "kind": None},
 
     # ---------- MAIN ----------
-    {"time": time(2, 0), "channel_id": MAIN_GENERAL_CHANNEL_ID, "text": f"<@&{MAIN_ROLE_ID}> molim da mass bude poslat najkasnije do 4:00.", "shift": "main", "kind": "first"},
-    {"time": time(3, 0), "channel_id": MAIN_GENERAL_CHANNEL_ID, "text": f"<@&{MAIN_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih sat vremena.", "shift": "main", "kind": "second"},
-    {"time": time(4, 0), "channel_id": MAIN_GENERAL_CHANNEL_ID, "text": f"<@&{MAIN_ROLE_ID}> molim da proverite da li nekom modelu nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.", "shift": None, "kind": None},
+    {"time": time(2, 0), "channel_id": MAIN_GENERAL_CHANNEL_ID, 
+     "text": f"<@&{MAIN_ROLE_ID}> molim da mass bude poslat najkasnije do 4:00.\nU slučaju neispunjavanja obaveze, sledi opomena. Ukoliko se prekršaj ponovi, ide penal od 50$.", 
+     "shift": "main", "kind": "first"},
+    
+    {"time": time(3, 0), "channel_id": MAIN_GENERAL_CHANNEL_ID, 
+     "text": f"<@&{MAIN_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih sat vremena.\nNeispunjavanje obaveze rezultira opomenom, a ponavljanje prekršaja penalom od 50$.", 
+     "shift": "main", "kind": "second"},
+    
+    {"time": time(4, 0), "channel_id": MAIN_GENERAL_CHANNEL_ID, 
+     "text": f"<@&{MAIN_ROLE_ID}> molim da proverite da li nekom modelu nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.\nUkoliko mass i dalje nije poslat, sledi opomena, a pri ponavljanju prekršaja penal od 50$.", 
+     "shift": None, "kind": None},
 ]
 
 def is_mm_approval_channel(channel: discord.abc.GuildChannel) -> bool:
@@ -254,8 +291,8 @@ MM_WINDOWS = [
 mm_scanner_bumped = set()
 
 def _local_now():
-    # Beograd ~ UTC+1 (bez fine DST logike, isto kao ranije)
-    return datetime.utcnow() + timedelta(hours=1)
+    """Tačno vreme za Beograd (automatski CET/CEST)"""
+    return datetime.now(ZoneInfo("Europe/Belgrade"))
 
 def _window_today(start_h, start_m, end_h, end_m):
     now = _local_now()  # datetime, ne .time()
@@ -1215,6 +1252,7 @@ async def sortteamroles(interaction: discord.Interaction):
     await interaction.followup.send("Roles sorted: NON TEAM top → TEAM A-Z bottom", ephemeral=True)
 
 # ========== /newm - NOVI MODEL (rola + kategorija + kanali + welcome poruka) ==========
+# ========== /newm - NOVI MODEL (ALL CAPS + fixed permissions) ==========
 @tree.command(
     name="newm",
     description="Napravi novi model: TEAM rolu + TEAM kategoriju + #general i #whales + welcome poruku",
@@ -1226,12 +1264,13 @@ async def new_model(interaction: discord.Interaction, ime: str):
     await interaction.response.defer(ephemeral=True, thinking=True)
     guild = interaction.guild
 
-    model_name = ime.strip().title()
+    model_name = ime.strip()
     if not model_name:
         return await interaction.followup.send("❌ Ime modela ne može biti prazno.", ephemeral=True)
 
-    role_name = f"TEAM {model_name}"
-    category_name = f"TEAM {model_name}"
+    # SVE VELIKIM SLOVIMA
+    role_name = f"TEAM {model_name.upper()}"
+    category_name = f"TEAM {model_name.upper()}"
 
     if discord.utils.get(guild.roles, name=role_name):
         return await interaction.followup.send(f"❌ Rola **{role_name}** već postoji!", ephemeral=True)
@@ -1247,7 +1286,7 @@ async def new_model(interaction: discord.Interaction, ime: str):
             reason=f"/newm by {interaction.user}"
         )
 
-        # 2. Kreiraj kategoriju BEZ overwrites prvo
+        # 2. Kreiraj kategoriju
         new_category = await guild.create_category(
             name=category_name,
             reason=f"/newm by {interaction.user}"
@@ -1257,7 +1296,7 @@ async def new_model(interaction: discord.Interaction, ime: str):
         general = await new_category.create_text_channel("general")
         whales = await new_category.create_text_channel("whales")
 
-        # 4. Naknadno postavi permissions (ovo je ključni deo koji rešava grešku)
+        # 4. Postavi permissions
         await new_category.set_permissions(guild.default_role, view_channel=False)
         await new_category.set_permissions(new_role, view_channel=True)
 
@@ -1286,10 +1325,10 @@ async def new_model(interaction: discord.Interaction, ime: str):
         embed.set_footer(text=f"Kreirao: {interaction.user}")
 
         await interaction.followup.send(embed=embed)
-        print(f"[NEW MODEL] Uspešno: {role_name}")
+        print(f"[NEW MODEL] Uspešno kreiran: {role_name}")
 
     except discord.Forbidden as e:
-        await interaction.followup.send(f"❌ Missing Permissions: {e}\n\nProveri da li je botova rola **iznad** svih TEAM rola i ima Administrator.", ephemeral=True)
+        await interaction.followup.send(f"❌ Missing Permissions (50013)\n\n1. Pomeri bot rolu skroz dole pa opet skroz gore\n2. Uključi Administrator na bot roli\n3. Restartuj bota", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"❌ Greška: {e}", ephemeral=True)
 
