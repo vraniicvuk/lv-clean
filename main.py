@@ -496,63 +496,54 @@ async def sort_team_categories(guild):
     print("TEAM categories sorted")
 
 # ========== AUTO SCHEDULE (15 min pre smene + bolja detekcija) ==========
-@tasks.loop(minutes=1)
-async def auto_schedule_task():
-    now = _local_now()
-    h, m = now.hour, now.minute
-
-    triggers = {
-        "grave": (8, 45),
-        "after": (17, 45),
-        "main": (1, 45),
-    }
-
-    for shift, (th, tm) in triggers.items():
-        if h == th and m == tm:
-            await run_auto_schedule(shift)
-            break
-
-
 async def run_auto_schedule(shift: str):
     guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
     if not guild:
-        print("[AUTO] Guild not found")
         return
 
     channel = bot.get_channel(SCHEDULE_CHANNEL.get(shift))
     if not channel:
-        print(f"[AUTO] Kanal za {shift} nije pronađen")
         return
 
     try:
-        messages = [msg async for msg in channel.history(limit=40)]
-        
+        messages = [msg async for msg in channel.history(limit=50)]
+
         schedule_msg = None
         for msg in messages:
-            if ("@" in msg.content and any(x in msg.content for x in [":", "/", ","])):
-                if (_local_now() - msg.created_at.replace(tzinfo=ZoneInfo("Europe/Belgrade"))).total_seconds() < 86400:
+            content = msg.content
+            if ("@" in content and any(x in content for x in [":", "/", ","])):
+                age = (_local_now() - msg.created_at.replace(tzinfo=ZoneInfo("Europe/Belgrade"))).total_seconds()
+                if age < 86400:
                     schedule_msg = msg
                     break
 
         if not schedule_msg:
-            await channel.send(f"⚠️ Auto Schedule {shift.upper()}: Nije pronađen raspored.")
+            await channel.send(f"⚠️ Auto Schedule za **{shift.upper()}**: Nije pronađen validan raspored.")
             return
 
-        await channel.send(f"🔄 **Auto Schedule pokrenut** za **{shift.upper()}** smenu.\nRaspored uzet iz poruke.")
+        schedule_text = schedule_msg.content.strip()
 
-        # ZAVRŠNA PORUKA SA PINGOM
+        # PRAVI POZIV /schedule sa apply=True
+        dummy_interaction = type('obj', (object,), {
+            'guild': guild,
+            'user': bot.user,
+            'response': type('obj', (object,), {'defer': lambda *a,**k: None, 'followup': type('obj', (object,), {'send': lambda *a,**k: None})})()
+        })()
+
+        await schedule(dummy_interaction, text=schedule_text, apply=True)
+
+        # Završna poruka
         role_id = {"grave": GRAVE_ROLE_ID, "after": AFTER_ROLE_ID, "main": MAIN_ROLE_ID}[shift]
         await channel.send(
-            f"<@&{role_id}> **Role su dodeljene.**\n\n"
-            "Ukoliko vam fali neka rola, javite timu.\n"
-            "Nakon toga se clock inujte na Telegramu: `ci model1/model2/...`"
+            f"<@&{role_id}> **Role za modele koje imate na rasporedu su vam dodeljene.**\n\n"
+            "Ukoliko vam fali role za nekog modela, molim vas da se obratite direktno nekome iz tima.\n\n"
+            "Nakon provere rola, **clock inujte se** na Telegram kanalu vaše smene u formatu:\n"
+            "`ci model1/model2/model3/...`"
         )
-
-        print(f"[AUTO SCHEDULE] Završeno za {shift}")
 
     except Exception as e:
         print(f"[AUTO SCHEDULE] Greška za {shift}: {e}")
-        await channel.send(f"❌ Greška u auto schedule za {shift}: {e}")
+        await channel.send(f"❌ Greška u auto schedule za {shift.upper()}: {e}")
 
 # ====== AI/FU HELPERI ======
 def _sanitize_mm_text(s: str) -> str:
@@ -1143,21 +1134,21 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
         return wanted, unknown
 
     def split_assignees_and_roles(first_user: str, tail: str):
-        """Poboljšana verzija koja pravilno handluje '@chatter1 / @chatter2 : modeli'"""
-        roles_text = tail
+        """Popravljena verzija za format: @user1 / @user2 modeli... ili @user1 / @user2 : modeli"""
+        roles_text = tail.strip()
         header_left = ""
 
-        # ako ima ":", sve levo od : su chatteri
-        if ":" in tail:
-            header_left, roles_text = tail.split(":", 1)
+        # Ako ima ":" – sve levo su chatteri
+        if ":" in roles_text:
+            header_left, roles_text = roles_text.split(":", 1)
         else:
-            # fallback za stare formate
-            m2 = re.match(r"^\s*((?:[@<].*?>|\@\S+)(?:\s*[/,;|]\s*(?:[@<].*?>|\@\S+))*)\s+(.*)$", tail)
-            if m2:
-                header_left = m2.group(1)
-                roles_text = m2.group(2)
+            # Ako nema ":", tražimo pattern @user1 / @user2 ...
+            m = re.match(r"^\s*(@\S+|\<@!?[\d]+\>)(?:\s*[\/,|]\s*(@\S+|\<@!?[\d]+\>))*\s*(.*)$", roles_text)
+            if m:
+                header_left = m.group(0).split(m.group(3))[0].strip() if m.group(3) else roles_text
+                roles_text = m.group(3).strip() if m.group(3) else ""
 
-        # razbijemo sve chatter-e po / , ;
+        # Razbijamo sve chatter-e (podržava / , | i više njih)
         assignees = re.findall(r"(@\S+|\<@!?[\d]+\>)", header_left or first_user)
         if not assignees:
             assignees = [first_user]
@@ -1324,19 +1315,66 @@ async def sortteamroles(interaction: discord.Interaction):
     await interaction.followup.send("Roles sorted: NON TEAM top → TEAM A-Z bottom", ephemeral=True)
 
 # /newm
-@tree.command(name="newm", description="Napravi novi model (test verzija)", guild=GUILD_OBJ)
+# ========== /newm - PUNA VERZIJA (radi pošto rola prolazi) ==========
+@tree.command(
+    name="newm",
+    description="Napravi novi model: TEAM rolu + TEAM kategoriju + #general i #whales",
+    guild=GUILD_OBJ
+)
 @need_manage_roles()
 @need_manage_channels()
 async def new_model(interaction: discord.Interaction, ime: str):
     await interaction.response.defer(ephemeral=True)
 
     guild = interaction.guild
-    role_name = f"TEAM {ime.strip().upper()}"
+    model_name = ime.strip()
+    if not model_name:
+        return await interaction.followup.send("❌ Ime modela ne može biti prazno.", ephemeral=True)
+
+    role_name = f"TEAM {model_name.upper()}"
+    category_name = f"TEAM {model_name.upper()}"
+
+    if discord.utils.get(guild.roles, name=role_name):
+        return await interaction.followup.send(f"❌ Rola **{role_name}** već postoji!", ephemeral=True)
+    if discord.utils.get(guild.categories, name=category_name):
+        return await interaction.followup.send(f"❌ Kategorija **{category_name}** već postoji!", ephemeral=True)
 
     try:
-        new_role = await guild.create_role(name=role_name, colour=discord.Colour(0x2b2d31), mentionable=True)
-        await interaction.followup.send(f"✅ Rola kreirana: `{role_name}`\n\nSada probaj ručno da napraviš kategoriju ili reci mi da li da nastavimo sa punom verzijom.", ephemeral=True)
-        
+        new_role = await guild.create_role(
+            name=role_name,
+            colour=discord.Colour(0x2b2d31),
+            mentionable=True,
+            reason=f"/newm by {interaction.user}"
+        )
+
+        await asyncio.sleep(1.5)
+        await sort_team_roles(guild)
+
+        new_category = await guild.create_category(name=category_name)
+
+        general = await new_category.create_text_channel("general")
+        whales = await new_category.create_text_channel("whales")
+
+        await asyncio.sleep(2)
+        await new_category.set_permissions(guild.default_role, view_channel=False)
+        await new_category.set_permissions(new_role, view_channel=True)
+
+        welcome_message = (
+            "Ovo je kanal u koji se upisuju sve bitne stavke vezane za model, spendere, ostale fanove i slično.\n\n"
+            "Ukoliko ste imali farmu, nju upisujete u kanalu **#whales** koristeći komandu `/farm`.\n\n"
+            "Nakon provere rola, clock inujte se na Telegramu u formatu: `ci model1/model2/...`"
+        )
+        await general.send(welcome_message)
+
+        await sort_team_categories(guild)
+
+        embed = discord.Embed(title="✅ Novi model uspešno kreiran!", color=0x00ff00)
+        embed.add_field(name="Rola", value=f"`{role_name}`", inline=False)
+        embed.add_field(name="Kategorija", value=f"`{category_name}`", inline=False)
+        embed.add_field(name="Kanali", value=f"{general.mention}\n{whales.mention}", inline=False)
+
+        await interaction.followup.send(embed=embed)
+
     except Exception as e:
         await interaction.followup.send(f"❌ Greška: {e}", ephemeral=True)
 
