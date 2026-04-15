@@ -1560,9 +1560,9 @@ async def sortteamroles(interaction: discord.Interaction):
     )
 
 # /newm
-# ========== /newm - POPRAVLJENA VERZIJA (koja je ranije radila) ==========
+# ========== /newm - NOVI MODEL (rola + kategorija + kanali + welcome poruka) ==========
 @tree.command(
-    name="newm",
+    name="newm",    name="newm",
     description="Napravi novi model: TEAM rolu + TEAM kategoriju + #general i #whales + welcome poruku",
     guild=GUILD_OBJ
 )
@@ -1571,12 +1571,15 @@ async def sortteamroles(interaction: discord.Interaction):
 async def new_model(interaction: discord.Interaction, ime: str):
     await interaction.response.defer(ephemeral=True, thinking=True)
     guild = interaction.guild
-    model_name = ime.strip().upper()
+
+    model_name = ime.strip().title()
+
     if not model_name:
         return await interaction.followup.send("❌ Ime modela ne može biti prazno.", ephemeral=True)
 
     role_name = f"TEAM {model_name}"
     category_name = f"TEAM {model_name}"
+
 
     if discord.utils.get(guild.roles, name=role_name):
         return await interaction.followup.send(f"❌ Rola **{role_name}** već postoji!", ephemeral=True)
@@ -1589,35 +1592,33 @@ async def new_model(interaction: discord.Interaction, ime: str):
             name=role_name,
             colour=discord.Colour(0x2b2d31),
             mentionable=True,
-            reason=f"/newm by {interaction.user}"
+            reason=f"/newm by {interaction.user}"            reason=f"/newm by {interaction.user}"
         )
-        print(f"[NEW M] Rola kreirana: {role_name}")
 
-        # 2. Sortiraj role (važno!)
-        await asyncio.sleep(2)
-        await sort_team_roles(guild)
-        await asyncio.sleep(2)
+        # 2. Kreiraj kategoriju BEZ overwrites prvo
 
-        # 3. Kreiraj kategoriju BEZ overwrites prvo
+
+
+
+
         new_category = await guild.create_category(
             name=category_name,
-            reason=f"/newm by {interaction.user}"
-        )
-        print(f"[NEW M] Kategorija kreirana: {category_name}")
+            reason=f"/newm by {interaction.user}"            reason=f"/newm by {interaction.user}"
 
-        # 4. Kreiraj kanale
+        )
+
+        # 3. Kreiraj kanale
         general = await new_category.create_text_channel("general")
         whales = await new_category.create_text_channel("whales")
-        print("[NEW M] Kanali kreirani")
 
-        # 5. Naknadno postavi permisije (ključni deo)
-        await asyncio.sleep(4)
+
+
+        # 4. Naknadno postavi permissions (ovo je ključni deo koji rešava grešku)
         await new_category.set_permissions(guild.default_role, view_channel=False)
-        await asyncio.sleep(2)
         await new_category.set_permissions(new_role, view_channel=True)
-        print("[NEW M] Permisije postavljene")
 
-        # 6. Welcome poruka
+
+        # 5. Welcome poruka
         welcome_message = (
             "Ovo je kanal u koji se upisuju sve bitne stavke vezane za model, spendere, ostale fanove i slično.\n\n"
             "Ukoliko ste imali farmu, nju upisujete u kanalu **#whales** koristeći komandu `/farm` uz sve adekvatne podatke.\n\n"
@@ -1629,31 +1630,31 @@ async def new_model(interaction: discord.Interaction, ime: str):
             "Za sve lične podatke koji nisu navedeni u postojećim informacijama, dozvoljeno je odokativno improvizovati, uz obavezno upisivanje u notes šta je izmišljeno. "
             "**Bitno: ne lagati o ozbiljnim i lako proverljivim stvarima (npr. porodica, osetljive teme). Sitnice poput omiljene boje su okej.**"
         )
+
         await general.send(welcome_message)
 
-        # 7. Sortiraj kategorije
-        await asyncio.sleep(2)
+        # 6. Sortiranje
+        await sort_team_roles(guild)
         await sort_team_categories(guild)
 
-        # 8. Finalni embed
         embed = discord.Embed(title="✅ Novi model uspešno kreiran!", color=0x00ff00)
         embed.add_field(name="Rola", value=f"`{role_name}`", inline=False)
         embed.add_field(name="Kategorija", value=f"`{category_name}`", inline=False)
-        embed.add_field(name="Kanali", value=f"{general.mention}\n{whales.mention}", inline=False)
-        embed.set_footer(text=f"Kreirao: {interaction.user}")
-        await interaction.followup.send(embed=embed)
 
-        print(f"[NEW MODEL] Uspešno završeno za: {role_name}")
+
+
+
+        embed.add_field(name="Kanali", value=f"{general.mention}\n{whales.mention}", inline=False)
+
+        embed.set_footer(text=f"Kreirao: {interaction.user}")
+
+        await interaction.followup.send(embed=embed)
+        print(f"[NEW MODEL] Uspešno: {role_name}")
 
     except discord.Forbidden as e:
-        await interaction.followup.send(
-            f"❌ Missing Permissions (50013): {e}\n\n"
-            "Proveri da li je bot rola **skroz na vrhu** liste rola i da ima **Manage Channels** permisiju.",
-            ephemeral=True
-        )
+        await interaction.followup.send(f"❌ Missing Permissions: {e}\n\nProveri da li je botova rola **iznad** svih TEAM rola i ima Administrator.", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"❌ Greška: {e}", ephemeral=True)
-        print(f"[NEW M] Greška: {e}")
 
 
 # ========== TESTAUTO - Ručno testiranje auto schedule ==========
