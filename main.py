@@ -1335,7 +1335,7 @@ class FarmModal(Modal, title="Farm unos"):
 async def farm(interaction: discord.Interaction):
     await interaction.response.send_modal(FarmModal(opener=interaction.user))
 
-# ========== QC WIZARD - VIŠESTEPENI ZA VIŠE CHATTERA (Opcija B) ==========
+# ========== QC WIZARD - VIŠESTEPENI (ispravljeno) ==========
 class QualityCheckModal(Modal, title="Daily Quality Check - 1. Chatter"):
     def __init__(self):
         super().__init__(timeout=None)
@@ -1380,27 +1380,26 @@ class QualityCheckModal(Modal, title="Daily Quality Check - 1. Chatter"):
 
 class QCContinueView(discord.ui.View):
     def __init__(self, qc_entries: list, user_id: int):
-        super().__init__(timeout=600)  # 10 minuta
+        super().__init__(timeout=600)
         self.qc_entries = qc_entries
         self.user_id = user_id
 
     @discord.ui.button(label="Dodaj sledećeg chattera", style=discord.ButtonStyle.green)
     async def add_another(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id:
-            return await interaction.response.send_message("Nisi ti pokrenuo ovaj QC!", ephemeral=True)
-        
+            return await interaction.response.send_message("Nisi ti pokrenuo QC!", ephemeral=True)
         await interaction.response.send_modal(QualityCheckModal())
 
     @discord.ui.button(label="Završi i pošalji QC", style=discord.ButtonStyle.red)
     async def finish(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id:
-            return await interaction.response.send_message("Nisi ti pokrenuo ovaj QC!", ephemeral=True)
+            return await interaction.response.send_message("Nisi ti pokrenuo QC!", ephemeral=True)
 
         qc_channel = interaction.guild.get_channel(1493996105380266114)
         if not qc_channel:
             return await interaction.response.send_message("QC kanal nije pronađen!", ephemeral=True)
 
-        await interaction.response.edit_message(content="✅ QC završen. Šaljem sve rezultate...", view=None)
+        await interaction.response.edit_message(content="✅ QC završen. Šaljem rezultate...", view=None)
 
         for entry in self.qc_entries:
             embed = discord.Embed(title="📋 Daily Quality Check", color=0x00ff00, timestamp=datetime.now())
@@ -1418,33 +1417,31 @@ class QCContinueView(discord.ui.View):
             f"<@{923657835164889119}> <@{886983698321391667}> "
             f"**Daily QC je završen za {len(self.qc_entries)} chattera.**"
         )
-
         self.stop()
 
 
-# ========== /qc KOMANDA ==========
+# ========== /qc KOMANDA (ispravljeno) ==========
 @tree.command(name="qc", description="Počni Daily Quality Check za više chattera", guild=GUILD_OBJ)
 async def qc(interaction: discord.Interaction):
+    # Prvo pošaljemo poruku, pa tek onda modal
     await interaction.response.send_message(
         "**Daily Quality Check Wizard**\n\n"
-        "Popuni podatke za prvog chattera. Posle svakog slanja moći ćeš da dodaš sledećeg.",
+        "Popuni podatke za **prvog** chattera.\n"
+        "Posle svakog slanja moći ćeš da dodaš sledećeg.",
         ephemeral=True
     )
+    # Sada šaljemo modal preko response (ne followup)
     await interaction.followup.send_modal(QualityCheckModal())
 
 
-# Listener za Modal Submit (pamti više unosa)
+# Listener za Modal Submit
 @bot.event
 async def on_modal_submit(interaction: discord.Interaction):
-    if not interaction.data or "custom_id" not in interaction.data:
+    # Proveravamo da li je naš QC modal (ima 5 TextInput polja)
+    if len(interaction.data.get("components", [])) != 5:
         return
 
-    # Proveravamo da li je naš QC modal
-    if len(interaction.data.get("components", [])) != 5:
-        return  # nije naš modal (ima 5 polja)
-
     try:
-        # Izvlačimo vrednosti
         components = interaction.data["components"]
         values = [comp["components"][0]["value"] for comp in components]
 
@@ -1469,12 +1466,10 @@ async def on_modal_submit(interaction: discord.Interaction):
             'general': general
         }
 
-        # Ako već postoji view u poruci, dodajemo u njega
-        # Za jednostavnost koristimo novi view svaki put (može se poboljšati kasnije)
         view = QCContinueView([entry], interaction.user.id)
 
         await interaction.response.send_message(
-            f"✅ **Chatter dodat:** {chatter} (ocena {general}/5)\n\n"
+            f"✅ **Dodat chatter:** {chatter} (ocena {general}/5)\n\n"
             "Želiš li da dodaš još jednog?",
             view=view,
             ephemeral=True
