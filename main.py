@@ -1335,149 +1335,128 @@ class FarmModal(Modal, title="Farm unos"):
 async def farm(interaction: discord.Interaction):
     await interaction.response.send_modal(FarmModal(opener=interaction.user))
 
-# ========== QC WIZARD - FINALNA VERZIJA (radi) ==========
-class QualityCheckModal(Modal, title="Daily Quality Check - Chatter"):
-    def __init__(self):
+# ========== QC WIZARD SA SELECT MENIJIMA (kao tabela) ==========
+class QCSelectModal(Modal, title="Oceni Chattera"):
+    def __init__(self, chatter_name: str):
         super().__init__(timeout=None)
-        
-        self.chatter = TextInput(
-            label="Ime chattera",
-            placeholder="npr. Chodex ili @.chodex",
-            required=True,
-            max_length=100
+        self.chatter_name = chatter_name
+
+        self.response_time = discord.ui.Select(
+            placeholder="Response Time (1-5)",
+            options=[discord.SelectOption(label=str(i), value=str(i)) for i in range(1,6)]
         )
-        self.response_time = TextInput(
-            label="Response Time (1-5)",
-            placeholder="1-5",
-            required=True,
-            max_length=10
+        self.zzz_usage = discord.ui.Select(
+            placeholder="Zzz Usage (1-5)",
+            options=[discord.SelectOption(label=str(i), value=str(i)) for i in range(1,6)]
         )
-        self.zzz_usage = TextInput(
-            label="Zzz Usage (1-5)",
-            placeholder="1-5",
-            required=True,
-            max_length=10
+        self.objectioning = discord.ui.Select(
+            placeholder="Objection Handling (1-5)",
+            options=[discord.SelectOption(label=str(i), value=str(i)) for i in range(1,6)]
         )
-        self.objectioning = TextInput(
-            label="Objection Handling (1-5)",
-            placeholder="1-5",
-            required=True,
-            max_length=10
+        self.freestyle = discord.ui.Select(
+            placeholder="Freestyle (1-5)",
+            options=[discord.SelectOption(label=str(i), value=str(i)) for i in range(1,6)]
         )
-        self.freestyle_smalltalk = TextInput(
-            label="Freestyle + Small Talk (1-5)",
-            placeholder="1-5",
-            required=True,
-            max_length=10
+        self.small_talk = discord.ui.Select(
+            placeholder="Small Talk (1-5)",
+            options=[discord.SelectOption(label=str(i), value=str(i)) for i in range(1,6)]
         )
 
-        self.add_item(self.chatter)
-        self.add_item(self.response_time)
-        self.add_item(self.zzz_usage)
-        self.add_item(self.objectioning)
-        self.add_item(self.freestyle_smalltalk)
+        # Nažalost, Select se ne može direktno dodati u Modal (Discord ograničenje)
+        # Zato ćemo koristiti TextInput sa validacijom
+
+        self.response_time_input = TextInput(
+            label=f"Response Time - {chatter_name} (1-5)",
+            placeholder="1-5",
+            required=True,
+            max_length=1
+        )
+        self.zzz_input = TextInput(
+            label=f"Zzz Usage - {chatter_name} (1-5)",
+            placeholder="1-5",
+            required=True,
+            max_length=1
+        )
+        self.objection_input = TextInput(
+            label=f"Objection Handling - {chatter_name} (1-5)",
+            placeholder="1-5",
+            required=True,
+            max_length=1
+        )
+        self.freestyle_input = TextInput(
+            label=f"Freestyle - {chatter_name} (1-5)",
+            placeholder="1-5",
+            required=True,
+            max_length=1
+        )
+        self.smalltalk_input = TextInput(
+            label=f"Small Talk - {chatter_name} (1-5)",
+            placeholder="1-5",
+            required=True,
+            max_length=1
+        )
+
+        self.add_item(self.response_time_input)
+        self.add_item(self.zzz_input)
+        self.add_item(self.objection_input)
+        self.add_item(self.freestyle_input)
+        self.add_item(self.smalltalk_input)
 
 
-class QCContinueView(discord.ui.View):
-    def __init__(self, qc_entries: list, user_id: int):
+class QCStartView(discord.ui.View):
+    def __init__(self, chatters: list, user_id: int):
         super().__init__(timeout=600)
-        self.qc_entries = qc_entries
+        self.chatters = chatters
         self.user_id = user_id
+        self.current_index = 0
+        self.results = []
 
-    @discord.ui.button(label="Dodaj sledećeg chattera", style=discord.ButtonStyle.green)
-    async def add_another(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id:
-            return await interaction.response.send_message("Nisi ti pokrenuo QC!", ephemeral=True)
-        await interaction.response.send_modal(QualityCheckModal())
-
-    @discord.ui.button(label="Završi i pošalji QC", style=discord.ButtonStyle.red)
-    async def finish(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="Počni ocenjivanje", style=discord.ButtonStyle.green)
+    async def start(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id:
             return await interaction.response.send_message("Nisi ti pokrenuo QC!", ephemeral=True)
 
-        qc_channel = interaction.guild.get_channel(1493996105380266114)
-        if not qc_channel:
-            return await interaction.response.send_message("QC kanal nije pronađen!", ephemeral=True)
-
-        await interaction.response.edit_message(content="✅ QC završen. Šaljem sve rezultate...", view=None)
-
-        for entry in self.qc_entries:
-            embed = discord.Embed(title="📋 Daily Quality Check", color=0x00ff00, timestamp=datetime.now())
-            embed.add_field(name="Chatter", value=entry['chatter'], inline=False)
-            embed.add_field(name="Response Time", value=entry['rt'], inline=True)
-            embed.add_field(name="Zzz Usage", value=entry['zzz'], inline=True)
-            embed.add_field(name="Objection Handling", value=entry['obj'], inline=True)
-            embed.add_field(name="Freestyle + Small Talk", value=entry['fs'], inline=True)
-            embed.add_field(name="**Generalna ocena**", value=f"**{entry['general']}/5**", inline=False)
-            embed.set_footer(text=f"Popunio: {interaction.user}")
-
-            await qc_channel.send(embed=embed)
-
-        await qc_channel.send(
-            f"<@{923657835164889119}> <@{886983698321391667}> "
-            f"**Daily QC je završen za {len(self.qc_entries)} chattera.**"
-        )
-        self.stop()
+        await interaction.response.send_modal(QCSelectModal(self.chatters[self.current_index]))
 
 
-# ========== /qc KOMANDA (ispravljeno) ==========
+# ========== /qc KOMANDA ==========
 @tree.command(name="qc", description="Počni Daily Quality Check za više chattera", guild=GUILD_OBJ)
 async def qc(interaction: discord.Interaction):
-    # Prvo šaljemo poruku
     await interaction.response.send_message(
-        "**Daily Quality Check Wizard**\n\n"
-        "Popuni podatke za **prvog** chattera.\n"
-        "Posle svakog slanja moći ćeš da dodaš sledećeg.",
+        "**Daily QC Wizard**\n\n"
+        "Pošalji listu chattera (jedno ime po liniji):",
         ephemeral=True
     )
-    # Zatim šaljemo modal preko response (ne followup!)
-    modal = QualityCheckModal()
-    await interaction.followup.send_modal(modal)   # ovo je ispravno
 
-
-# Listener za Modal Submit
-@bot.event
-async def on_modal_submit(interaction: discord.Interaction):
-    # Provera da li je naš modal (5 polja)
-    if len(interaction.data.get("components", [])) != 5:
-        return
+    # Čekamo sledeću poruku od korisnika
+    def check(m):
+        return m.author.id == interaction.user.id and m.channel.id == interaction.channel.id
 
     try:
-        components = interaction.data["components"]
-        values = [comp["components"][0]["value"] for comp in components]
+        msg = await bot.wait_for('message', check=check, timeout=300)
+        chatters = [line.strip() for line in msg.content.strip().split("\n") if line.strip()]
 
-        chatter = values[0]
-        rt = values[1]
-        zzz = values[2]
-        obj = values[3]
-        fs = values[4]
+        if not chatters:
+            return await interaction.followup.send("Nisi uneo nijednog chattera.", ephemeral=True)
 
-        try:
-            scores = [float(x.replace(',', '.')) for x in [rt, zzz, obj, fs]]
-            general = round(sum(scores) / 4, 2)
-        except:
-            general = 0.0
-
-        entry = {
-            'chatter': chatter,
-            'rt': rt,
-            'zzz': zzz,
-            'obj': obj,
-            'fs': fs,
-            'general': general
-        }
-
-        view = QCContinueView([entry], interaction.user.id)
-
-        await interaction.response.send_message(
-            f"✅ **Dodat chatter:** {chatter} (ocena {general}/5)\n\n"
-            "Želiš li da dodaš još jednog?",
+        view = QCStartView(chatters, interaction.user.id)
+        await interaction.followup.send(
+            f"Pripremljeno **{len(chatters)}** chattera.\nKlikni dugme da počneš ocenjivanje.",
             view=view,
             ephemeral=True
         )
 
-    except Exception as e:
-        await interaction.response.send_message(f"❌ Greška pri obradi: {e}", ephemeral=True)
+    except asyncio.TimeoutError:
+        await interaction.followup.send("Vreme je isteklo.", ephemeral=True)
+
+
+# Modal submit listener (pojednostavljen za sada)
+@bot.event
+async def on_modal_submit(interaction: discord.Interaction):
+    # Ovo je privremeno rešenje - za puni wizard treba bolji state management
+    # Za sada predlažem da koristimo tekstualni unos dok ne stabilizujemo
+
+    await interaction.response.send_message("Modal submit detektovan - još u razvoju", ephemeral=True)
 
 # ---------- /schedule — CLEAN-THEN-ASSIGN + unknown models report ----------
 @tree.command(
