@@ -523,14 +523,10 @@ async def run_auto_schedule(shift: str):
 
         schedule_text = schedule_msg.content.strip()
 
-        # PRAVI POZIV /schedule sa apply=True
-        dummy_interaction = type('obj', (object,), {
-            'guild': guild,
-            'user': bot.user,
-            'response': type('obj', (object,), {'defer': lambda *a,**k: None, 'followup': type('obj', (object,), {'send': lambda *a,**k: None})})()
-        })()
+        print(f"[AUTO SCHEDULE] Pronađen raspored za {shift} → primenjujem...")
 
-        await schedule(dummy_interaction, text=schedule_text, apply=True)
+        # === PRAVI AUTO SCHEDULE ===
+        await apply_schedule_logic(guild, schedule_text)
 
         # Završna poruka
         role_id = {"grave": GRAVE_ROLE_ID, "after": AFTER_ROLE_ID, "main": MAIN_ROLE_ID}[shift]
@@ -541,9 +537,72 @@ async def run_auto_schedule(shift: str):
             "`ci model1/model2/model3/...`"
         )
 
+        print(f"[AUTO SCHEDULE] Uspešno završeno za {shift.upper()} smenu.")
+
     except Exception as e:
         print(f"[AUTO SCHEDULE] Greška za {shift}: {e}")
         await channel.send(f"❌ Greška u auto schedule za {shift.upper()}: {e}")
+
+
+async def apply_schedule_logic(guild, text: str):
+    """Identčna logika kao /schedule apply=true"""
+    bot_member = guild.me
+    global role_index
+
+    role_index = {}
+    for r in guild.roles:
+        if r.name.lower().startswith("team "):
+            base = normalize_model_name(r.name[5:])
+            role_index.setdefault(base, []).append(r)
+
+    # --- parsiranje teksta ---
+    text_norm = text.replace("⁄", "/").replace("／", "/")
+    raw_blocks = []
+    pattern = re.compile(r"(@\S+|\<@!?[\d]+\>)(.*?)(?=(?:@\S+|\<@!?[\d]+\>)|$)", re.S)
+    for m in pattern.finditer(text_norm):
+        raw_blocks.append((m.group(1).strip(), (m.group(2) or "").strip()))
+
+    def parse_roles_list_with_unknowns(roles_text: str):
+        txt = roles_text.replace("\\", "/")
+        segs = [s.strip() for s in re.split(r"[\/,;|]+", txt) if s.strip()]
+        wanted = []
+        unknown = []
+        seen = set()
+        for seg in segs:
+            model = extract_model_name(seg)
+            base = clean_role_phrase(model)
+            if not base:
+                continue
+            r = role_from_phrase(guild, base)
+            if r:
+                if r.id not in seen:
+                    wanted.append(r)
+                    seen.add(r.id)
+            else:
+                unknown.append(base)
+        return wanted, unknown
+
+    for _, (assignees_raw, roles_text) in enumerate(raw_blocks, start=1):
+        desired_roles, _ = parse_roles_list_with_unknowns(roles_text)
+        assignees, _ = split_assignees_and_roles("", assignees_raw)  # koristimo već popravljenu funkciju
+
+        for user_token in assignees:
+            member = member_from_token(guild, user_token)
+            if not member:
+                continue
+
+            # CLEAN
+            bot_touchable_model_roles = [
+                r for r in member.roles
+                if r.name.upper().startswith("TEAM ") and r.name.upper() not in KEEP_ROLE_NAMES and can_touch_role(bot_member, r)
+            ]
+            if bot_touchable_model_roles:
+                await safe_remove_roles(member, bot_touchable_model_roles, reason="auto schedule")
+
+            # ASSIGN
+            touchable_assign = [r for r in desired_roles if can_touch_role(bot_member, r)]
+            if touchable_assign:
+                await safe_add_roles(member, touchable_assign, reason="auto schedule")
 
 # ====== AI/FU HELPERI ======
 def _sanitize_mm_text(s: str) -> str:
@@ -1133,23 +1192,23 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
 
         return wanted, unknown
 
-    def split_assignees_and_roles(first_user: str, tail: str):
-        """Popravljena verzija za format: @user1 / @user2 modeli... ili @user1 / @user2 : modeli"""
+        def split_assignees_and_roles(first_user: str, tail: str):
+        """Popravljena verzija za tvoj tačan format: @user1 / @user2 modeli... ili @user1 / @user2 : modeli"""
         roles_text = tail.strip()
-        header_left = ""
+        header = ""
 
-        # Ako ima ":" – sve levo su chatteri
+        # Ako ima ":", sve levo od : su chatteri
         if ":" in roles_text:
-            header_left, roles_text = roles_text.split(":", 1)
+            header, roles_text = roles_text.split(":", 1)
         else:
-            # Ako nema ":", tražimo pattern @user1 / @user2 ...
-            m = re.match(r"^\s*(@\S+|\<@!?[\d]+\>)(?:\s*[\/,|]\s*(@\S+|\<@!?[\d]+\>))*\s*(.*)$", roles_text)
+            # Ako nema :, uzimamo sve do prvog modela
+            m = re.match(r"^(\s*(?:@\S+|\<@!?[\d]+\>)(?:\s*[\/,|]\s*(?:@\S+|\<@!?[\d]+\>))*)", roles_text)
             if m:
-                header_left = m.group(0).split(m.group(3))[0].strip() if m.group(3) else roles_text
-                roles_text = m.group(3).strip() if m.group(3) else ""
+                header = m.group(1).strip()
+                roles_text = roles_text[len(header):].strip()
 
-        # Razbijamo sve chatter-e (podržava / , | i više njih)
-        assignees = re.findall(r"(@\S+|\<@!?[\d]+\>)", header_left or first_user)
+        # Razbijamo sve @user-e
+        assignees = re.findall(r"(@\S+|\<@!?[\d]+\>)", header or first_user)
         if not assignees:
             assignees = [first_user]
 
