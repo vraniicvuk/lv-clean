@@ -1335,101 +1335,153 @@ class FarmModal(Modal, title="Farm unos"):
 async def farm(interaction: discord.Interaction):
     await interaction.response.send_modal(FarmModal(opener=interaction.user))
 
-# ========== QC MODAL - DAILY QUALITY CHECK (5 polja - ispravljeno) ==========
-# ========== QC MODAL ZA VIŠE CHATTERA (do 8 odjednom) ==========
-class QualityCheckMultiModal(Modal, title="Daily Quality Check - Više Chattera"):
+# ========== QC WIZARD - VIŠESTEPENI ZA VIŠE CHATTERA (Opcija B) ==========
+class QualityCheckModal(Modal, title="Daily Quality Check - 1. Chatter"):
     def __init__(self):
         super().__init__(timeout=None)
         
-        self.data = TextInput(
-            label="Unesi sve chattere (jedan po liniji)",
-            style=TextStyle.paragraph,
-            placeholder="Chodex\n@.fap19\nnick47999\nmoskrii\nsedlaa\n...",
+        self.chatter = TextInput(
+            label="Ime chattera",
+            placeholder="npr. Chodex ili @.chodex",
             required=True,
-            max_length=1000
+            max_length=100
         )
-        
         self.response_time = TextInput(
             label="Response Time (1-5)",
-            placeholder="npr. 4 ili 3.5",
+            placeholder="1-5",
             required=True,
             max_length=10
         )
-        
         self.zzz_usage = TextInput(
             label="Zzz Usage (1-5)",
-            placeholder="npr. 5 ili 4",
+            placeholder="1-5",
             required=True,
             max_length=10
         )
-        
         self.objectioning = TextInput(
             label="Objection Handling (1-5)",
-            placeholder="npr. 3 ili 4.5",
+            placeholder="1-5",
             required=True,
             max_length=10
         )
-        
         self.freestyle_smalltalk = TextInput(
-            label="Freestyle + Small Talk (prosek 1-5)",
-            placeholder="npr. 4 ili 3.5",
+            label="Freestyle + Small Talk (1-5)",
+            placeholder="1-5",
             required=True,
             max_length=10
         )
 
-        self.add_item(self.data)
+        self.add_item(self.chatter)
         self.add_item(self.response_time)
         self.add_item(self.zzz_usage)
         self.add_item(self.objectioning)
         self.add_item(self.freestyle_smalltalk)
 
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            lines = [line.strip() for line in self.data.value.strip().split("\n") if line.strip()]
-            if not lines:
-                return await interaction.response.send_message("❌ Nisi uneo nijednog chattera!", ephemeral=True)
 
-            qc_channel = interaction.guild.get_channel(1493996105380266114)
-            if not qc_channel:
-                return await interaction.response.send_message("❌ QC kanal nije pronađen!", ephemeral=True)
+class QCContinueView(discord.ui.View):
+    def __init__(self, qc_entries: list, user_id: int):
+        super().__init__(timeout=600)  # 10 minuta
+        self.qc_entries = qc_entries
+        self.user_id = user_id
 
-            response = float(self.response_time.value.replace(',', '.'))
-            zzz = float(self.zzz_usage.value.replace(',', '.'))
-            objection = float(self.objectioning.value.replace(',', '.'))
-            freestyle = float(self.freestyle_smalltalk.value.replace(',', '.'))
+    @discord.ui.button(label="Dodaj sledećeg chattera", style=discord.ButtonStyle.green)
+    async def add_another(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("Nisi ti pokrenuo ovaj QC!", ephemeral=True)
+        
+        await interaction.response.send_modal(QualityCheckModal())
 
-            general_score = round((response + zzz + objection + freestyle) / 4, 2)
+    @discord.ui.button(label="Završi i pošalji QC", style=discord.ButtonStyle.red)
+    async def finish(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("Nisi ti pokrenuo ovaj QC!", ephemeral=True)
 
-            await interaction.response.send_message(f"✅ QC za **{len(lines)}** chattera je u obradi...", ephemeral=True)
+        qc_channel = interaction.guild.get_channel(1493996105380266114)
+        if not qc_channel:
+            return await interaction.response.send_message("QC kanal nije pronađen!", ephemeral=True)
 
-            for chatter in lines:
-                embed = discord.Embed(title="📋 Daily Quality Check", color=0x00ff00, timestamp=datetime.now())
-                embed.add_field(name="Chatter", value=chatter, inline=False)
-                embed.add_field(name="Response Time", value=self.response_time.value, inline=True)
-                embed.add_field(name="Zzz Usage", value=self.zzz_usage.value, inline=True)
-                embed.add_field(name="Objection Handling", value=self.objectioning.value, inline=True)
-                embed.add_field(name="Freestyle + Small Talk", value=self.freestyle_smalltalk.value, inline=True)
-                embed.add_field(name="**Generalna ocena**", value=f"**{general_score}/5**", inline=False)
-                embed.set_footer(text=f"Popunio: {interaction.user}")
+        await interaction.response.edit_message(content="✅ QC završen. Šaljem sve rezultate...", view=None)
 
-                await qc_channel.send(embed=embed)
+        for entry in self.qc_entries:
+            embed = discord.Embed(title="📋 Daily Quality Check", color=0x00ff00, timestamp=datetime.now())
+            embed.add_field(name="Chatter", value=entry['chatter'], inline=False)
+            embed.add_field(name="Response Time", value=entry['rt'], inline=True)
+            embed.add_field(name="Zzz Usage", value=entry['zzz'], inline=True)
+            embed.add_field(name="Objection Handling", value=entry['obj'], inline=True)
+            embed.add_field(name="Freestyle + Small Talk", value=entry['fs'], inline=True)
+            embed.add_field(name="**Generalna ocena**", value=f"**{entry['general']}/5**", inline=False)
+            embed.set_footer(text=f"Popunio: {interaction.user}")
 
-            # Završno obaveštenje supervizorima
-            await qc_channel.send(
-                f"<@{923657835164889119}> <@{886983698321391667}> "
-                f"**QC je završen za {len(lines)} chattera.**"
-            )
+            await qc_channel.send(embed=embed)
 
-        except ValueError:
-            await interaction.response.send_message("❌ Ocene moraju biti brojevi (npr. 4 ili 3.5)!", ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message(f"❌ Greška: {e}", ephemeral=True)
+        await qc_channel.send(
+            f"<@{923657835164889119}> <@{886983698321391667}> "
+            f"**Daily QC je završen za {len(self.qc_entries)} chattera.**"
+        )
+
+        self.stop()
 
 
 # ========== /qc KOMANDA ==========
-@tree.command(name="qc", description="Otvori formu za Daily Quality Check (više chattera odjednom)", guild=GUILD_OBJ)
+@tree.command(name="qc", description="Počni Daily Quality Check za više chattera", guild=GUILD_OBJ)
 async def qc(interaction: discord.Interaction):
-    await interaction.response.send_modal(QualityCheckMultiModal())
+    await interaction.response.send_message(
+        "**Daily Quality Check Wizard**\n\n"
+        "Popuni podatke za prvog chattera. Posle svakog slanja moći ćeš da dodaš sledećeg.",
+        ephemeral=True
+    )
+    await interaction.followup.send_modal(QualityCheckModal())
+
+
+# Listener za Modal Submit (pamti više unosa)
+@bot.event
+async def on_modal_submit(interaction: discord.Interaction):
+    if not interaction.data or "custom_id" not in interaction.data:
+        return
+
+    # Proveravamo da li je naš QC modal
+    if len(interaction.data.get("components", [])) != 5:
+        return  # nije naš modal (ima 5 polja)
+
+    try:
+        # Izvlačimo vrednosti
+        components = interaction.data["components"]
+        values = [comp["components"][0]["value"] for comp in components]
+
+        chatter = values[0]
+        rt = values[1]
+        zzz = values[2]
+        obj = values[3]
+        fs = values[4]
+
+        try:
+            scores = [float(x.replace(',', '.')) for x in [rt, zzz, obj, fs]]
+            general = round(sum(scores) / 4, 2)
+        except:
+            general = 0.0
+
+        entry = {
+            'chatter': chatter,
+            'rt': rt,
+            'zzz': zzz,
+            'obj': obj,
+            'fs': fs,
+            'general': general
+        }
+
+        # Ako već postoji view u poruci, dodajemo u njega
+        # Za jednostavnost koristimo novi view svaki put (može se poboljšati kasnije)
+        view = QCContinueView([entry], interaction.user.id)
+
+        await interaction.response.send_message(
+            f"✅ **Chatter dodat:** {chatter} (ocena {general}/5)\n\n"
+            "Želiš li da dodaš još jednog?",
+            view=view,
+            ephemeral=True
+        )
+
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Greška pri obradi: {e}", ephemeral=True)
 
 # ---------- /schedule — CLEAN-THEN-ASSIGN + unknown models report ----------
 @tree.command(
