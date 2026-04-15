@@ -1335,11 +1335,7 @@ class FarmModal(Modal, title="Farm unos"):
 async def farm(interaction: discord.Interaction):
     await interaction.response.send_modal(FarmModal(opener=interaction.user))
 
-@tree.command(name="qc", description="Otvori formu za Daily Quality Check", guild=GUILD_OBJ)
-async def qc(interaction: discord.Interaction):
-    await interaction.response.send_modal(QualityCheckModal())
-
-# ========== QC MODAL - DAILY QUALITY CHECK (5 polja) ==========
+# ========== QC MODAL - DAILY QUALITY CHECK (5 polja - ispravljeno) ==========
 class QualityCheckModal(Modal, title="Daily Quality Check"):
     def __init__(self):
         super().__init__(timeout=None)
@@ -1350,31 +1346,27 @@ class QualityCheckModal(Modal, title="Daily Quality Check"):
             required=True,
             max_length=100
         )
-        
         self.response_time = TextInput(
             label="Response Time (1-5)",
-            placeholder="1 do 5",
+            placeholder="1-5",
             required=True,
             max_length=1
         )
-        
         self.zzz_usage = TextInput(
             label="Zzz Usage (1-5)",
-            placeholder="1 do 5",
+            placeholder="1-5",
             required=True,
             max_length=1
         )
-        
         self.objectioning = TextInput(
             label="Objection Handling (1-5)",
-            placeholder="1 do 5",
+            placeholder="1-5",
             required=True,
             max_length=1
         )
-        
         self.freestyle_smalltalk = TextInput(
             label="Freestyle + Small Talk (prosek 1-5)",
-            placeholder="Unesi prosečnu ocenu za oba (1-5)",
+            placeholder="Unesi prosečnu ocenu za oba",
             required=True,
             max_length=1
         )
@@ -1391,10 +1383,9 @@ class QualityCheckModal(Modal, title="Daily Quality Check"):
                 int(self.response_time.value),
                 int(self.zzz_usage.value),
                 int(self.objectioning.value),
-                int(self.freestyle_smalltalk.value)   # freestyle + small talk kao prosek
+                int(self.freestyle_smalltalk.value)
             ]
-            
-            general_score = round(sum(scores) / len(scores), 2)
+            general_score = round(sum(scores) / 4, 2)
 
             qc_channel = interaction.guild.get_channel(1493996105380266114)
             if not qc_channel:
@@ -1415,9 +1406,9 @@ class QualityCheckModal(Modal, title="Daily Quality Check"):
             await interaction.response.send_message("✅ Quality Check uspešno poslat!", ephemeral=True)
 
         except ValueError:
-            await interaction.response.send_message("❌ Ocene moraju biti brojevi od 1 do 5!", ephemeral=True)
+            await interaction.response.send_message("❌ Sve ocene moraju biti brojevi od 1 do 5!", ephemeral=True)
         except Exception as e:
-            await interaction.response.send_message(f"❌ Greška: {e}", ephemeral=True)
+            await interaction.response.send_message(f"❌ Greška pri obradi: {e}", ephemeral=True)
 
 
 # ========== /qc KOMANDA ==========
