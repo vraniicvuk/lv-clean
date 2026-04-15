@@ -599,17 +599,17 @@ async def apply_schedule_logic(guild, text: str):
         return wanted, unknown
 
     def split_assignees_and_roles(first_user: str, tail: str):
-        """Popravljena za @.chodex / @fap19 format"""
-        full = (first_user + " " + tail).strip()
-        assignees = re.findall(r"@[\.\w]+|\<@!?[\d]+\>", full)
+        full_line = (first_user + " " + tail).strip()
+        # Hvata @.chodex, @fap19, @nick itd.
+        assignees = re.findall(r'@[\.\w]+|\<@!?[\d]+\>', full_line)
         if not assignees:
             assignees = [first_user]
 
-        # Nađi kraj poslednjeg @user da odvojimo modele
+        # Sve posle poslednjeg @user su modeli
         last_end = 0
-        for match in re.finditer(r"(@[\.\w]+|\<@!?[\d]+\>)", full):
+        for match in re.finditer(r'(@[\.\w]+|\<@!?[\d]+\>)', full_line):
             last_end = match.end()
-        roles_text = full[last_end:].strip()
+        roles_text = full_line[last_end:].strip()
 
         return assignees, roles_text
 
@@ -1572,9 +1572,9 @@ async def new_model(interaction: discord.Interaction, ime: str):
     try:
         new_role = await guild.create_role(
             name=role_name,
-            colour=discord.Colour(0x2B2D31),
+            colour=discord.Colour(0x2b2d31),
             mentionable=True,
-            reason=f"/newm by {interaction.user}",
+            reason=f"/newm by {interaction.user}"
         )
         await asyncio.sleep(2)
         await sort_team_roles(guild)
@@ -1587,14 +1587,9 @@ async def new_model(interaction: discord.Interaction, ime: str):
         await new_category.set_permissions(guild.default_role, view_channel=False)
         await new_category.set_permissions(new_role, view_channel=True)
 
-        await general.send(
-            "Ovo je kanal u koji se upisuju sve bitne stavke vezane za model, spendere, ostale fanove i slično.\n\n"
-            "Ukoliko ste imali farmu, nju upisujete u kanalu #whales koristeći komandu /farm uz sve adekvatne podatke.\n"
-            "Ako vam je potrebno više informacija od onih koje već imate o modelu, obavezno to napišite u grupnom chatu vaše smene na Telegramu...\n"
-            "(nastavak teksta po tvom originalnom zahtevu)"
-        )
+        await general.send("Dobrodošli u novi model kanal.")
 
-        embed = discord.Embed(title="✅ Model kreiran", color=0x00FF00)
+        embed = discord.Embed(title="✅ Model kreiran", color=0x00ff00)
         embed.add_field(name="Rola", value=role_name, inline=False)
         embed.add_field(name="Kategorija", value=category_name, inline=False)
         await interaction.followup.send(embed=embed)
