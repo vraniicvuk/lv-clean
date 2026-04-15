@@ -1335,71 +1335,11 @@ class FarmModal(Modal, title="Farm unos"):
 async def farm(interaction: discord.Interaction):
     await interaction.response.send_modal(FarmModal(opener=interaction.user))
 
-# ========== QC WIZARD - STABILNA VERZIJA ==========
-class QualityCheckModal(Modal, title="Oceni Chattera"):
-    def __init__(self, chatter_name: str):
-        super().__init__(timeout=None)
-        self.chatter_name = chatter_name
-
-        self.response_time = TextInput(
-            label=f"Response Time - {chatter_name} (1-5)",
-            placeholder="1-5",
-            required=True,
-            max_length=1
-        )
-        self.zzz_usage = TextInput(
-            label=f"Zzz Usage - {chatter_name} (1-5)",
-            placeholder="1-5",
-            required=True,
-            max_length=1
-        )
-        self.objectioning = TextInput(
-            label=f"Objection Handling - {chatter_name} (1-5)",
-            placeholder="1-5",
-            required=True,
-            max_length=1
-        )
-        self.freestyle = TextInput(
-            label=f"Freestyle - {chatter_name} (1-5)",
-            placeholder="1-5",
-            required=True,
-            max_length=1
-        )
-        self.small_talk = TextInput(
-            label=f"Small Talk - {chatter_name} (1-5)",
-            placeholder="1-5",
-            required=True,
-            max_length=1
-        )
-
-        self.add_item(self.response_time)
-        self.add_item(self.zzz_usage)
-        self.add_item(self.objectioning)
-        self.add_item(self.freestyle)
-        self.add_item(self.small_talk)
-
-
-class QCContinueView(discord.ui.View):
-    def __init__(self, chatters: list, user_id: int):
-        super().__init__(timeout=600)
-        self.chatters = chatters
-        self.user_id = user_id
-        self.current_index = 0
-        self.results = []
-
-    @discord.ui.button(label="Počni ocenjivanje", style=discord.ButtonStyle.green)
-    async def start(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id:
-            return await interaction.response.send_message("Nisi ti pokrenuo QC!", ephemeral=True)
-
-        await interaction.response.send_modal(QualityCheckModal(self.chatters[self.current_index]))
-
-
-# ========== /qc KOMANDA ==========
-@tree.command(name="qc", description="Počni Daily Quality Check za više chattera", guild=GUILD_OBJ)
+# ========== SIMPLE QC - SAMO LISTA CHATTERA ==========
+@tree.command(name="qc", description="Pošalji Daily QC listu chattera", guild=GUILD_OBJ)
 async def qc(interaction: discord.Interaction):
     await interaction.response.send_message(
-        "**Daily QC Wizard**\n\n"
+        "**Daily QC - Unos chattera**\n\n"
         "Pošalji listu chattera (jedno ime po liniji):",
         ephemeral=True
     )
@@ -1409,64 +1349,41 @@ async def qc(interaction: discord.Interaction):
 
     try:
         msg = await bot.wait_for('message', check=check, timeout=300)
+        
         chatters = [line.strip() for line in msg.content.strip().split("\n") if line.strip()]
-
+        
         if not chatters:
-            return await interaction.followup.send("Nisi uneo nijednog chattera.", ephemeral=True)
+            return await interaction.followup.send("❌ Nisi uneo nijednog chattera.", ephemeral=True)
 
-        view = QCContinueView(chatters, interaction.user.id)
+        now = datetime.now().strftime("%d.%m.%Y %H:%M")
+
+        # Formatirani report
+        report = f"**Daily QC Report**\n"
+        report += f"**Datum i vreme:** {now}\n"
+        report += f"**Broj chattera:** {len(chatters)}\n"
+        report += f"**Popunio:** {interaction.user.mention}\n\n"
+        report += "**Chatteri:**\n"
+        
+        for i, chatter in enumerate(chatters, 1):
+            report += f"{i}. {chatter}\n"
+
+        qc_channel = interaction.guild.get_channel(1493996105380266114)
+        if qc_channel:
+            await qc_channel.send(report)
+            await qc_channel.send(
+                f"<@{923657835164889119}> <@{886983698321391667}> "
+                f"**Daily QC je poslat za {len(chatters)} chattera.**"
+            )
 
         await interaction.followup.send(
-            f"Pripremljeno **{len(chatters)}** chattera.\nKlikni dugme da počneš ocenjivanje.",
-            view=view,
+            f"✅ QC uspešno poslat za **{len(chatters)}** chattera.", 
             ephemeral=True
         )
 
     except asyncio.TimeoutError:
-        await interaction.followup.send("Vreme za unos je isteklo.", ephemeral=True)
-
-
-# Modal Submit Listener
-@bot.event
-async def on_modal_submit(interaction: discord.Interaction):
-    # Provera da li je naš modal (5 TextInput polja)
-    if len(interaction.data.get("components", [])) != 5:
-        return
-
-    try:
-        components = interaction.data["components"]
-        values = [comp["components"][0]["value"] for comp in components]
-
-        chatter = values[0]
-        rt = values[1]
-        zzz = values[2]
-        obj = values[3]
-        fs = values[4]
-
-        try:
-            scores = [float(x.replace(',', '.')) for x in [rt, zzz, obj, fs]]
-            general = round(sum(scores) / 4, 2)
-        except:
-            general = 0.0
-
-        # Šaljemo odmah u kanal
-        qc_channel = interaction.guild.get_channel(1493996105380266114)
-        if qc_channel:
-            embed = discord.Embed(title="📋 Daily Quality Check", color=0x00ff00, timestamp=datetime.now())
-            embed.add_field(name="Chatter", value=chatter, inline=False)
-            embed.add_field(name="Response Time", value=rt, inline=True)
-            embed.add_field(name="Zzz Usage", value=zzz, inline=True)
-            embed.add_field(name="Objection Handling", value=obj, inline=True)
-            embed.add_field(name="Freestyle + Small Talk", value=fs, inline=True)
-            embed.add_field(name="**Generalna ocena**", value=f"**{general}/5**", inline=False)
-            embed.set_footer(text=f"Popunio: {interaction.user}")
-
-            await qc_channel.send(embed=embed)
-
-        await interaction.response.send_message(f"✅ Ocena za **{chatter}** sačuvana ({general}/5).", ephemeral=True)
-
+        await interaction.followup.send("Vreme za unos liste je isteklo.", ephemeral=True)
     except Exception as e:
-        await interaction.response.send_message(f"❌ Greška pri obradi: {e}", ephemeral=True)
+        await interaction.followup.send(f"❌ Greška: {e}", ephemeral=True)
 
 # ---------- /schedule — CLEAN-THEN-ASSIGN + unknown models report ----------
 @tree.command(
