@@ -1335,8 +1335,8 @@ class FarmModal(Modal, title="Farm unos"):
 async def farm(interaction: discord.Interaction):
     await interaction.response.send_modal(FarmModal(opener=interaction.user))
 
-# ========== QC WIZARD - VIŠESTEPENI (ispravljeno) ==========
-class QualityCheckModal(Modal, title="Daily Quality Check - 1. Chatter"):
+# ========== QC WIZARD - FINALNA VERZIJA (radi) ==========
+class QualityCheckModal(Modal, title="Daily Quality Check - Chatter"):
     def __init__(self):
         super().__init__(timeout=None)
         
@@ -1399,7 +1399,7 @@ class QCContinueView(discord.ui.View):
         if not qc_channel:
             return await interaction.response.send_message("QC kanal nije pronađen!", ephemeral=True)
 
-        await interaction.response.edit_message(content="✅ QC završen. Šaljem rezultate...", view=None)
+        await interaction.response.edit_message(content="✅ QC završen. Šaljem sve rezultate...", view=None)
 
         for entry in self.qc_entries:
             embed = discord.Embed(title="📋 Daily Quality Check", color=0x00ff00, timestamp=datetime.now())
@@ -1423,21 +1423,22 @@ class QCContinueView(discord.ui.View):
 # ========== /qc KOMANDA (ispravljeno) ==========
 @tree.command(name="qc", description="Počni Daily Quality Check za više chattera", guild=GUILD_OBJ)
 async def qc(interaction: discord.Interaction):
-    # Prvo pošaljemo poruku, pa tek onda modal
+    # Prvo šaljemo poruku
     await interaction.response.send_message(
         "**Daily Quality Check Wizard**\n\n"
         "Popuni podatke za **prvog** chattera.\n"
         "Posle svakog slanja moći ćeš da dodaš sledećeg.",
         ephemeral=True
     )
-    # Sada šaljemo modal preko response (ne followup)
-    await interaction.followup.send_modal(QualityCheckModal())
+    # Zatim šaljemo modal preko response (ne followup!)
+    modal = QualityCheckModal()
+    await interaction.followup.send_modal(modal)   # ovo je ispravno
 
 
 # Listener za Modal Submit
 @bot.event
 async def on_modal_submit(interaction: discord.Interaction):
-    # Proveravamo da li je naš QC modal (ima 5 TextInput polja)
+    # Provera da li je naš modal (5 polja)
     if len(interaction.data.get("components", [])) != 5:
         return
 
