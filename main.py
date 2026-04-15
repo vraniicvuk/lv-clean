@@ -502,7 +502,7 @@ async def auto_schedule_task():
     h, m = now.hour, now.minute
 
     triggers = {
-        "grave": (8, 34),
+        "grave": (8, 36),
         "after": (17, 45),
         "main": (1, 45),
     }
