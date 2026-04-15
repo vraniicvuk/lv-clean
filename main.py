@@ -1339,44 +1339,42 @@ async def farm(interaction: discord.Interaction):
 async def qc(interaction: discord.Interaction):
     await interaction.response.send_modal(QualityCheckModal())
 
-# ========== QC MODAL - DAILY QUALITY CHECK ==========
+# ========== QC MODAL - DAILY QUALITY CHECK (5 polja) ==========
 class QualityCheckModal(Modal, title="Daily Quality Check"):
     def __init__(self):
         super().__init__(timeout=None)
         
         self.chatter = TextInput(
-            label="Ime chattera (npr. Chodex ili @.chodex)",
-            placeholder="Unesi ime chattera",
+            label="Ime chattera",
+            placeholder="npr. Chodex ili @.chodex",
             required=True,
             max_length=100
         )
+        
         self.response_time = TextInput(
             label="Response Time (1-5)",
-            placeholder="1-5",
+            placeholder="1 do 5",
             required=True,
             max_length=1
         )
+        
         self.zzz_usage = TextInput(
             label="Zzz Usage (1-5)",
-            placeholder="1-5",
+            placeholder="1 do 5",
             required=True,
             max_length=1
         )
+        
         self.objectioning = TextInput(
             label="Objection Handling (1-5)",
-            placeholder="1-5",
+            placeholder="1 do 5",
             required=True,
             max_length=1
         )
-        self.freestyle = TextInput(
-            label="Freestyle (1-5)",
-            placeholder="1-5",
-            required=True,
-            max_length=1
-        )
-        self.small_talk = TextInput(
-            label="Small Talk (1-5)",
-            placeholder="1-5",
+        
+        self.freestyle_smalltalk = TextInput(
+            label="Freestyle + Small Talk (prosek 1-5)",
+            placeholder="Unesi prosečnu ocenu za oba (1-5)",
             required=True,
             max_length=1
         )
@@ -1385,45 +1383,47 @@ class QualityCheckModal(Modal, title="Daily Quality Check"):
         self.add_item(self.response_time)
         self.add_item(self.zzz_usage)
         self.add_item(self.objectioning)
-        self.add_item(self.freestyle)
-        self.add_item(self.small_talk)
+        self.add_item(self.freestyle_smalltalk)
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
-            # Uzimamo ocene
             scores = [
                 int(self.response_time.value),
                 int(self.zzz_usage.value),
                 int(self.objectioning.value),
-                int(self.freestyle.value),
-                int(self.small_talk.value)
+                int(self.freestyle_smalltalk.value)   # freestyle + small talk kao prosek
             ]
-            general_score = round(sum(scores) / 5, 2)
+            
+            general_score = round(sum(scores) / len(scores), 2)
 
-            # Formatirana poruka
             qc_channel = interaction.guild.get_channel(1493996105380266114)
             if not qc_channel:
                 return await interaction.response.send_message("❌ QC kanal nije pronađen!", ephemeral=True)
 
-            embed = discord.Embed(title="📋 Daily Quality Check", color=0x00ff00)
+            embed = discord.Embed(title="📋 Daily Quality Check", color=0x00ff00, timestamp=datetime.now())
             embed.add_field(name="Chatter", value=self.chatter.value, inline=False)
             embed.add_field(name="Response Time", value=self.response_time.value, inline=True)
             embed.add_field(name="Zzz Usage", value=self.zzz_usage.value, inline=True)
             embed.add_field(name="Objection Handling", value=self.objectioning.value, inline=True)
-            embed.add_field(name="Freestyle", value=self.freestyle.value, inline=True)
-            embed.add_field(name="Small Talk", value=self.small_talk.value, inline=True)
+            embed.add_field(name="Freestyle + Small Talk", value=self.freestyle_smalltalk.value, inline=True)
             embed.add_field(name="**Generalna ocena**", value=f"**{general_score}/5**", inline=False)
-            embed.set_footer(text=f"Popunio: {interaction.user} • {datetime.now().strftime('%d.%m.%Y %H:%M')}")
+            embed.set_footer(text=f"Popunio: {interaction.user}")
 
             await qc_channel.send(embed=embed)
-
-            # Taguj supervizore
             await qc_channel.send(f"<@{923657835164889119}> <@{886983698321391667}> QC je poslat.")
 
             await interaction.response.send_message("✅ Quality Check uspešno poslat!", ephemeral=True)
 
+        except ValueError:
+            await interaction.response.send_message("❌ Ocene moraju biti brojevi od 1 do 5!", ephemeral=True)
         except Exception as e:
-            await interaction.response.send_message(f"❌ Greška pri obradi: {e}", ephemeral=True)
+            await interaction.response.send_message(f"❌ Greška: {e}", ephemeral=True)
+
+
+# ========== /qc KOMANDA ==========
+@tree.command(name="qc", description="Otvori formu za Daily Quality Check", guild=GUILD_OBJ)
+async def qc(interaction: discord.Interaction):
+    await interaction.response.send_modal(QualityCheckModal())
 
 # ---------- /schedule — CLEAN-THEN-ASSIGN + unknown models report ----------
 @tree.command(
