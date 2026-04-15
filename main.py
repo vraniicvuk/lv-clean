@@ -17,11 +17,12 @@ from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 from openai import OpenAI
 from difflib import SequenceMatcher
+
 # --- env first ---
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = os.getenv("GUILD_ID")
-USE_AI_FU = os.getenv("USE_AI_FU", "false").lower() in ("1","true","yes","on")
+USE_AI_FU = os.getenv("USE_AI_FU", "false").lower() in ("1", "true", "yes", "on")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 # build client only after env is loaded
@@ -29,9 +30,32 @@ client = OpenAI(api_key=OPENAI_API_KEY) if (USE_AI_FU and OPENAI_API_KEY) else N
 if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN nije setovan u .env")
 STOPWORDS = {
-    "vip","free","paid","oll","ock","ra","inb","eep","tsu","jsn",
-    "vf","ggn","bcl","hnq","bk","sa","tvn","yll","oftv","kct",
-    "trans","sexy","zzz","x","c","g"
+    "vip",
+    "free",
+    "paid",
+    "oll",
+    "ock",
+    "ra",
+    "inb",
+    "eep",
+    "tsu",
+    "jsn",
+    "vf",
+    "ggn",
+    "bcl",
+    "hnq",
+    "bk",
+    "sa",
+    "tvn",
+    "yll",
+    "oftv",
+    "kct",
+    "trans",
+    "sexy",
+    "zzz",
+    "x",
+    "c",
+    "g",
 }
 # ---------- TUNABLES ----------
 SLEEP_BETWEEN_CALLS = 0.35
@@ -40,14 +64,12 @@ RETRIES = 5
 RETRY_BASE_SLEEP = 0.8
 PROGRESS_EVERY_N = 5
 # Role koje SE NIKAD NE DIRAJU kod auto-clean (pre /schedule)
-KEEP_ROLE_NAMES = {
-    "AFTERNOON", "GRAVEYARD", "MAIN", "OBUKA", "LV CHATTER"
-}
+KEEP_ROLE_NAMES = {"AFTERNOON", "GRAVEYARD", "MAIN", "OBUKA", "LV CHATTER"}
 role_index = {}
 # ---------- BOT ----------
 INTENTS = discord.Intents.default()
 INTENTS.members = True
-INTENTS.message_content = True # za !mm detekciju
+INTENTS.message_content = True  # za !mm detekciju
 bot = commands.Bot(command_prefix="!", intents=INTENTS)
 tree = bot.tree
 GUILD_OBJ = discord.Object(id=int(GUILD_ID)) if GUILD_ID else None
@@ -57,6 +79,8 @@ MM_APPROVAL_NAME_SNIPPET = "mm-approval"
 MM_SUMMARY_CHANNEL_ID = 1433577356437491774
 # ==== anti-spam za AI pozive ====
 AI_BLOCKED_UNTIL = None
+
+
 def extract_core_name(name: str):
     name = name.lower()
     name = name.replace("/", " ")
@@ -72,11 +96,17 @@ def extract_core_name(name: str):
     if not clean:
         return name.strip()
     return clean[0]
+
+
 def ai_available():
     return (AI_BLOCKED_UNTIL is None) or (datetime.utcnow() >= AI_BLOCKED_UNTIL)
+
+
 def backoff_ai(minutes=30):
     global AI_BLOCKED_UNTIL
     AI_BLOCKED_UNTIL = datetime.utcnow() + timedelta(minutes=minutes)
+
+
 async def safe_generate_fus(mm_line: str, channel_id: int) -> list[str]:
     """Proba AI, ako ne moze ili nema AI, pada na offline, bez rate limita."""
     # ako nema AI ili smo u backoff stanju → offline
@@ -99,26 +129,30 @@ async def safe_generate_fus(mm_line: str, channel_id: int) -> list[str]:
         else:
             print("[AI_FU] fail, offline fallback:", e)
         return await generate_fus_offline(mm_line)
+
+
 async def generate_fus_offline(mm_line: str) -> list[str]:
     txt = await gen_fu_offline(mm_line)
     lines = [ln for ln in txt.splitlines() if ln.strip().startswith("fu")]
     return lines[:4]
+
+
 # ============ MASS REMINDERI + !mm LOGIKA ============
-GRAVE_GENERAL_CHANNEL_ID = 1364850505234518067 # #graveyard
-AFTER_GENERAL_CHANNEL_ID = 1364850574205648967 # #afternoon
-MAIN_GENERAL_CHANNEL_ID = 1364850795215982634 # #main
-GRAVE_ROLE_ID = 1410962300554313870 # @graveyard
-AFTER_ROLE_ID = 1410962344124612710 # @afternoon
-MAIN_ROLE_ID = 1410962407454675047 # @main
+GRAVE_GENERAL_CHANNEL_ID = 1364850505234518067  # #graveyard
+AFTER_GENERAL_CHANNEL_ID = 1364850574205648967  # #afternoon
+MAIN_GENERAL_CHANNEL_ID = 1364850795215982634  # #main
+GRAVE_ROLE_ID = 1410962300554313870  # @graveyard
+AFTER_ROLE_ID = 1410962344124612710  # @afternoon
+MAIN_ROLE_ID = 1410962407454675047  # @main
 # Kanal u koji se šalje raspored za svaku smenu
 SCHEDULE_CHANNEL = {
-    "grave": 1364850505234518067, # graveyard
-    "after": 1364850574205648967, # afternoon
-    "main": 1364850795215982634 # main
+    "grave": 1364850505234518067,  # graveyard
+    "after": 1364850574205648967,  # afternoon
+    "main": 1364850795215982634,  # main
 }
 SUPERVISOR_IDS = [
-    886983698321391667, # ti
-    923657835164889119, # drugi supervizor
+    886983698321391667,  # ti
+    923657835164889119,  # drugi supervizor
 ]
 # koliko cekamo posle DRUGOG generala
 SHIFT_FOLLOW_DELAY_MIN = {
@@ -139,65 +173,115 @@ shift_first_sent_at = {
     "main": None,
 }
 # poslednji !mm po kanalu
-mm_last_time: dict[int, datetime] = {} # channel_id -> datetime
+mm_last_time: dict[int, datetime] = {}  # channel_id -> datetime
 # raspored svih general poruka (sa opomenama i penalima)
 SCHEDULE = [
     # ---------- GRAVE ----------
-    {"time": time(10, 0), "channel_id": GRAVE_GENERAL_CHANNEL_ID,
-     "text": f"<@&{GRAVE_ROLE_ID}> molim da mass bude poslat najkasnije do 11:30.\nU slučaju neispunjavanja obaveze, sledi opomena. Ukoliko se prekršaj ponovi, ide penal od 50$.",
-     "shift": "grave", "kind": "first"},
-   
-    {"time": time(11, 0), "channel_id": GRAVE_GENERAL_CHANNEL_ID,
-     "text": f"<@&{GRAVE_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.\nNeispunjavanje obaveze rezultira opomenom, a ponavljanje prekršaja penalom od 50$.",
-     "shift": "grave", "kind": "second"},
-   
-    {"time": time(11, 30), "channel_id": GRAVE_GENERAL_CHANNEL_ID,
-     "text": f"<@&{GRAVE_ROLE_ID}> molim da proverite da li nekom modelu nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.\nUkoliko mass i dalje nije poslat, sledi opomena, a pri ponavljanju prekršaja penal od 50$.",
-     "shift": None, "kind": None},
-   
-    {"time": time(14, 0), "channel_id": GRAVE_GENERAL_CHANNEL_ID,
-     "text": f"<@&{GRAVE_ROLE_ID}> ukoliko drugi mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.\nNeispunjavanje obaveze rezultira opomenom, a ponavljanje prekršaja penalom od 50$.",
-     "shift": None, "kind": None},
-   
-    {"time": time(14, 30), "channel_id": GRAVE_GENERAL_CHANNEL_ID,
-     "text": f"<@&{GRAVE_ROLE_ID}> molim da proverite da li nekom modelu nedostaje drugi mass; ukoliko nedostaje, pošaljite ga odmah.\nUkoliko mass i dalje nije poslat, sledi opomena, a pri ponavljanju prekršaja penal od 50$.",
-     "shift": None, "kind": None},
+    {
+        "time": time(10, 0),
+        "channel_id": GRAVE_GENERAL_CHANNEL_ID,
+        "text": f"<@&{GRAVE_ROLE_ID}> molim da mass bude poslat najkasnije do 11:30.\nU slučaju neispunjavanja obaveze, sledi opomena. Ukoliko se prekršaj ponovi, ide penal od 50$.",
+        "shift": "grave",
+        "kind": "first",
+    },
+    {
+        "time": time(11, 0),
+        "channel_id": GRAVE_GENERAL_CHANNEL_ID,
+        "text": f"<@&{GRAVE_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.\nNeispunjavanje obaveze rezultira opomenom, a ponavljanje prekršaja penalom od 50$.",
+        "shift": "grave",
+        "kind": "second",
+    },
+    {
+        "time": time(11, 30),
+        "channel_id": GRAVE_GENERAL_CHANNEL_ID,
+        "text": f"<@&{GRAVE_ROLE_ID}> molim da proverite da li nekom modelu nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.\nUkoliko mass i dalje nije poslat, sledi opomena, a pri ponavljanju prekršaja penal od 50$.",
+        "shift": None,
+        "kind": None,
+    },
+    {
+        "time": time(14, 0),
+        "channel_id": GRAVE_GENERAL_CHANNEL_ID,
+        "text": f"<@&{GRAVE_ROLE_ID}> ukoliko drugi mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.\nNeispunjavanje obaveze rezultira opomenom, a ponavljanje prekršaja penalom od 50$.",
+        "shift": None,
+        "kind": None,
+    },
+    {
+        "time": time(14, 30),
+        "channel_id": GRAVE_GENERAL_CHANNEL_ID,
+        "text": f"<@&{GRAVE_ROLE_ID}> molim da proverite da li nekom modelu nedostaje drugi mass; ukoliko nedostaje, pošaljite ga odmah.\nUkoliko mass i dalje nije poslat, sledi opomena, a pri ponavljanju prekršaja penal od 50$.",
+        "shift": None,
+        "kind": None,
+    },
     # ---------- AFTERNOON ----------
-    {"time": time(18, 0), "channel_id": AFTER_GENERAL_CHANNEL_ID,
-     "text": f"<@&{AFTER_ROLE_ID}> molim da mass bude poslat najkasnije do 19:30.\nU slučaju neispunjavanja obaveze, sledi opomena. Ukoliko se prekršaj ponovi, ide penal od 50$.",
-     "shift": "after", "kind": "first"},
-   
-    {"time": time(19, 0), "channel_id": AFTER_GENERAL_CHANNEL_ID,
-     "text": f"<@&{AFTER_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.\nNeispunjavanje obaveze rezultira opomenom, a ponavljanje prekršaja penalom od 50$.",
-     "shift": "after", "kind": "second"},
-   
-    {"time": time(19, 30), "channel_id": AFTER_GENERAL_CHANNEL_ID,
-     "text": f"<@&{AFTER_ROLE_ID}> molim da proverite da li nekom modelu nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.\nUkoliko mass i dalje nije poslat, sledi opomena, a pri ponavljanju prekršaja penal od 50$.",
-     "shift": None, "kind": None},
-   
-    {"time": time(22, 0), "channel_id": AFTER_GENERAL_CHANNEL_ID,
-     "text": f"<@&{AFTER_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.\nNeispunjavanje obaveze rezultira opomenom, a ponavljanje prekršaja penalom od 50$.",
-     "shift": "after", "kind": "second"},
-   
-    {"time": time(22, 30), "channel_id": AFTER_GENERAL_CHANNEL_ID,
-     "text": f"<@&{AFTER_ROLE_ID}> molim da proverite da li nekom modelu i dalje nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.\nUkoliko mass i dalje nije poslat, sledi opomena, a pri ponavljanju prekršaja penal od 50$.",
-     "shift": None, "kind": None},
+    {
+        "time": time(18, 0),
+        "channel_id": AFTER_GENERAL_CHANNEL_ID,
+        "text": f"<@&{AFTER_ROLE_ID}> molim da mass bude poslat najkasnije do 19:30.\nU slučaju neispunjavanja obaveze, sledi opomena. Ukoliko se prekršaj ponovi, ide penal od 50$.",
+        "shift": "after",
+        "kind": "first",
+    },
+    {
+        "time": time(19, 0),
+        "channel_id": AFTER_GENERAL_CHANNEL_ID,
+        "text": f"<@&{AFTER_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.\nNeispunjavanje obaveze rezultira opomenom, a ponavljanje prekršaja penalom od 50$.",
+        "shift": "after",
+        "kind": "second",
+    },
+    {
+        "time": time(19, 30),
+        "channel_id": AFTER_GENERAL_CHANNEL_ID,
+        "text": f"<@&{AFTER_ROLE_ID}> molim da proverite da li nekom modelu nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.\nUkoliko mass i dalje nije poslat, sledi opomena, a pri ponavljanju prekršaja penal od 50$.",
+        "shift": None,
+        "kind": None,
+    },
+    {
+        "time": time(22, 0),
+        "channel_id": AFTER_GENERAL_CHANNEL_ID,
+        "text": f"<@&{AFTER_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.\nNeispunjavanje obaveze rezultira opomenom, a ponavljanje prekršaja penalom od 50$.",
+        "shift": "after",
+        "kind": "second",
+    },
+    {
+        "time": time(22, 30),
+        "channel_id": AFTER_GENERAL_CHANNEL_ID,
+        "text": f"<@&{AFTER_ROLE_ID}> molim da proverite da li nekom modelu i dalje nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.\nUkoliko mass i dalje nije poslat, sledi opomena, a pri ponavljanju prekršaja penal od 50$.",
+        "shift": None,
+        "kind": None,
+    },
     # ---------- MAIN ----------
-    {"time": time(2, 0), "channel_id": MAIN_GENERAL_CHANNEL_ID,
-     "text": f"<@&{MAIN_ROLE_ID}> molim da mass bude poslat najkasnije do 4:00.\nU slučaju neispunjavanja obaveze, sledi opomena. Ukoliko se prekršaj ponovi, ide penal od 50$.",
-     "shift": "main", "kind": "first"},
-   
-    {"time": time(3, 0), "channel_id": MAIN_GENERAL_CHANNEL_ID,
-     "text": f"<@&{MAIN_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih sat vremena.\nNeispunjavanje obaveze rezultira opomenom, a ponavljanje prekršaja penalom od 50$.",
-     "shift": "main", "kind": "second"},
-   
-    {"time": time(4, 0), "channel_id": MAIN_GENERAL_CHANNEL_ID,
-     "text": f"<@&{MAIN_ROLE_ID}> molim da proverite da li nekom modelu nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.\nUkoliko mass i dalje nije poslat, sledi opomena, a pri ponavljanju prekršaja penal od 50$.",
-     "shift": None, "kind": None},
+    {
+        "time": time(2, 0),
+        "channel_id": MAIN_GENERAL_CHANNEL_ID,
+        "text": f"<@&{MAIN_ROLE_ID}> molim da mass bude poslat najkasnije do 4:00.\nU slučaju neispunjavanja obaveze, sledi opomena. Ukoliko se prekršaj ponovi, ide penal od 50$.",
+        "shift": "main",
+        "kind": "first",
+    },
+    {
+        "time": time(3, 0),
+        "channel_id": MAIN_GENERAL_CHANNEL_ID,
+        "text": f"<@&{MAIN_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih sat vremena.\nNeispunjavanje obaveze rezultira opomenom, a ponavljanje prekršaja penalom od 50$.",
+        "shift": "main",
+        "kind": "second",
+    },
+    {
+        "time": time(4, 0),
+        "channel_id": MAIN_GENERAL_CHANNEL_ID,
+        "text": f"<@&{MAIN_ROLE_ID}> molim da proverite da li nekom modelu nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.\nUkoliko mass i dalje nije poslat, sledi opomena, a pri ponavljanju prekršaja penal od 50$.",
+        "shift": None,
+        "kind": None,
+    },
 ]
+
+
 def is_mm_approval_channel(channel: discord.abc.GuildChannel) -> bool:
     from discord import TextChannel
-    return isinstance(channel, TextChannel) and MM_APPROVAL_NAME_SNIPPET in channel.name.lower()
+
+    return (
+        isinstance(channel, TextChannel)
+        and MM_APPROVAL_NAME_SNIPPET in channel.name.lower()
+    )
+
+
 async def send_shift_followups(shift_name: str):
     delay = SHIFT_FOLLOW_DELAY_MIN[shift_name]
     await asyncio.sleep(delay * 60)
@@ -221,12 +305,16 @@ async def send_shift_followups(shift_name: str):
         last_mm = mm_last_time.get(ch.id)
         # nikad nije bilo !mm ili je bilo pre prvog generala → fali mass
         if (last_mm is None) or (last_mm < first_sent):
-            await ch.send(f"<@&{role_id}> fali mass, proverite da li je poslat i pošaljite ga ovde.")
+            await ch.send(
+                f"<@&{role_id}> fali mass, proverite da li je poslat i pošaljite ga ovde."
+            )
+
+
 # ==== MM WINDOW SCANNER (prozor reminderi; ping NA KRAJU prozora) ====
 MM_WINDOW_ROLE_BY_SHIFT = {
-    "graveyard": 1410962300554313870, # @graveyard
-    "afternoon": 1410962344124612710, # @afternoon
-    "main": 1410962407454675047, # @main
+    "graveyard": 1410962300554313870,  # @graveyard
+    "afternoon": 1410962344124612710,  # @afternoon
+    "main": 1410962407454675047,  # @main
 }
 # label, start_h, start_m, end_h, end_m, shift
 # po tvom zahtevu: start = reminder_start - 30min, ping na END ako nema !mm u prozoru
@@ -242,25 +330,31 @@ MM_WINDOWS = [
 ]
 # markeri da ne pingujemo više puta po prozoru (key = (channel_id, label, YYYY-MM-DD))
 mm_scanner_bumped = set()
+
+
 def _local_now():
     """Tačno vreme za Beograd (automatski CET/CEST)"""
     return datetime.now(ZoneInfo("Europe/Belgrade"))
+
+
 def _window_today(start_h, start_m, end_h, end_m):
-    now = _local_now() # datetime, ne .time()
+    now = _local_now()  # datetime, ne .time()
     start = now.replace(hour=start_h, minute=start_m, second=0, microsecond=0)
     end = now.replace(hour=end_h, minute=end_m, second=0, microsecond=0)
     if end <= start:
         end += timedelta(days=1)
     return start, end
+
+
 @tasks.loop(minutes=1)
 async def mm_window_scanner():
     """Skener: proverava na KRAJU svakog prozora da li je bilo !mm od 'start' do 'end'.
-       Ako nije, pinguje odgovarajuću shift rolu u svim mm-approval kanalima.
+    Ako nije, pinguje odgovarajuću shift rolu u svim mm-approval kanalima.
     """
     guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
     if not guild:
         return
-    now = _local_now() # datetime
+    now = _local_now()  # datetime
     for label, sh, sm, eh, em, shift in MM_WINDOWS:
         start, end = _window_today(sh, sm, eh, em)
         # pingujemo tek kad izađemo iz prozora (>= end) i još nismo bumpovali taj prozor danas
@@ -270,13 +364,15 @@ async def mm_window_scanner():
                     continue
                 key = (ch.id, label, start.date().isoformat())
                 if key in mm_scanner_bumped:
-                    continue # već odrađeno za ovaj kanal i ovaj prozor
+                    continue  # već odrađeno za ovaj kanal i ovaj prozor
                 last_mm = mm_last_time.get(ch.id)
                 # ako nije bilo !mm u prozoru → ping
                 if (last_mm is None) or (last_mm < start):
                     try:
                         role_id = MM_WINDOW_ROLE_BY_SHIFT[shift]
-                        await ch.send(f"<@&{role_id}> fali mass za {shift} ({label.replace('-', ' ')}) — pošaljite ga ovde.")
+                        await ch.send(
+                            f"<@&{role_id}> fali mass za {shift} ({label.replace('-', ' ')}) — pošaljite ga ovde."
+                        )
                     except Exception as e:
                         print("[MM_SCAN] send fail:", e)
                 mm_scanner_bumped.add(key)
@@ -284,14 +380,18 @@ async def mm_window_scanner():
     if now.hour == 0 and now.minute in (3, 4, 5):
         mm_scanner_bumped.clear()
         print("[MM_SCAN] cleared bump cache")
+
+
 @mm_window_scanner.before_loop
 async def _before_mm_window_scanner():
     await bot.wait_until_ready()
+
+
 # ====== MASS REMINDERI (glavni loop) ======
 @tasks.loop(minutes=1)
 async def mass_reminder_loop():
     """Šalje general mass reminder poruke po SCHEDULE
-       i setuje shift_first_sent_at za 'first' poruke."""
+    i setuje shift_first_sent_at za 'first' poruke."""
     now_local = _local_now()
     h, m = now_local.hour, now_local.minute
     guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
@@ -324,11 +424,17 @@ async def mass_reminder_loop():
                     asyncio.create_task(send_shift_followups(shift))
                 except Exception as e:
                     print("[MASS_LOOP] followup task fail:", e)
+
+
 @mass_reminder_loop.before_loop
 async def _before_mass_reminder_loop():
     await bot.wait_until_ready()
+
+
 # ---------- SUMMARY REPORT (def before on_ready) ----------
-mm_sent_log = [] # (user_id, timestamp_local, shift_name)
+mm_sent_log = []  # (user_id, timestamp_local, shift_name)
+
+
 @tasks.loop(minutes=1)
 async def mm_summary_report():
     ch = bot.get_channel(MM_SUMMARY_CHANNEL_ID)
@@ -336,6 +442,7 @@ async def mm_summary_report():
         return
     now_local = _local_now()
     h, m = now_local.hour, now_local.minute
+
     def _report_for(shift: str) -> str:
         end = _local_now()
         start = end - timedelta(hours=8)
@@ -347,25 +454,27 @@ async def mm_summary_report():
             counts[uid] = counts.get(uid, 0) + 1
         lines = [f"<@{u}> – {c}x" for u, c in counts.items()]
         return f"rezime {shift} smene:\n" + "\n".join(lines)
+
     if h == 18 and m == 0:
         await ch.send(_report_for("graveyard"))
     if h == 10 and m == 0:
         await ch.send(_report_for("main"))
     if h == 2 and m == 0:
         await ch.send(_report_for("afternoon"))
+
+
 @mm_summary_report.before_loop
 async def _before_mm_summary_report():
     await bot.wait_until_ready()
+
+
 async def sort_team_roles(guild):
     bot_member = guild.me
-    non_team = [
-        r for r in guild.roles
-        if not r.name.upper().startswith("TEAM ")
-    ]
+    non_team = [r for r in guild.roles if not r.name.upper().startswith("TEAM ")]
     team = [
-        r for r in guild.roles
-        if r.name.upper().startswith("TEAM ")
-        and r < bot_member.top_role
+        r
+        for r in guild.roles
+        if r.name.upper().startswith("TEAM ") and r < bot_member.top_role
     ]
     team_sorted = sorted(team, key=lambda r: r.name.lower())
     start_pos = max(r.position for r in non_team)
@@ -375,16 +484,12 @@ async def sort_team_roles(guild):
         pos += 1
         await asyncio.sleep(0.35)
     print("TEAM roles sorted")
+
+
 async def sort_team_categories(guild):
     categories = guild.categories
-    non_team = [
-        c for c in categories
-        if not c.name.upper().startswith("TEAM ")
-    ]
-    team = [
-        c for c in categories
-        if c.name.upper().startswith("TEAM ")
-    ]
+    non_team = [c for c in categories if not c.name.upper().startswith("TEAM ")]
+    team = [c for c in categories if c.name.upper().startswith("TEAM ")]
     team_sorted = sorted(team, key=lambda c: c.name.lower())
     start_pos = max(c.position for c in non_team)
     pos = start_pos + 1
@@ -393,6 +498,8 @@ async def sort_team_categories(guild):
         pos += 1
         await asyncio.sleep(0.35)
     print("TEAM categories sorted")
+
+
 # ========== AUTO SCHEDULE (15 min pre smene + bolja detekcija) ==========
 # ========== AUTO SCHEDULE (15 min pre smene) ==========
 @tasks.loop(minutes=1)
@@ -400,7 +507,7 @@ async def auto_schedule_task():
     now = _local_now()
     h, m = now.hour, now.minute
     triggers = {
-        "grave": (10, 10), # promeni kasnije na (9, 45)
+        "grave": (10, 10),  # promeni kasnije na (9, 45)
         "after": (17, 45),
         "main": (1, 45),
     }
@@ -408,6 +515,8 @@ async def auto_schedule_task():
         if h == th and m == tm:
             await run_auto_schedule(shift)
             break
+
+
 async def run_auto_schedule(shift: str):
     guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
     if not guild:
@@ -420,18 +529,27 @@ async def run_auto_schedule(shift: str):
         schedule_msg = None
         for msg in messages:
             content = msg.content
-            if ("@" in content and any(x in content for x in [":", "/", ","])):
-                age = (_local_now() - msg.created_at.replace(tzinfo=ZoneInfo("Europe/Belgrade"))).total_seconds()
+            if "@" in content and any(x in content for x in [":", "/", ","]):
+                age = (
+                    _local_now()
+                    - msg.created_at.replace(tzinfo=ZoneInfo("Europe/Belgrade"))
+                ).total_seconds()
                 if age < 86400:
                     schedule_msg = msg
                     break
         if not schedule_msg:
-            await channel.send(f"⚠️ Auto Schedule za **{shift.upper()}**: Nije pronađen validan raspored.")
+            await channel.send(
+                f"⚠️ Auto Schedule za **{shift.upper()}**: Nije pronađen validan raspored."
+            )
             return
         schedule_text = schedule_msg.content.strip()
         print(f"[AUTO SCHEDULE] Pronađen raspored za {shift} → primenjujem...")
         await apply_schedule_logic(guild, schedule_text)
-        role_id = {"grave": GRAVE_ROLE_ID, "after": AFTER_ROLE_ID, "main": MAIN_ROLE_ID}[shift]
+        role_id = {
+            "grave": GRAVE_ROLE_ID,
+            "after": AFTER_ROLE_ID,
+            "main": MAIN_ROLE_ID,
+        }[shift]
         await channel.send(
             f"<@&{role_id}> **Role za modele koje imate na rasporedu su vam dodeljene.**\n\n"
             "Ukoliko vam fali role za nekog modela, molim vas da se obratite direktno nekome iz tima.\n\n"
@@ -442,7 +560,8 @@ async def run_auto_schedule(shift: str):
     except Exception as e:
         print(f"[AUTO SCHEDULE] Greška za {shift}: {e}")
         await channel.send(f"❌ Greška u auto schedule za {shift.upper()}: {e}")
-        
+
+
 async def apply_schedule_logic(guild, text: str):
     """Identčna logika kao /schedule apply=true - popravljena za split smene"""
     bot_member = guild.me
@@ -468,7 +587,8 @@ async def apply_schedule_logic(guild, text: str):
         for seg in segs:
             model = extract_model_name(seg)
             base = clean_role_phrase(model)
-            if not base: continue
+            if not base:
+                continue
             r = role_from_phrase(guild, base)
             if r:
                 if r.id not in seen:
@@ -481,13 +601,13 @@ async def apply_schedule_logic(guild, text: str):
     def split_assignees_and_roles(first_user: str, tail: str):
         """Popravljena za @.chodex / @fap19 format"""
         full = (first_user + " " + tail).strip()
-        assignees = re.findall(r'@[\.\w]+|\<@!?[\d]+\>', full)
+        assignees = re.findall(r"@[\.\w]+|\<@!?[\d]+\>", full)
         if not assignees:
             assignees = [first_user]
 
         # Nađi kraj poslednjeg @user da odvojimo modele
         last_end = 0
-        for match in re.finditer(r'(@[\.\w]+|\<@!?[\d]+\>)', full):
+        for match in re.finditer(r"(@[\.\w]+|\<@!?[\d]+\>)", full):
             last_end = match.end()
         roles_text = full[last_end:].strip()
 
@@ -504,28 +624,36 @@ async def apply_schedule_logic(guild, text: str):
 
             # CLEAN
             bot_touchable_model_roles = [
-                r for r in member.roles
-                if r.name.upper().startswith("TEAM ") 
-                and r.name.upper() not in KEEP_ROLE_NAMES 
+                r
+                for r in member.roles
+                if r.name.upper().startswith("TEAM ")
+                and r.name.upper() not in KEEP_ROLE_NAMES
                 and can_touch_role(bot_member, r)
             ]
             if bot_touchable_model_roles:
-                await safe_remove_roles(member, bot_touchable_model_roles, reason="auto schedule")
+                await safe_remove_roles(
+                    member, bot_touchable_model_roles, reason="auto schedule"
+                )
 
             # ASSIGN
-            touchable_assign = [r for r in desired_roles if can_touch_role(bot_member, r)]
+            touchable_assign = [
+                r for r in desired_roles if can_touch_role(bot_member, r)
+            ]
             if touchable_assign:
                 await safe_add_roles(member, touchable_assign, reason="auto schedule")
 
     print("[AUTO APPLY] Raspored primenjen")
-    
+
+
 # ====== AI/FU HELPERI ======
 def _sanitize_mm_text(s: str) -> str:
     s = (s or "").lower().strip()
-    s = re.sub(r"[\U00010000-\U0010ffff]", "", s) # skini emojije (van BMP)
-    s = s.replace("—", " ").replace("-", " ") # zabrana crtica i duge crte
+    s = re.sub(r"[\U00010000-\U0010ffff]", "", s)  # skini emojije (van BMP)
+    s = s.replace("—", " ").replace("-", " ")  # zabrana crtica i duge crte
     s = re.sub(r"\s+", " ", s)
     return s
+
+
 async def gen_fu_offline(question: str) -> str:
     q = _sanitize_mm_text(question)
     if any(k in q for k in ["bath", "shower", "tub"]):
@@ -542,18 +670,26 @@ async def gen_fu_offline(question: str) -> str:
         fu3 = "fu3: where do you lose control the fastest"
     else:
         banks = [
-            ("fu1: taster or toucher",
-             "fu2: i’ll keep it just out of reach till you ask nice",
-             "fu3: where do you want me first"),
-            ("fu1: slow or rough tonight",
-             "fu2: i set the pace you just try to keep up",
-             "fu3: what safe word are you not going to use"),
-            ("fu1: hands behind your back or on my hips",
-             "fu2: i make you work for every inch",
-             "fu3: what do you want me to say when you break"),
+            (
+                "fu1: taster or toucher",
+                "fu2: i’ll keep it just out of reach till you ask nice",
+                "fu3: where do you want me first",
+            ),
+            (
+                "fu1: slow or rough tonight",
+                "fu2: i set the pace you just try to keep up",
+                "fu3: what safe word are you not going to use",
+            ),
+            (
+                "fu1: hands behind your back or on my hips",
+                "fu2: i make you work for every inch",
+                "fu3: what do you want me to say when you break",
+            ),
         ]
         fu1, fu2, fu3 = random.choice(banks)
     return f"!mma\n{q}\n\n{fu1}\n{fu2}\n{fu3}"
+
+
 AI_FU_SYSTEM = (
     "from now on you write flirty girly catchy dirty minded onlyfans mass follow ups.\n"
     "format and rules:\n"
@@ -586,6 +722,8 @@ AI_FU_SYSTEM = (
     "- never output the question.\n"
     "- output only lines starting with: fu1: fu1.5: fu2: fu2.5: fu3: fu3.5:\n"
 )
+
+
 def _fu_prompt(mm_line: str) -> str:
     return (
         "user mm line:\n"
@@ -595,6 +733,8 @@ def _fu_prompt(mm_line: str) -> str:
         "do not rewrite the question.\n"
         "do not add anything except fu1 fu1.5 fu2 fu2.5 fu3 fu3.5 lines.\n"
     )
+
+
 async def generate_fus(mm_line: str) -> list[str]:
     if not client:
         return []
@@ -611,6 +751,7 @@ async def generate_fus(mm_line: str) -> list[str]:
             max_tokens=120,
         )
         return rsp.choices[0].message.content.strip()
+
     text = await asyncio.to_thread(_call)
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     labeled, i = [], 1
@@ -618,15 +759,45 @@ async def generate_fus(mm_line: str) -> list[str]:
         if ":" in ln[:8].lower():
             labeled.append(ln)
         else:
-            key = "fu1:" if i == 1 else ("fu1.5:" if i == 2 else ("fu2:" if i == 3 else "fu2.5:"))
+            key = (
+                "fu1:"
+                if i == 1
+                else ("fu1.5:" if i == 2 else ("fu2:" if i == 3 else "fu2.5:"))
+            )
             labeled.append(f"{key} {ln.lower()}")
         i += 1
     return labeled[:4]
+
+
 STATUS_WORDS = {
-    "ra","n","vip","x","oll","ock","inb","zzz","vf","eep",
-    "jsn","bcl","bk","hnq","jaa","sa","ggn","yll","oftv",
-    "rco","tvn","tsu","kct","yr","oll"
+    "ra",
+    "n",
+    "vip",
+    "x",
+    "oll",
+    "ock",
+    "inb",
+    "zzz",
+    "vf",
+    "eep",
+    "jsn",
+    "bcl",
+    "bk",
+    "hnq",
+    "jaa",
+    "sa",
+    "ggn",
+    "yll",
+    "oftv",
+    "rco",
+    "tvn",
+    "tsu",
+    "kct",
+    "yr",
+    "oll",
 }
+
+
 def extract_model_name(entry: str) -> str:
     words = entry.lower().strip().split()
     model_parts = []
@@ -637,17 +808,25 @@ def extract_model_name(entry: str) -> str:
             break
         model_parts.append(w)
     return " ".join(model_parts)
+
+
 def normalize_model_name(name: str):
     core = extract_core_name(name)
     core = unicodedata.normalize("NFKD", core)
     core = "".join(c for c in core if not unicodedata.combining(c))
     core = re.sub(r"[^a-z0-9]", "", core)
     return core
+
+
 def similarity(a: str, b: str):
     return SequenceMatcher(None, a, b).ratio()
+
+
 # ---------- ROLE LOOKUP ----------
 def norm(s: str) -> str:
     return re.sub(r"[^A-Z0-9]+", "", (s or "").upper())
+
+
 def build_role_index(guild: discord.Guild):
     by_norm = {}
     by_norm_no_team = {}
@@ -657,6 +836,8 @@ def build_role_index(guild: discord.Guild):
             stripped = r.name[5:]
             by_norm_no_team[norm(stripped)] = r
     return by_norm, by_norm_no_team
+
+
 # alias normalizacija + resolve
 ALIAS_TO_BASE = {
     "ANITA2USASOPHIE": "ANITA",
@@ -694,6 +875,8 @@ ALIAS_TO_BASE = {
 }
 ALIAS_KEYS_BY_LEN = sorted(ALIAS_TO_BASE.keys(), key=len, reverse=True)
 NOISE_WORDS_IN_PHRASE = {"YY"}
+
+
 def clean_role_phrase(phrase: str) -> str:
     if not phrase:
         return ""
@@ -703,16 +886,22 @@ def clean_role_phrase(phrase: str) -> str:
     s = re.sub(r"\b(inbox|inb)\s*([0-9]+)\b", "", s, flags=re.IGNORECASE)
     s = re.sub(r"\b(inbox[0-9]+|inb[0-9]+)\b", "", s, flags=re.IGNORECASE)
     s = re.sub(r"\b(free|paid|full)\b", "", s, flags=re.IGNORECASE)
-    toks = [t for t in re.split(r"\s+", s) if t and t.upper() not in NOISE_WORDS_IN_PHRASE]
+    toks = [
+        t for t in re.split(r"\s+", s) if t and t.upper() not in NOISE_WORDS_IN_PHRASE
+    ]
     s = " ".join(toks).strip()
     s = re.sub(r"\b([A-Za-z]+)\s+2\b", r"\1", s)
     return s
+
+
 def _resolve_alias_to_base(base: str) -> str | None:
     nb = norm(base)
     for key in ALIAS_KEYS_BY_LEN:
         if key in nb:
             return ALIAS_TO_BASE[key]
     return None
+
+
 def role_from_phrase(guild, phrase):
     base = normalize_model_name(phrase)
     if base in role_index:
@@ -727,48 +916,76 @@ def role_from_phrase(guild, phrase):
     if best_score >= 0.72:
         return best
     return None
+
+
 def parse_roles_from_text(guild: discord.Guild, text: str) -> list[discord.Role]:
     ids = re.findall(r"<@&(\d+)>", text or "")
     return [guild.get_role(int(x)) for x in ids if guild.get_role(int(x))]
+
+
 def parse_user_ids(text: str) -> list[int]:
     return [int(x) for x in re.findall(r"<@!?(\d+)>", text or "")]
+
+
 async def ensure_member(guild: discord.Guild, user_id: int):
     m = guild.get_member(user_id)
-    if m: return m
+    if m:
+        return m
     try:
         return await guild.fetch_member(user_id)
     except:
         return None
+
+
 def member_from_token(guild: discord.Guild, token: str):
     ids = parse_user_ids(token)
     if ids:
         return guild.get_member(ids[0]) or None
     cleaned = token.replace("@", "").strip()
-    if not cleaned: return None
+    if not cleaned:
+        return None
     for m in guild.members:
-        if m.display_name.lower() == cleaned.lower() or (m.name and m.name.lower() == cleaned.lower()):
+        if m.display_name.lower() == cleaned.lower() or (
+            m.name and m.name.lower() == cleaned.lower()
+        ):
             return m
     target = norm(cleaned)
     for m in guild.members:
         if norm(m.display_name) == target or norm(m.name) == target:
             return m
     return None
+
+
 def can_touch_role(bot_member: discord.Member, role: discord.Role) -> bool:
-    if role is None: return False
-    if role.is_default(): return False
-    if role.managed: return False
+    if role is None:
+        return False
+    if role.is_default():
+        return False
+    if role.managed:
+        return False
     return bot_member.guild_permissions.manage_roles and bot_member.top_role > role
+
+
 def why_blocked(bot_member: discord.Member, role: discord.Role):
     r = []
-    if role.is_default(): r.append("everyone")
-    if role.managed: r.append("managed")
-    if not bot_member.guild_permissions.manage_roles: r.append("no Manage Roles")
-    if bot_member.top_role <= role: r.append("bot below role")
+    if role.is_default():
+        r.append("everyone")
+    if role.managed:
+        r.append("managed")
+    if not bot_member.guild_permissions.manage_roles:
+        r.append("no Manage Roles")
+    if bot_member.top_role <= role:
+        r.append("bot below role")
     return r or ["ok"]
+
+
 def is_model_role(role: discord.Role) -> bool:
     return role.name.upper().startswith("TEAM ")
+
+
 def is_keep_role(role: discord.Role) -> bool:
     return role.name.upper() in KEEP_ROLE_NAMES
+
 
 # ==================== PERMISSION CHECKS ====================
 def need_manage_roles():
@@ -777,18 +994,21 @@ def need_manage_roles():
         if gp.manage_roles or gp.administrator:
             return True
         raise app_commands.CheckFailure("treba ti Manage Roles.")
+
     return app_commands.check(predicate)
+
 
 def need_manage_channels():
     async def predicate(interaction: discord.Interaction):
         if not interaction.user.guild_permissions.manage_channels:
             await interaction.response.send_message(
-                "Nemaš Manage Channels permisiju.",
-                ephemeral=True
+                "Nemaš Manage Channels permisiju.", ephemeral=True
             )
             return False
         return True
+
     return app_commands.check(predicate)
+
 
 # ---------- /assign /deassign /clean /a /cleanmulti ----------
 def need_manage_roles():
@@ -797,22 +1017,29 @@ def need_manage_roles():
         if gp.manage_roles or gp.administrator:
             return True
         raise app_commands.CheckFailure("treba ti Manage Roles.")
+
     return app_commands.check(predicate)
+
+
 def need_manage_channels():
     async def predicate(interaction: discord.Interaction):
         if not interaction.user.guild_permissions.manage_channels:
             await interaction.response.send_message(
-                "Nemaš Manage Channels permisiju.",
-                ephemeral=True
+                "Nemaš Manage Channels permisiju.", ephemeral=True
             )
             return False
         return True
+
     return app_commands.check(predicate)
-async def safe_add_roles(member: discord.Member, roles: list[discord.Role], reason: str):
+
+
+async def safe_add_roles(
+    member: discord.Member, roles: list[discord.Role], reason: str
+):
     added = []
     for i in range(0, len(roles), CHUNK_SIZE):
-        chunk = roles[i:i+CHUNK_SIZE]
-        for attempt in range(1, RETRIES+1):
+        chunk = roles[i : i + CHUNK_SIZE]
+        for attempt in range(1, RETRIES + 1):
             try:
                 if chunk:
                     await member.add_roles(*chunk, reason=reason)
@@ -822,14 +1049,19 @@ async def safe_add_roles(member: discord.Member, roles: list[discord.Role], reas
             except discord.Forbidden:
                 raise
             except Exception:
-                if attempt >= RETRIES: raise
+                if attempt >= RETRIES:
+                    raise
                 await asyncio.sleep(RETRY_BASE_SLEEP * attempt)
     return added
-async def safe_remove_roles(member: discord.Member, roles: list[discord.Role], reason: str):
+
+
+async def safe_remove_roles(
+    member: discord.Member, roles: list[discord.Role], reason: str
+):
     removed = []
     for i in range(0, len(roles), CHUNK_SIZE):
-        chunk = roles[i:i+CHUNK_SIZE]
-        for attempt in range(1, RETRIES+1):
+        chunk = roles[i : i + CHUNK_SIZE]
+        for attempt in range(1, RETRIES + 1):
             try:
                 if chunk:
                     await member.remove_roles(*chunk, reason=reason)
@@ -839,97 +1071,151 @@ async def safe_remove_roles(member: discord.Member, roles: list[discord.Role], r
             except discord.Forbidden:
                 raise
             except Exception:
-                if attempt >= RETRIES: raise
+                if attempt >= RETRIES:
+                    raise
                 await asyncio.sleep(RETRY_BASE_SLEEP * attempt)
     return removed
+
+
 @tree.command(description="dodeli više rola jednom useru", guild=GUILD_OBJ)
 @need_manage_roles()
 async def assign(interaction: discord.Interaction, user: discord.Member, roles: str):
     await interaction.response.defer(ephemeral=True, thinking=True)
-    guild = interaction.guild; bot_member = guild.me
+    guild = interaction.guild
+    bot_member = guild.me
     role_objs = parse_roles_from_text(guild, roles)
     if not role_objs:
-        return await interaction.followup.send("pinguj role: @Role1 @Role2", ephemeral=True)
+        return await interaction.followup.send(
+            "pinguj role: @Role1 @Role2", ephemeral=True
+        )
     ok = [r for r in role_objs if can_touch_role(bot_member, r)]
     bad = [r for r in role_objs if r not in ok]
     try:
         added = await safe_add_roles(user, ok, reason=f"by {interaction.user}")
-        msg = [f"dodato {user.display_name}: {', '.join(r.name for r in added) or 'ništa'}"]
-        for r in bad: msg.append(f"preskočeno {r.name}: {' / '.join(why_blocked(bot_member, r))}")
-        await interaction.followup.send("```\n" + "\n".join(msg) + "\n```", ephemeral=True)
+        msg = [
+            f"dodato {user.display_name}: {', '.join(r.name for r in added) or 'ništa'}"
+        ]
+        for r in bad:
+            msg.append(f"preskočeno {r.name}: {' / '.join(why_blocked(bot_member, r))}")
+        await interaction.followup.send(
+            "```\n" + "\n".join(msg) + "\n```", ephemeral=True
+        )
     except Exception as e:
         await interaction.followup.send(f"fail: {e}", ephemeral=True)
+
+
 @tree.command(description="skini konkretne role sa usera", guild=GUILD_OBJ)
 @need_manage_roles()
 async def deassign(interaction: discord.Interaction, user: discord.Member, roles: str):
     await interaction.response.defer(ephemeral=True, thinking=True)
-    guild = interaction.guild; bot_member = guild.me
+    guild = interaction.guild
+    bot_member = guild.me
     role_objs = parse_roles_from_text(guild, roles)
     if not role_objs:
-        return await interaction.followup.send("pinguj role: @Role1 @Role2", ephemeral=True)
+        return await interaction.followup.send(
+            "pinguj role: @Role1 @Role2", ephemeral=True
+        )
     ok = [r for r in role_objs if can_touch_role(bot_member, r)]
     bad = [r for r in role_objs if r not in ok]
     try:
         removed = await safe_remove_roles(user, ok, reason=f"by {interaction.user}")
-        msg = [f"skinuto {user.display_name}: {', '.join(r.name for r in removed) or 'ništa'}"]
-        for r in bad: msg.append(f"preskočeno {r.name}: {' / '.join(why_blocked(bot_member, r))}")
-        await interaction.followup.send("```\n" + "\n".join(msg) + "\n```", ephemeral=True)
+        msg = [
+            f"skinuto {user.display_name}: {', '.join(r.name for r in removed) or 'ništa'}"
+        ]
+        for r in bad:
+            msg.append(f"preskočeno {r.name}: {' / '.join(why_blocked(bot_member, r))}")
+        await interaction.followup.send(
+            "```\n" + "\n".join(msg) + "\n```", ephemeral=True
+        )
     except Exception as e:
         await interaction.followup.send(f"fail: {e}", ephemeral=True)
+
+
 @tree.command(description="skini sve role koje bot sme (jedan user)", guild=GUILD_OBJ)
 @need_manage_roles()
 async def clean(interaction: discord.Interaction, user: discord.Member):
     await interaction.response.defer(ephemeral=True, thinking=True)
-    guild = interaction.guild; bot_member = guild.me
+    guild = interaction.guild
+    bot_member = guild.me
     removable = [r for r in user.roles if can_touch_role(bot_member, r)]
     blocked = [r for r in user.roles if r not in removable and not r.is_default()]
     if not removable:
-        return await interaction.followup.send(f"nema šta da skidam sa {user.display_name}", ephemeral=True)
+        return await interaction.followup.send(
+            f"nema šta da skidam sa {user.display_name}", ephemeral=True
+        )
     removed = await safe_remove_roles(user, removable, reason=f"by {interaction.user}")
-    msg = [f"obrisano {user.display_name}: {', '.join(r.name for r in removed) or 'ništa'}"]
+    msg = [
+        f"obrisano {user.display_name}: {', '.join(r.name for r in removed) or 'ništa'}"
+    ]
     if blocked:
         msg.append("preskočeno:")
-        for r in blocked: msg.append(f"- {r.name}: {' / '.join(why_blocked(bot_member, r))}")
+        for r in blocked:
+            msg.append(f"- {r.name}: {' / '.join(why_blocked(bot_member, r))}")
     await interaction.followup.send("```\n" + "\n".join(msg) + "\n```", ephemeral=True)
-@tree.command(name="a", description="batch assign: @u1 @r1 @r2 ; @u2 @r3 ...", guild=GUILD_OBJ)
+
+
+@tree.command(
+    name="a", description="batch assign: @u1 @r1 @r2 ; @u2 @r3 ...", guild=GUILD_OBJ
+)
 @need_manage_roles()
 async def a_batch(interaction: discord.Interaction, payload: str):
     await interaction.response.defer(ephemeral=True, thinking=True)
-    guild = interaction.guild; bot_member = guild.me
+    guild = interaction.guild
+    bot_member = guild.me
     text = payload.replace(";", " ")
     tokens = re.findall(r"<@!?(\d+)>|<@&(\d+)>", text)
     batches, current_uid, current_roles = [], None, []
     for uid, rid in tokens:
         if uid:
             if current_uid and current_roles:
-                batches.append((current_uid, current_roles)); current_roles=[]
+                batches.append((current_uid, current_roles))
+                current_roles = []
             current_uid = int(uid)
         else:
             role = guild.get_role(int(rid))
-            if current_uid: current_roles.append(role)
-    if current_uid and current_roles: batches.append((current_uid, current_roles))
+            if current_uid:
+                current_roles.append(role)
+    if current_uid and current_roles:
+        batches.append((current_uid, current_roles))
     if not batches:
-        return await interaction.followup.send("nisam našao user+role kombinacije", ephemeral=True)
+        return await interaction.followup.send(
+            "nisam našao user+role kombinacije", ephemeral=True
+        )
     lines = []
     for idx, (uid, roles) in enumerate(batches, start=1):
         member = await ensure_member(guild, uid)
-        if not member: lines.append(f"[{idx}] user nije nađen"); continue
+        if not member:
+            lines.append(f"[{idx}] user nije nađen")
+            continue
         ok = [r for r in roles if can_touch_role(bot_member, r)]
         try:
-            added = await safe_add_roles(member, ok, reason=f"batch by {interaction.user}")
-            lines.append(f"[{idx}] {member.display_name} dodato: {', '.join(r.name for r in added) or 'ništa'}")
+            added = await safe_add_roles(
+                member, ok, reason=f"batch by {interaction.user}"
+            )
+            lines.append(
+                f"[{idx}] {member.display_name} dodato: {', '.join(r.name for r in added) or 'ništa'}"
+            )
         except Exception as e:
             lines.append(f"[{idx}] {member.display_name} FAIL: {e}")
         if idx % PROGRESS_EVERY_N == 0:
-            await interaction.followup.send(f"napredak: {idx}/{len(batches)} gotovih…", ephemeral=True)
+            await interaction.followup.send(
+                f"napredak: {idx}/{len(batches)} gotovih…", ephemeral=True
+            )
     msg = "rezime:\n" + "\n".join(lines)
     for i in range(0, len(msg), 1800):
         await interaction.followup.send(f"```\n{msg[i:i+1800]}\n```", ephemeral=True)
-@tree.command(name="cleanmulti", description="clean više usera; zadrži navedene role (keep)", guild=GUILD_OBJ)
+
+
+@tree.command(
+    name="cleanmulti",
+    description="clean više usera; zadrži navedene role (keep)",
+    guild=GUILD_OBJ,
+)
 @need_manage_roles()
 async def clean_multi(interaction: discord.Interaction, users: str, keep: str = ""):
     await interaction.response.defer(ephemeral=True, thinking=True)
-    guild = interaction.guild; bot_member = guild.me
+    guild = interaction.guild
+    bot_member = guild.me
     user_ids = parse_user_ids(users)
     keep_roles = parse_roles_from_text(guild, keep or "")
     keep_ids = {r.id for r in keep_roles}
@@ -938,37 +1224,79 @@ async def clean_multi(interaction: discord.Interaction, users: str, keep: str = 
     lines = []
     for idx, uid in enumerate(user_ids, start=1):
         member = await ensure_member(guild, uid)
-        if not member: lines.append(f"[{idx}] user nije nađen"); continue
-        removable = [r for r in member.roles if can_touch_role(bot_member, r) and r.id not in keep_ids]
-        blocked = [r for r in member.roles if (r.id in keep_ids) or (not can_touch_role(bot_member, r) and not r.is_default())]
+        if not member:
+            lines.append(f"[{idx}] user nije nađen")
+            continue
+        removable = [
+            r
+            for r in member.roles
+            if can_touch_role(bot_member, r) and r.id not in keep_ids
+        ]
+        blocked = [
+            r
+            for r in member.roles
+            if (r.id in keep_ids)
+            or (not can_touch_role(bot_member, r) and not r.is_default())
+        ]
         try:
-            removed = await safe_remove_roles(member, removable, reason=f"cleanmulti by {interaction.user}")
+            removed = await safe_remove_roles(
+                member, removable, reason=f"cleanmulti by {interaction.user}"
+            )
             ok_names = ", ".join(r.name for r in removed) if removed else "ništa"
             if blocked:
                 why = "; ".join(
                     f"{r.name} [{' / '.join(['KEEP'] if r.id in keep_ids else why_blocked(bot_member, r))}]"
-                    for r in blocked if r
+                    for r in blocked
+                    if r
                 )
-                lines.append(f"[{idx}] {member.display_name} obrisano: {ok_names} preskočeno: {why}")
+                lines.append(
+                    f"[{idx}] {member.display_name} obrisano: {ok_names} preskočeno: {why}"
+                )
             else:
                 lines.append(f"[{idx}] {member.display_name} obrisano: {ok_names}")
         except Exception as e:
             lines.append(f"[{idx}] {member.display_name} FAIL: {e}")
         if idx % PROGRESS_EVERY_N == 0:
-            await interaction.followup.send(f"napredak: {idx}/{len(user_ids)} gotovih…", ephemeral=True)
+            await interaction.followup.send(
+                f"napredak: {idx}/{len(user_ids)} gotovih…", ephemeral=True
+            )
     msg = "rezime /cleanmulti:\n" + "\n".join(lines)
     for i in range(0, len(msg), 1800):
         await interaction.followup.send(f"```\n{msg[i:i+1800]}\n```", ephemeral=True)
+
+
 # ---------- /farm (modal forma) ----------
 class FarmModal(Modal, title="Farm unos"):
     def __init__(self, opener: discord.Member):
         super().__init__(timeout=None)
         self.opener = opener
-        self.amount = TextInput(label="Iznos", placeholder="npr. 25 ili $25", required=True, max_length=32)
-        self.model_name = TextInput(label="Ime modela", placeholder="npr. cami / haley / ...", required=True, max_length=100)
-        self.fan_username = TextInput(label="Username fana", placeholder="npr. @fan123 ili fan#0001", required=True, max_length=100)
-        self.more_details = TextInput(label="Više detalja", style=TextStyle.paragraph, placeholder="optionalno: linkovi, napomena…", required=False, max_length=1000)
-        self.add_item(self.amount); self.add_item(self.model_name); self.add_item(self.fan_username); self.add_item(self.more_details)
+        self.amount = TextInput(
+            label="Iznos", placeholder="npr. 25 ili $25", required=True, max_length=32
+        )
+        self.model_name = TextInput(
+            label="Ime modela",
+            placeholder="npr. cami / haley / ...",
+            required=True,
+            max_length=100,
+        )
+        self.fan_username = TextInput(
+            label="Username fana",
+            placeholder="npr. @fan123 ili fan#0001",
+            required=True,
+            max_length=100,
+        )
+        self.more_details = TextInput(
+            label="Više detalja",
+            style=TextStyle.paragraph,
+            placeholder="optionalno: linkovi, napomena…",
+            required=False,
+            max_length=1000,
+        )
+        self.add_item(self.amount)
+        self.add_item(self.model_name)
+        self.add_item(self.fan_username)
+        self.add_item(self.more_details)
+
     async def on_submit(self, interaction: discord.Interaction):
         lines = [
             f"**Novi farm unos** (by {self.opener.mention}):",
@@ -977,28 +1305,37 @@ class FarmModal(Modal, title="Farm unos"):
             f"- Fan: `{self.fan_username.value.strip()}`",
         ]
         extra = self.more_details.value.strip() if self.more_details.value else ""
-        if extra: lines.append(f"- Detalji: {extra}")
+        if extra:
+            lines.append(f"- Detalji: {extra}")
         lines.append("")
-        lines.append("**Pitanje:** da li je fan dodat na odgovarajuće liste i da li su ažurirane beleške o istom?")
+        lines.append(
+            "**Pitanje:** da li je fan dodat na odgovarajuće liste i da li su ažurirane beleške o istom?"
+        )
         await interaction.response.send_message("\n".join(lines))
         msg = await interaction.original_response()
         try:
-            await msg.add_reaction("✅"); await msg.add_reaction("🚫")
-        except: pass
+            await msg.add_reaction("✅")
+            await msg.add_reaction("🚫")
+        except:
+            pass
+
+
 @tree.command(name="farm", description="Otvori formu za farm unos", guild=GUILD_OBJ)
 async def farm(interaction: discord.Interaction):
     await interaction.response.send_modal(FarmModal(opener=interaction.user))
+
+
 # ---------- /schedule — CLEAN-THEN-ASSIGN + unknown models report ----------
 @tree.command(
     name="schedule",
     description="Nalepi raspored (podržava @u1 / @u2), auto: očisti TEAM role pa dodeli nove; apply=false=preview",
-    guild=GUILD_OBJ
+    guild=GUILD_OBJ,
 )
 @need_manage_roles()
 async def schedule(interaction: discord.Interaction, text: str, apply: bool = False):
     guild = interaction.guild
     bot_member = guild.me
-   
+
     global role_index
     role_index = {}
     for r in guild.roles:
@@ -1012,7 +1349,7 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
                 continue
             base = normalize_model_name(r.name[5:])
             role_index.setdefault(base, []).append(r)
-   
+
     await interaction.response.defer(ephemeral=True, thinking=True)
     # normalizacija slash / i razbijanje po blokovima @user...
     text_norm = (text or "").replace("⁄", "/").replace("／", "/")
@@ -1023,7 +1360,9 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
         tail = (m.group(2) or "").strip()
         raw_blocks.append((head_user, tail))
     if not raw_blocks:
-        return await interaction.followup.send("nisam našao blokove '@user' → role…", ephemeral=True)
+        return await interaction.followup.send(
+            "nisam našao blokove '@user' → role…", ephemeral=True
+        )
     # pomocne funkcije
     def parse_roles_list_with_unknowns(guild: discord.Guild, roles_text: str):
         txt = (roles_text or "").replace("\\", "/")
@@ -1044,6 +1383,7 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
             else:
                 unknown.append(base)
         return wanted, unknown
+
     def split_assignees_and_roles(first_user: str, tail: str):
         """Robusna verzija za sve varijante rasporeda"""
         roles_text = tail.strip()
@@ -1051,14 +1391,18 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
         if ":" in roles_text:
             header, roles_text = roles_text.split(":", 1)
         else:
-            m = re.match(r"^(\s*(?:@[\.\w]+|\<@!?[\d]+\>)(?:\s*[\/,|]\s*(?:@[\.\w]+|\<@!?[\d]+\>))*)", roles_text)
+            m = re.match(
+                r"^(\s*(?:@[\.\w]+|\<@!?[\d]+\>)(?:\s*[\/,|]\s*(?:@[\.\w]+|\<@!?[\d]+\>))*)",
+                roles_text,
+            )
             if m:
                 header = m.group(1).strip()
-                roles_text = roles_text[len(header):].strip()
+                roles_text = roles_text[len(header) :].strip()
         assignees = re.findall(r"@[\.\w]+|\<@!?[\d]+\>", header or first_user)
         if not assignees:
             assignees = [first_user]
         return assignees, roles_text.strip()
+
     report = []
     total_ops_add = 0
     total_ops_rm = 0
@@ -1076,22 +1420,32 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
                 continue
             # CLEAN
             bot_touchable_model_roles = [
-                r for r in member.roles
-                if r.name.upper().startswith("TEAM ") and (r.name.upper() not in KEEP_ROLE_NAMES) and can_touch_role(bot_member, r)
+                r
+                for r in member.roles
+                if r.name.upper().startswith("TEAM ")
+                and (r.name.upper() not in KEEP_ROLE_NAMES)
+                and can_touch_role(bot_member, r)
             ]
             blocked_models = [
-                r for r in member.roles
-                if r.name.upper().startswith("TEAM ") and (r.name.upper() not in KEEP_ROLE_NAMES) and r not in bot_touchable_model_roles
+                r
+                for r in member.roles
+                if r.name.upper().startswith("TEAM ")
+                and (r.name.upper() not in KEEP_ROLE_NAMES)
+                and r not in bot_touchable_model_roles
             ]
             # ASSIGN
-            touchable_assign = [r for r in desired_roles if can_touch_role(bot_member, r)]
+            touchable_assign = [
+                r for r in desired_roles if can_touch_role(bot_member, r)
+            ]
             blocked_assign = [r for r in desired_roles if r not in touchable_assign]
             if not apply:
-                msg = (f"[{tag}] PREVIEW {member.display_name}: "
-                       f"clean → {', '.join(r.name for r in bot_touchable_model_roles) or '—'}"
-                       f"{' | blocked-clean: ' + ', '.join(r.name for r in blocked_models) if blocked_models else ''} ; "
-                       f"assign → {', '.join(r.name for r in touchable_assign) or '—'}"
-                       f"{' | blocked-assign: ' + ', '.join(r.name for r in blocked_assign) if blocked_assign else ''}")
+                msg = (
+                    f"[{tag}] PREVIEW {member.display_name}: "
+                    f"clean → {', '.join(r.name for r in bot_touchable_model_roles) or '—'}"
+                    f"{' | blocked-clean: ' + ', '.join(r.name for r in blocked_models) if blocked_models else ''} ; "
+                    f"assign → {', '.join(r.name for r in touchable_assign) or '—'}"
+                    f"{' | blocked-assign: ' + ', '.join(r.name for r in blocked_assign) if blocked_assign else ''}"
+                )
                 if unknown_here:
                     msg += f" | unknown: {', '.join(unknown_here)}"
                 report.append(msg)
@@ -1099,61 +1453,83 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
             # APPLY
             try:
                 if bot_touchable_model_roles:
-                    removed = await safe_remove_roles(member, bot_touchable_model_roles, reason=f"schedule auto-clean by {interaction.user}")
+                    removed = await safe_remove_roles(
+                        member,
+                        bot_touchable_model_roles,
+                        reason=f"schedule auto-clean by {interaction.user}",
+                    )
                     total_ops_rm += len(removed)
                 if touchable_assign:
-                    added = await safe_add_roles(member, touchable_assign, reason=f"schedule assign by {interaction.user}")
+                    added = await safe_add_roles(
+                        member,
+                        touchable_assign,
+                        reason=f"schedule assign by {interaction.user}",
+                    )
                     total_ops_add += len(added)
-                msg = (f"[{tag}] ✅ {member.display_name} "
-                       f"(clean {len(bot_touchable_model_roles)} / assign {len(touchable_assign)})")
+                msg = (
+                    f"[{tag}] ✅ {member.display_name} "
+                    f"(clean {len(bot_touchable_model_roles)} / assign {len(touchable_assign)})"
+                )
                 if blocked_models:
-                    msg += f" | blocked-clean: {', '.join(r.name for r in blocked_models)}"
+                    msg += (
+                        f" | blocked-clean: {', '.join(r.name for r in blocked_models)}"
+                    )
                 if blocked_assign:
                     msg += f" | blocked-assign: {', '.join(r.name for r in blocked_assign)}"
                 if unknown_here:
                     msg += f" | unknown: {', '.join(unknown_here)}"
                 report.append(msg)
             except discord.Forbidden:
-                report.append(f"[{tag}] ❌ {member.display_name} – nemam Manage Roles/poziciju.")
+                report.append(
+                    f"[{tag}] ❌ {member.display_name} – nemam Manage Roles/poziciju."
+                )
             except Exception as e:
                 report.append(f"[{tag}] ❌ {member.display_name} – fail: {e}")
         if idx % PROGRESS_EVERY_N == 0:
-            await interaction.followup.send(f"schedule napredak: {idx}/{len(blocks)}…", ephemeral=True)
-    header = ("SCHEDULE PREVIEW (auto CLEAN model roles → ASSIGN)\n"
-              if not apply else
-              f"SCHEDULE APPLY done (removed={total_ops_rm}, added={total_ops_add})\n")
+            await interaction.followup.send(
+                f"schedule napredak: {idx}/{len(blocks)}…", ephemeral=True
+            )
+    header = (
+        "SCHEDULE PREVIEW (auto CLEAN model roles → ASSIGN)\n"
+        if not apply
+        else f"SCHEDULE APPLY done (removed={total_ops_rm}, added={total_ops_add})\n"
+    )
     out = header + "\n".join(report)
     if global_unknown:
         dedup = sorted({u for u in global_unknown})
         out += "\n\nUNKNOWN MODELS (no matching role found):\n- " + "\n- ".join(dedup)
     for i in range(0, len(out), 1800):
         await interaction.followup.send(f"```\n{out[i:i+1800]}\n```", ephemeral=True)
-@tree.command(name="sortteamcats", description="Sort TEAM categories block A-Z", guild=GUILD_OBJ)
+
+
+@tree.command(
+    name="sortteamcats", description="Sort TEAM categories block A-Z", guild=GUILD_OBJ
+)
 @need_manage_channels()
 async def sortteamcats(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
-    team_cats = [
-        c for c in guild.categories
-        if c.name.upper().startswith("TEAM ")
-    ]
+    team_cats = [c for c in guild.categories if c.name.upper().startswith("TEAM ")]
     non_team_cats = [
-        c for c in guild.categories
-        if not c.name.upper().startswith("TEAM ")
+        c for c in guild.categories if not c.name.upper().startswith("TEAM ")
     ]
     if not non_team_cats:
-        return await interaction.followup.send("Nema NON TEAM kategorija.", ephemeral=True)
+        return await interaction.followup.send(
+            "Nema NON TEAM kategorija.", ephemeral=True
+        )
     anchor = max(c.position for c in non_team_cats)
     team_sorted = sorted(team_cats, key=lambda c: c.name.lower())
     moved = 0
     for i, cat in enumerate(team_sorted):
         try:
-            await cat.edit(position = anchor + 1 + i)
+            await cat.edit(position=anchor + 1 + i)
             moved += 1
             await asyncio.sleep(0.4)
         except:
             pass
     await interaction.followup.send(f"Sorted {moved} TEAM categories.", ephemeral=True)
+
+
 @tree.command(name="sortteamroles", description="Bulk sort TEAM roles", guild=GUILD_OBJ)
 @need_manage_roles()
 async def sortteamroles(interaction: discord.Interaction):
@@ -1161,29 +1537,29 @@ async def sortteamroles(interaction: discord.Interaction):
     guild = interaction.guild
     bot_top = guild.me.top_role.position
     editable = [
-        r for r in guild.roles
-        if not r.managed
-        and r != guild.default_role
-        and r.position < bot_top
+        r
+        for r in guild.roles
+        if not r.managed and r != guild.default_role and r.position < bot_top
     ]
     team = sorted(
         [r for r in editable if r.name.startswith("TEAM ")],
-        key=lambda r: r.name.lower()
+        key=lambda r: r.name.lower(),
     )
     non_team = sorted(
         [r for r in editable if not r.name.startswith("TEAM ")],
         key=lambda r: r.position,
-        reverse=True # da zadrži postojeći red gore
+        reverse=True,  # da zadrži postojeći red gore
     )
     final_stack = non_team + team
     # 🔥 OVO JE KLJUČ
     final_stack.reverse()
-    payload = {
-        role: i + 1
-        for i, role in enumerate(final_stack)
-    }
+    payload = {role: i + 1 for i, role in enumerate(final_stack)}
     await guild.edit_role_positions(payload)
-    await interaction.followup.send("Roles sorted: NON TEAM top → TEAM A-Z bottom", ephemeral=True)
+    await interaction.followup.send(
+        "Roles sorted: NON TEAM top → TEAM A-Z bottom", ephemeral=True
+    )
+
+
 # /newm
 @tree.command(name="newm", description="Napravi novi model", guild=GUILD_OBJ)
 @need_manage_roles()
@@ -1196,9 +1572,9 @@ async def new_model(interaction: discord.Interaction, ime: str):
     try:
         new_role = await guild.create_role(
             name=role_name,
-            colour=discord.Colour(0x2b2d31),
+            colour=discord.Colour(0x2B2D31),
             mentionable=True,
-            reason=f"/newm by {interaction.user}"
+            reason=f"/newm by {interaction.user}",
         )
         await asyncio.sleep(2)
         await sort_team_roles(guild)
@@ -1218,25 +1594,37 @@ async def new_model(interaction: discord.Interaction, ime: str):
             "(nastavak teksta po tvom originalnom zahtevu)"
         )
 
-        embed = discord.Embed(title="✅ Model kreiran", color=0x00ff00)
+        embed = discord.Embed(title="✅ Model kreiran", color=0x00FF00)
         embed.add_field(name="Rola", value=role_name, inline=False)
         embed.add_field(name="Kategorija", value=category_name, inline=False)
         await interaction.followup.send(embed=embed)
     except Exception as e:
         await interaction.followup.send(f"❌ Greška: {e}", ephemeral=True)
-        
+
+
 # ========== TESTAUTO - Ručno testiranje auto schedule ==========
-@tree.command(name="testauto", description="Ručno pokreće auto schedule za test", guild=GUILD_OBJ)
+@tree.command(
+    name="testauto", description="Ručno pokreće auto schedule za test", guild=GUILD_OBJ
+)
 @need_manage_roles()
 async def test_auto_schedule(interaction: discord.Interaction, shift: str):
     await interaction.response.defer(ephemeral=True)
-   
+
     if shift not in ["grave", "after", "main"]:
-        return await interaction.followup.send("❌ Dozvoljene vrednosti: `grave`, `after`, `main`", ephemeral=True)
-    await interaction.followup.send(f"🔄 Pokrećem Auto Schedule test za **{shift.upper()}** smenu...", ephemeral=True)
+        return await interaction.followup.send(
+            "❌ Dozvoljene vrednosti: `grave`, `after`, `main`", ephemeral=True
+        )
+    await interaction.followup.send(
+        f"🔄 Pokrećem Auto Schedule test za **{shift.upper()}** smenu...", ephemeral=True
+    )
     # Pokrećemo u pozadini da ne blokira interakciju
     asyncio.create_task(run_auto_schedule(shift))
-    await interaction.followup.send("✅ Test je pokrenut u pozadini. Proveri odgovarajući general kanal (graveyard / afternoon / main).", ephemeral=True)
+    await interaction.followup.send(
+        "✅ Test je pokrenut u pozadini. Proveri odgovarajući general kanal (graveyard / afternoon / main).",
+        ephemeral=True,
+    )
+
+
 # ---------- /resync ----------
 @tree.command(name="resync", description="force guild sync instant", guild=GUILD_OBJ)
 @need_manage_roles()
@@ -1244,17 +1632,20 @@ async def resync(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
         if GUILD_OBJ is None:
-            return await interaction.followup.send("GUILD_ID nije setovan.", ephemeral=True)
+            return await interaction.followup.send(
+                "GUILD_ID nije setovan.", ephemeral=True
+            )
         # FORCE COPY GLOBAL → GUILD
         tree.copy_global_to(guild=GUILD_OBJ)
         cmds = await tree.sync(guild=GUILD_OBJ)
         names = ", ".join(sorted(c.name for c in cmds))
         await interaction.followup.send(
-            f"Guild sync OK. {len(cmds)} komandi → {names}",
-            ephemeral=True
+            f"Guild sync OK. {len(cmds)} komandi → {names}", ephemeral=True
         )
     except Exception as e:
         await interaction.followup.send(f"Resync FAIL: {e}", ephemeral=True)
+
+
 # ---------- global error ----------
 @tree.error
 async def on_app_command_error(interaction: discord.Interaction, error):
@@ -1262,12 +1653,16 @@ async def on_app_command_error(interaction: discord.Interaction, error):
         await interaction.response.send_message(f"greška: {error}", ephemeral=True)
     except:
         await interaction.followup.send(f"greška: {error}", ephemeral=True)
+
+
 # ---------- MM HOOKS ----------
 def _mm_text_from_message(content: str) -> str:
     raw = (content or "").strip()
     if raw.lower().startswith("!mm"):
         return raw[3:].strip(": \n\t")
     return raw
+
+
 def _detect_shift_now():
     now = _local_now().time()
     h = now.hour
@@ -1276,6 +1671,8 @@ def _detect_shift_now():
     if h >= 18 or h < 2:
         return "afternoon"
     return "main"
+
+
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
@@ -1286,8 +1683,12 @@ async def on_message(message: discord.Message):
         now_local = _local_now()
         mm_last_time[message.channel.id] = now_local
         mm_sent_log.append((message.author.id, now_local, _detect_shift_now()))
-        mentions = " ".join(f"<@{uid}>" for uid in [886983698321391667, 1301678435776598107])
-        await message.channel.send(f"{mentions} {message.author.mention} je upravo poslao !mm.")
+        mentions = " ".join(
+            f"<@{uid}>" for uid in [886983698321391667, 1301678435776598107]
+        )
+        await message.channel.send(
+            f"{mentions} {message.author.mention} je upravo poslao !mm."
+        )
         # auto FU
         mm_line = _mm_text_from_message(message.content)
         if mm_line:
@@ -1296,6 +1697,8 @@ async def on_message(message: discord.Message):
                 block = "```\n" + "\n".join(fus) + "\n```"
                 await message.channel.send(block)
     await bot.process_commands(message)
+
+
 # ---------- on_ready ----------
 @bot.event
 async def on_ready():
@@ -1318,5 +1721,7 @@ async def on_ready():
             print("✅ Auto Schedule task je pokrenut")
     except Exception as e:
         print("sync fail:", e)
+
+
 # ---------- RUN ----------
 bot.run(TOKEN)
