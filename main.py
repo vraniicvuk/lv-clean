@@ -1571,6 +1571,8 @@ async def new_model(interaction: discord.Interaction, ime: str):
     role_name = f"TEAM {model_name}"
     category_name = f"TEAM {model_name}"
 
+    new_role = None
+
     try:
         # Kreiraj rolu
         new_role = await guild.create_role(
@@ -1580,58 +1582,59 @@ async def new_model(interaction: discord.Interaction, ime: str):
             reason=f"/newm by {interaction.user}"
         )
 
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(2)
         await sort_team_roles(guild)
 
-        # Odmah odgovori korisniku
+        # Uspešan odgovor za rolu
         await interaction.followup.send(
-            f"✅ **Rola kreirana:** `{role_name}`\n"
-            "Kreiram kategoriju i kanale u pozadini... (sačekaj 10-15 sekundi)",
+            f"✅ **Rola uspešno kreirana:** `{role_name}`\n"
+            "Sada kreiram kategoriju i kanale u pozadini... (sačekaj 10-15 sekundi)",
             ephemeral=True
         )
 
-        # Sve ostalo radi u pozadini da ne ubije interakciju
-        asyncio.create_task(full_newm_background(guild, new_role, category_name, interaction.user))
+        # Ostatak u pozadini
+        if new_role:
+            asyncio.create_task(full_newm_background(guild, new_role, category_name))
 
+    except discord.HTTPException as e:
+        if e.code == 50013:
+            await interaction.followup.send(
+                f"✅ **Rola je ipak kreirana:** `{role_name}`\n"
+                "Ali bot nema dovoljna prava za kreiranje kategorije/kanala.\n\n"
+                "**Rešenje:** Proveri da li je bot rola **skroz na vrhu** liste rola i restartuj bota.",
+                ephemeral=True
+            )
+        else:
+            await interaction.followup.send(f"❌ Greška: {e}", ephemeral=True)
     except Exception as e:
-        try:
-            await interaction.followup.send(f"❌ Greška pri kreiranju role: {e}", ephemeral=True)
-        except:
-            pass
+        await interaction.followup.send(f"❌ Neočekivana greška: {e}", ephemeral=True)
         print(f"[NEW M] Greška: {e}")
 
 
-async def full_newm_background(guild, new_role, category_name, user):
-    """Radi u pozadini - ne blokira interakciju"""
+async def full_newm_background(guild, new_role, category_name):
     try:
         await asyncio.sleep(4)
 
-        # Kreiraj kategoriju
         new_category = await guild.create_category(name=category_name)
-
         general = await new_category.create_text_channel("general")
         whales = await new_category.create_text_channel("whales")
 
         await asyncio.sleep(4)
 
-        # Permisije
         await new_category.set_permissions(guild.default_role, view_channel=False)
         await new_category.set_permissions(new_role, view_channel=True)
 
-        # Welcome poruka
         welcome_text = (
             "Ovo je kanal u koji se upisuju sve bitne stavke vezane za model, spendere, ostale fanove i slično.\n\n"
-            "Ukoliko ste imali farmu, nju upisujete u kanalu #whales koristeći komandu /farm uz sve adekvatne podatke.\n"
-            "Ako vam je potrebno više informacija od onih koje već imate o modelu, obavezno to napišite u grupnom chatu vaše smene na Telegramu...\n\n"
-            "Ne pitati za custome fanove koji su potrošili 0 ili su tek došli.\n"
-            "Za sve lične podatke koji nisu navedeni, dozvoljeno je odokativno improvizovati, uz obavezno upisivanje u notes šta je izmišljeno."
+            "Ukoliko ste imali farmu, nju upisujete u kanalu #whales koristeći komandu /farm uz sve adekvatne podatke.\n\n"
+            "Za sve ostalo pratite uputstva iz glavne poruke."
         )
         await general.send(welcome_text)
 
-        print(f"[NEW M] Uspešno završeno za {category_name}")
+        print(f"[NEW M] Uspešno kreirano za {category_name}")
 
     except Exception as e:
-        print(f"[NEW M] Greška u background-u za {category_name}: {e}")
+        print(f"[NEW M] Background greška za {category_name}: {e}")
 
 
 # ========== TESTAUTO - Ručno testiranje auto schedule ==========
