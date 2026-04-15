@@ -1335,7 +1335,17 @@ class FarmModal(Modal, title="Farm unos"):
 async def farm(interaction: discord.Interaction):
     await interaction.response.send_modal(FarmModal(opener=interaction.user))
 
-# ========== SIMPLE QC - SAMO LISTA CHATTERA ==========
+from collections import defaultdict
+import calendar
+
+# Globalni counter za QC po korisniku po mesecu
+qc_counter = defaultdict(int)   # (user_id, year, month) -> broj QC-a
+
+def get_current_month_key():
+    now = datetime.now()
+    return (now.year, now.month)
+
+# ========== SIMPLE QC SA BROJANJEM ==========
 @tree.command(name="qc", description="Pošalji Daily QC listu chattera", guild=GUILD_OBJ)
 async def qc(interaction: discord.Interaction):
     await interaction.response.send_message(
@@ -1355,15 +1365,18 @@ async def qc(interaction: discord.Interaction):
         if not chatters:
             return await interaction.followup.send("❌ Nisi uneo nijednog chattera.", ephemeral=True)
 
-        now = datetime.now().strftime("%d.%m.%Y %H:%M")
+        # Brojanje
+        now = datetime.now()
+        month_key = get_current_month_key()
+        qc_counter[(interaction.user.id, *month_key)] += 1
+        monthly_count = qc_counter[(interaction.user.id, *month_key)]
 
-        # Formatirani report
-        report = f"**Daily QC Report**\n"
-        report += f"**Datum i vreme:** {now}\n"
+        report = f"**qc broj {monthly_count} ovog meseca**\n"
+        report += f"**Datum i vreme:** {now.strftime('%d.%m.%Y %H:%M')}\n"
         report += f"**Broj chattera:** {len(chatters)}\n"
         report += f"**Popunio:** {interaction.user.mention}\n\n"
         report += "**Chatteri:**\n"
-        
+
         for i, chatter in enumerate(chatters, 1):
             report += f"{i}. {chatter}\n"
 
@@ -1372,11 +1385,11 @@ async def qc(interaction: discord.Interaction):
             await qc_channel.send(report)
             await qc_channel.send(
                 f"<@{923657835164889119}> <@{886983698321391667}> "
-                f"**Daily QC je poslat za {len(chatters)} chattera.**"
+                f"**Daily QC je poslat (broj {monthly_count} ovog meseca).**"
             )
 
         await interaction.followup.send(
-            f"✅ QC uspešno poslat za **{len(chatters)}** chattera.", 
+            f"✅ QC uspešno poslat (ovo je tvoj **{monthly_count}.** QC ovog meseca).", 
             ephemeral=True
         )
 
@@ -1384,6 +1397,19 @@ async def qc(interaction: discord.Interaction):
         await interaction.followup.send("Vreme za unos liste je isteklo.", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"❌ Greška: {e}", ephemeral=True)
+
+
+# Automatski reset countera 1. u mesecu
+@tasks.loop(hours=1)
+async def monthly_qc_reset():
+    now = datetime.now()
+    if now.day == 1 and now.hour == 0:
+        qc_counter.clear()
+        print("✅ QC counter resetovan - novi mesec")
+
+@monthly_qc_reset.before_loop
+async def before_monthly_reset():
+    await bot.wait_until_ready()
 
 # ---------- /schedule — CLEAN-THEN-ASSIGN + unknown models report ----------
 @tree.command(
