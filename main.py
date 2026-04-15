@@ -496,11 +496,26 @@ async def sort_team_categories(guild):
     print("TEAM categories sorted")
 
 # ========== AUTO SCHEDULE (15 min pre smene + bolja detekcija) ==========
+# ========== AUTO SCHEDULE (15 min pre smene) ==========
+@tasks.loop(minutes=1)
+async def auto_schedule_task():
+    now = _local_now()
+    h, m = now.hour, now.minute
+    triggers = {
+        "grave": (8, 45),   # promeni kasnije na (9, 45)
+        "after": (17, 45),
+        "main": (1, 45),
+    }
+    for shift, (th, tm) in triggers.items():
+        if h == th and m == tm:
+            await run_auto_schedule(shift)
+            break
+
+
 async def run_auto_schedule(shift: str):
     guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
     if not guild:
         return
-
     channel = bot.get_channel(SCHEDULE_CHANNEL.get(shift))
     if not channel:
         return
@@ -522,13 +537,10 @@ async def run_auto_schedule(shift: str):
             return
 
         schedule_text = schedule_msg.content.strip()
-
         print(f"[AUTO SCHEDULE] Pronađen raspored za {shift} → primenjujem...")
 
-        # === PRAVI AUTO SCHEDULE ===
         await apply_schedule_logic(guild, schedule_text)
 
-        # Završna poruka
         role_id = {"grave": GRAVE_ROLE_ID, "after": AFTER_ROLE_ID, "main": MAIN_ROLE_ID}[shift]
         await channel.send(
             f"<@&{role_id}> **Role za modele koje imate na rasporedu su vam dodeljene.**\n\n"
@@ -537,7 +549,7 @@ async def run_auto_schedule(shift: str):
             "`ci model1/model2/model3/...`"
         )
 
-        print(f"[AUTO SCHEDULE] Uspešno završeno za {shift.upper()} smenu.")
+        print(f"[AUTO SCHEDULE] Uspešno završeno za {shift.upper()}")
 
     except Exception as e:
         print(f"[AUTO SCHEDULE] Greška za {shift}: {e}")
@@ -555,15 +567,15 @@ async def apply_schedule_logic(guild, text: str):
             base = normalize_model_name(r.name[5:])
             role_index.setdefault(base, []).append(r)
 
-    # --- parsiranje teksta ---
-    text_norm = text.replace("⁄", "/").replace("／", "/")
+    # Parsiranje teksta
+    text_norm = (text or "").replace("⁄", "/").replace("／", "/")
     raw_blocks = []
     pattern = re.compile(r"(@\S+|\<@!?[\d]+\>)(.*?)(?=(?:@\S+|\<@!?[\d]+\>)|$)", re.S)
     for m in pattern.finditer(text_norm):
         raw_blocks.append((m.group(1).strip(), (m.group(2) or "").strip()))
 
     def parse_roles_list_with_unknowns(roles_text: str):
-        txt = roles_text.replace("\\", "/")
+        txt = (roles_text or "").replace("\\", "/")
         segs = [s.strip() for s in re.split(r"[\/,;|]+", txt) if s.strip()]
         wanted = []
         unknown = []
@@ -582,9 +594,26 @@ async def apply_schedule_logic(guild, text: str):
                 unknown.append(base)
         return wanted, unknown
 
+    def split_assignees_and_roles(first_user: str, tail: str):
+        roles_text = tail.strip()
+        header = ""
+        if ":" in roles_text:
+            header, roles_text = roles_text.split(":", 1)
+        else:
+            m = re.match(r"^(\s*(?:@[\.\w]+|\<@!?[\d]+\>)(?:\s*[\/,|]\s*(?:@[\.\w]+|\<@!?[\d]+\>))*)", roles_text)
+            if m:
+                header = m.group(1).strip()
+                roles_text = roles_text[len(header):].strip()
+
+        assignees = re.findall(r"@[\.\w]+|\<@!?[\d]+\>", header or first_user)
+        if not assignees:
+            assignees = [first_user]
+        return assignees, roles_text.strip()
+
+    # Glavna petlja
     for _, (assignees_raw, roles_text) in enumerate(raw_blocks, start=1):
         desired_roles, _ = parse_roles_list_with_unknowns(roles_text)
-        assignees, _ = split_assignees_and_roles("", assignees_raw)  # koristimo već popravljenu funkciju
+        assignees, _ = split_assignees_and_roles("", assignees_raw)
 
         for user_token in assignees:
             member = member_from_token(guild, user_token)
@@ -603,6 +632,8 @@ async def apply_schedule_logic(guild, text: str):
             touchable_assign = [r for r in desired_roles if can_touch_role(bot_member, r)]
             if touchable_assign:
                 await safe_add_roles(member, touchable_assign, reason="auto schedule")
+
+    print("[AUTO APPLY] Raspored primenjen")
 
 # ====== AI/FU HELPERI ======
 def _sanitize_mm_text(s: str) -> str:
@@ -1163,59 +1194,46 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
 
     # pomocne funkcije
     def parse_roles_list_with_unknowns(guild: discord.Guild, roles_text: str):
-
         txt = (roles_text or "").replace("\\", "/")
-
         segs = [s.strip() for s in re.split(r"[\/,;|]+", txt) if s.strip()]
-
         wanted = []
         unknown = []
         seen = set()
-
         for seg in segs:
-
             model = extract_model_name(seg)
-
             base = clean_role_phrase(model)
-
             if not base:
                 continue
-
             r = role_from_phrase(guild, base)
-
             if r:
                 if r.id not in seen:
                     wanted.append(r)
                     seen.add(r.id)
             else:
                 unknown.append(base)
-
         return wanted, unknown
 
     def split_assignees_and_roles(first_user: str, tail: str):
-        "Popravljena verzija za format: @user1 / @user2 : modeli ili @user1 / @user2 modeli"
+        """Robusna verzija za sve varijante rasporeda"""
         roles_text = tail.strip()
         header = ""
-
         if ":" in roles_text:
             header, roles_text = roles_text.split(":", 1)
         else:
-            m = re.match(r"^(\s*(?:@\S+|\<@!?[\d]+\>)(?:\s*[\/,|]\s*(?:@\S+|\<@!?[\d]+\>))*)", roles_text)
+            m = re.match(r"^(\s*(?:@[\.\w]+|\<@!?[\d]+\>)(?:\s*[\/,|]\s*(?:@[\.\w]+|\<@!?[\d]+\>))*)", roles_text)
             if m:
                 header = m.group(1).strip()
                 roles_text = roles_text[len(header):].strip()
 
-        assignees = re.findall(r"(@\S+|\<@!?[\d]+\>)", header or first_user)
+        assignees = re.findall(r"@[\.\w]+|\<@!?[\d]+\>", header or first_user)
         if not assignees:
             assignees = [first_user]
-
         return assignees, roles_text.strip()
 
     report = []
     total_ops_add = 0
-    total_ops_rm  = 0
+    total_ops_rm = 0
     global_unknown = []
-
     blocks = [split_assignees_and_roles(u, t) for (u, t) in raw_blocks]
 
     for idx, (assignees, roles_text) in enumerate(blocks, start=1):
@@ -1230,7 +1248,7 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
                 report.append(f"[{tag}] ❌ user nije nađen: {user_token}")
                 continue
 
-            # CLEAN: skini samo TEAM * role (ne diraj KEEP_ROLE_NAMES)
+            # CLEAN
             bot_touchable_model_roles = [
                 r for r in member.roles
                 if r.name.upper().startswith("TEAM ") and (r.name.upper() not in KEEP_ROLE_NAMES) and can_touch_role(bot_member, r)
@@ -1240,9 +1258,9 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
                 if r.name.upper().startswith("TEAM ") and (r.name.upper() not in KEEP_ROLE_NAMES) and r not in bot_touchable_model_roles
             ]
 
-            # ASSIGN: samo sto bot sme
+            # ASSIGN
             touchable_assign = [r for r in desired_roles if can_touch_role(bot_member, r)]
-            blocked_assign   = [r for r in desired_roles if r not in touchable_assign]
+            blocked_assign = [r for r in desired_roles if r not in touchable_assign]
 
             if not apply:
                 msg = (f"[{tag}] PREVIEW {member.display_name}: "
@@ -1254,6 +1272,7 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
                     msg += f" | unknown: {', '.join(unknown_here)}"
                 report.append(msg)
                 continue
+
             # APPLY
             try:
                 if bot_touchable_model_roles:
@@ -1284,7 +1303,6 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
               if not apply else
               f"SCHEDULE APPLY done (removed={total_ops_rm}, added={total_ops_add})\n")
     out = header + "\n".join(report)
-
     if global_unknown:
         dedup = sorted({u for u in global_unknown})
         out += "\n\nUNKNOWN MODELS (no matching role found):\n- " + "\n- ".join(dedup)
@@ -1372,28 +1390,15 @@ async def sortteamroles(interaction: discord.Interaction):
 
 # /newm
 # ========== /newm - PUNA VERZIJA (radi pošto rola prolazi) ==========
-@tree.command(
-    name="newm",
-    description="Napravi novi model: TEAM rolu + TEAM kategoriju + #general i #whales",
-    guild=GUILD_OBJ
-)
+@tree.command(name="newm", description="Napravi novi model", guild=GUILD_OBJ)
 @need_manage_roles()
 @need_manage_channels()
 async def new_model(interaction: discord.Interaction, ime: str):
     await interaction.response.defer(ephemeral=True)
 
     guild = interaction.guild
-    model_name = ime.strip()
-    if not model_name:
-        return await interaction.followup.send("❌ Ime modela ne može biti prazno.", ephemeral=True)
-
-    role_name = f"TEAM {model_name.upper()}"
-    category_name = f"TEAM {model_name.upper()}"
-
-    if discord.utils.get(guild.roles, name=role_name):
-        return await interaction.followup.send(f"❌ Rola **{role_name}** već postoji!", ephemeral=True)
-    if discord.utils.get(guild.categories, name=category_name):
-        return await interaction.followup.send(f"❌ Kategorija **{category_name}** već postoji!", ephemeral=True)
+    role_name = f"TEAM {ime.strip().upper()}"
+    category_name = f"TEAM {ime.strip().upper()}"
 
     try:
         new_role = await guild.create_role(
@@ -1403,7 +1408,7 @@ async def new_model(interaction: discord.Interaction, ime: str):
             reason=f"/newm by {interaction.user}"
         )
 
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(2)
         await sort_team_roles(guild)
 
         new_category = await guild.create_category(name=category_name)
@@ -1411,23 +1416,15 @@ async def new_model(interaction: discord.Interaction, ime: str):
         general = await new_category.create_text_channel("general")
         whales = await new_category.create_text_channel("whales")
 
-        await asyncio.sleep(2)
+        await asyncio.sleep(3)
         await new_category.set_permissions(guild.default_role, view_channel=False)
         await new_category.set_permissions(new_role, view_channel=True)
 
-        welcome_message = (
-            "Ovo je kanal u koji se upisuju sve bitne stavke vezane za model, spendere, ostale fanove i slično.\n\n"
-            "Ukoliko ste imali farmu, nju upisujete u kanalu **#whales** koristeći komandu `/farm`.\n\n"
-            "Nakon provere rola, clock inujte se na Telegramu u formatu: `ci model1/model2/...`"
-        )
-        await general.send(welcome_message)
+        await general.send("Dobrodošli u novi model kanal.")
 
-        await sort_team_categories(guild)
-
-        embed = discord.Embed(title="✅ Novi model uspešno kreiran!", color=0x00ff00)
-        embed.add_field(name="Rola", value=f"`{role_name}`", inline=False)
-        embed.add_field(name="Kategorija", value=f"`{category_name}`", inline=False)
-        embed.add_field(name="Kanali", value=f"{general.mention}\n{whales.mention}", inline=False)
+        embed = discord.Embed(title="✅ Model kreiran", color=0x00ff00)
+        embed.add_field(name="Rola", value=role_name, inline=False)
+        embed.add_field(name="Kategorija", value=category_name, inline=False)
 
         await interaction.followup.send(embed=embed)
 
