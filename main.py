@@ -495,10 +495,9 @@ async def sort_team_categories(guild):
 
     print("TEAM categories sorted")
 
-# ========== AUTO SCHEDULE (15 min pre smene) ==========
+# ========== AUTO SCHEDULE (15 min pre smene + bolja detekcija) ==========
 @tasks.loop(minutes=1)
 async def auto_schedule_task():
-    """Automatski pokreće schedule 15 minuta pre početka smene"""
     now = _local_now()
     h, m = now.hour, now.minute
 
@@ -515,33 +514,26 @@ async def auto_schedule_task():
 
 
 async def run_auto_schedule(shift: str):
-    """Glavna funkcija za auto schedule"""
     guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
     if not guild:
         return
 
     channel_id = SCHEDULE_CHANNEL.get(shift)
-    if not channel_id:
-        return
-
     channel = bot.get_channel(channel_id)
     if not channel:
         return
 
     try:
-        # Uzimamo poslednjih 30 poruka
-        messages = [msg async for msg in channel.history(limit=30)]
+        messages = [msg async for msg in channel.history(limit=50)]
 
-        if not messages:
-            return
-
-        # Pronalazimo najnoviju validnu poruku sa rasporedom
+        # Bolja detekcija rasporeda (kao na screenshotu)
         schedule_msg = None
         for msg in messages:
             content = msg.content.lower()
-            if ("@" in content or "<@" in content) and any(x in content for x in [":", "/", ","]):
+            # Tražimo poruku koja ima više @chattera i / ili :
+            if content.count("@") >= 2 and any(x in content for x in ["/", ":", ","]):
                 age = (_local_now() - msg.created_at.replace(tzinfo=ZoneInfo("Europe/Belgrade"))).total_seconds()
-                if age < 86400:   # 24 sata
+                if age < 86400:  # 24h
                     schedule_msg = msg
                     break
 
@@ -551,34 +543,25 @@ async def run_auto_schedule(shift: str):
 
         schedule_text = schedule_msg.content.strip()
 
-        print(f"[AUTO SCHEDULE] Pokrećem za {shift.upper()} smenu...")
+        # Pokrećemo pravi /schedule
+        await schedule(type('obj', (object,), {'guild': guild, 'user': bot.user, 'response': type('obj', (object,), {'defer': lambda *a,**k: None, 'followup': type('obj', (object,), {'send': lambda *a,**k: None})})()})(), 
+                       text=schedule_text, apply=True)
 
-        # === POZIVAMO PRAVU /schedule logiku sa apply=True ===
-        # Koristimo interakciju da simuliramo poziv komande
-        fake_interaction = type('obj', (object,), {
-            'guild': guild,
-            'user': bot.user,
-            'response': type('obj', (object,), {'defer': lambda *a,**k: None, 'followup': type('obj', (object,), {'send': lambda *a,**k: None})})()
-        })()
-
-        # Pozivamo schedule funkciju
-        await schedule(fake_interaction, text=schedule_text, apply=True)
-
-        # === ZAVRŠNA PORUKA ===
+        # ZAVRŠNA PORUKA SA PINGOM ROLE
+        role_id = {"grave": GRAVE_ROLE_ID, "after": AFTER_ROLE_ID, "main": MAIN_ROLE_ID}[shift]
+        
         finish_message = (
-            "✅ **Role za modele koje imate na rasporedu su vam dodeljene.**\n\n"
+            f"<@&{role_id}> **Role za modele koje imate na rasporedu su vam dodeljene.**\n\n"
             "Ukoliko vam fali role za nekog modela, molim vas da se obratite direktno nekome iz tima.\n\n"
             "Nakon provere rola, **clock inujte se** na Telegram kanalu vaše smene u formatu:\n"
             "`ci model1/model2/model3/...`"
         )
 
         await channel.send(finish_message)
-
-        print(f"[AUTO SCHEDULE] Uspešno završeno za {shift.upper()} smenu.")
+        print(f"[AUTO SCHEDULE] Uspešno završeno za {shift.upper()}")
 
     except Exception as e:
         print(f"[AUTO SCHEDULE] Greška za {shift}: {e}")
-        await channel.send(f"❌ Auto Schedule greška za {shift.upper()}: {e}")
 
 # ====== AI/FU HELPERI ======
 def _sanitize_mm_text(s: str) -> str:
@@ -1350,7 +1333,7 @@ async def sortteamroles(interaction: discord.Interaction):
     await interaction.followup.send("Roles sorted: NON TEAM top → TEAM A-Z bottom", ephemeral=True)
 
 # ========== /newm - NOVI MODEL (rola + kategorija + kanali + welcome poruka) ==========
-# ========== /newm - NOVI MODEL (ALL CAPS + FIXED 50013) ==========
+# ========== /newm - NOVI MODEL (FIXED 50013 + ALL CAPS) ==========
 @tree.command(
     name="newm",
     description="Napravi novi model: TEAM rolu + TEAM kategoriju + #general i #whales + welcome poruku",
@@ -1383,10 +1366,10 @@ async def new_model(interaction: discord.Interaction, ime: str):
             reason=f"/newm by {interaction.user}"
         )
 
-        # 🔥 KLJUČNO: odmah sortiraj role da botova rola bude iznad nove
+        # 🔥 NAJVAŽNIJE: odmah sortiraj role da bot bude iznad nove role
         await sort_team_roles(guild)
 
-        # 2. Kreiraj kategoriju sa pravim dozvolama
+        # 2. Kreiraj kategoriju sa overwrites
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             new_role: discord.PermissionOverwrite(view_channel=True)
@@ -1416,7 +1399,6 @@ async def new_model(interaction: discord.Interaction, ime: str):
         )
         await general.send(welcome_message)
 
-        # 5. Još jednom sortiraj (sigurnost)
         await sort_team_categories(guild)
 
         embed = discord.Embed(title="✅ Novi model uspešno kreiran!", color=0x00ff00)
@@ -1429,7 +1411,7 @@ async def new_model(interaction: discord.Interaction, ime: str):
         print(f"[NEW MODEL] Uspešno kreiran: {role_name}")
 
     except discord.Forbidden as e:
-        await interaction.followup.send(f"❌ Missing Permissions (50013)\n\nUradi ovo:\n1. Pomeri bot rolu skroz dole pa opet skroz gore\n2. Uključi Administrator na bot roli\n3. Restartuj bota", ephemeral=True)
+        await interaction.followup.send(f"❌ Missing Permissions (50013)\n\n1. Pomeri bot rolu skroz dole pa opet skroz gore\n2. Uključi Administrator na bot roli\n3. Restartuj bota", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"❌ Greška: {e}", ephemeral=True)
 
