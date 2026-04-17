@@ -1357,59 +1357,6 @@ def get_current_month_key():
     now = datetime.now()
     return (now.year, now.month)
 
-@tree.command(name="qcurrent", description="Pregled QC reporta za trenutni mesec", guild=GUILD_OBJ)
-@need_manage_roles()
-async def qcurrent(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-
-    now = datetime.now()
-    current_month = (now.year, now.month)
-
-    print(f"[QCurrent Debug] Trenutni mesec: {current_month}")
-    print(f"[QCurrent Debug] Ukupno ključeva u qc_history: {len(qc_history)}")
-
-    user_stats = defaultdict(list)
-
-    for key, entries in qc_history.items():
-        year, month, user_id = key
-        print(f"[QCurrent Debug] Pronađen ključ: {key} | broj unosa: {len(entries)}")
-        if (year, month) == current_month:
-            user = interaction.guild.get_member(user_id)
-            username = user.display_name if user else f"@{user_id}"
-            for entry in entries:
-                user_stats[username].append((entry['date'], entry['count']))
-
-    if not user_stats:
-        await interaction.followup.send(
-            "Još nema QC reporta ovog meseca.\n\n"
-            f"Debug info:\n"
-            f"- Trenutni mesec: {current_month}\n"
-            f"- Ukupno sačuvanih QC ključeva: {len(qc_history)}\n"
-            f"- Proveri da li se /qc komanda pravilno čuva podatke.",
-            ephemeral=True
-        )
-        return
-
-    # ... ostatak koda za prikaz (isti kao ranije)
-    lines = []
-    total_reports = 0
-
-    for username, data in sorted(user_stats.items()):
-        data = sorted(data)
-        count = len(data)
-        total_reports += count
-        dates_str = ", ".join([f"{day}. ({num})" for day, num in data])
-        lines.append(f"**{username}** - {count} qc reportova\n{dates_str}")
-
-    response = f"**QC Report - {now.strftime('%B %Y')}**\n\n"
-    response += "\n\n".join(lines)
-    response += f"\n\n**Ukupno: {total_reports} QC reportova ovog meseca**"
-
-    embed = discord.Embed(description=response, color=0x00ff88)
-    embed.set_footer(text=f"Generisano: {now.strftime('%d.%m.%Y %H:%M')}")
-
-    await interaction.followup.send(embed=embed, ephemeral=True)
-
 # ========== QC - JEDNOSTAVNA VERZIJA SA ČUVANJEM PODATAKA ==========
 @tree.command(name="qc", description="Pošalji Daily QC listu chattera", guild=GUILD_OBJ)
 async def qc(interaction: discord.Interaction):
@@ -1483,6 +1430,46 @@ async def monthly_qc_reset():
 @monthly_qc_reset.before_loop
 async def before_monthly_reset():
     await bot.wait_until_ready()
+
+@tree.command(name="qcurrent", description="Pregled QC reporta za trenutni mesec", guild=GUILD_OBJ)
+@need_manage_roles()
+async def qcurrent(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    now = datetime.now()
+    current_month = (now.year, now.month)
+
+    user_stats = defaultdict(list)
+
+    for key, entries in qc_history.items():
+        year, month, user_id = key
+        if (year, month) == current_month:
+            user = interaction.guild.get_member(user_id)
+            username = user.display_name if user else f"@{user_id}"
+            for entry in entries:
+                user_stats[username].append((entry['date'], entry['count']))
+
+    if not user_stats:
+        return await interaction.followup.send("Još nema QC reporta ovog meseca.", ephemeral=True)
+
+    lines = []
+    total_reports = 0
+
+    for username, data in sorted(user_stats.items()):
+        data = sorted(data)
+        count = len(data)
+        total_reports += count
+        dates_str = ", ".join([f"{day}. ({num})" for day, num in data])
+        lines.append(f"**{username}** - {count} qc reportova\n{dates_str}")
+
+    response = f"**QC Report - {now.strftime('%B %Y')}**\n\n"
+    response += "\n\n".join(lines)
+    response += f"\n\n**Ukupno: {total_reports} QC reportova ovog meseca**"
+
+    embed = discord.Embed(description=response, color=0x00ff88)
+    embed.set_footer(text=f"Generisano: {now.strftime('%d.%m.%Y %H:%M')}")
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 # ---------- /schedule — CLEAN-THEN-ASSIGN + unknown models report ----------
 @tree.command(
