@@ -1410,7 +1410,7 @@ async def qcurrent(interaction: discord.Interaction):
 
     await interaction.followup.send(embed=embed, ephemeral=True)
 
-# ========== SIMPLE QC SA BROJANJEM ==========
+# ========== QC - JEDNOSTAVNA VERZIJA SA ČUVANJEM PODATAKA ==========
 @tree.command(name="qc", description="Pošalji Daily QC listu chattera", guild=GUILD_OBJ)
 async def qc(interaction: discord.Interaction):
     await interaction.response.send_message(
@@ -1430,18 +1430,26 @@ async def qc(interaction: discord.Interaction):
         if not chatters:
             return await interaction.followup.send("❌ Nisi uneo nijednog chattera.", ephemeral=True)
 
-        # Brojanje
         now = datetime.now()
-        month_key = get_current_month_key()
-        qc_counter[(interaction.user.id, *month_key)] += 1
-        monthly_count = qc_counter[(interaction.user.id, *month_key)]
 
+        # === ČUVANJE ZA /QCURRENT ===
+        month_key = (now.year, now.month, interaction.user.id)
+        qc_history[month_key].append({
+            'date': now.day,
+            'count': len(chatters),
+            'timestamp': now
+        })
+
+        # Broj QC-a ovog meseca
+        monthly_count = len(qc_history[month_key])
+
+        # Pravljenje reporta
         report = f"**qc broj {monthly_count} ovog meseca**\n"
         report += f"**Datum i vreme:** {now.strftime('%d.%m.%Y %H:%M')}\n"
         report += f"**Broj chattera:** {len(chatters)}\n"
         report += f"**Popunio:** {interaction.user.mention}\n\n"
         report += "**Chatteri:**\n"
-
+        
         for i, chatter in enumerate(chatters, 1):
             report += f"{i}. {chatter}\n"
 
