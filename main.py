@@ -530,9 +530,9 @@ async def auto_schedule_task():
     now = _local_now()
     h, m = now.hour, now.minute
     triggers = {
-        "grave": (9, 47),  # promeni kasnije na (9, 45)
-        "after": (17, 45),
-        "main": (1, 45),
+        "grave": (9, 40),  # promeni kasnije na (9, 45)
+        "after": (17, 40),
+        "main": (1, 40),
     }
     for shift, (th, tm) in triggers.items():
         if h == th and m == tm:
@@ -1357,7 +1357,7 @@ def get_current_month_key():
     now = datetime.now()
     return (now.year, now.month)
 
-@tree.command(name="qcurrent", description="Pregled svih QC reporta za trenutni mesec", guild=GUILD_OBJ)
+@tree.command(name="qcurrent", description="Pregled QC reporta za trenutni mesec", guild=GUILD_OBJ)
 @need_manage_roles()
 async def qcurrent(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
@@ -1365,10 +1365,14 @@ async def qcurrent(interaction: discord.Interaction):
     now = datetime.now()
     current_month = (now.year, now.month)
 
+    print(f"[QCurrent Debug] Trenutni mesec: {current_month}")
+    print(f"[QCurrent Debug] Ukupno ključeva u qc_history: {len(qc_history)}")
+
     user_stats = defaultdict(list)
 
     for key, entries in qc_history.items():
         year, month, user_id = key
+        print(f"[QCurrent Debug] Pronađen ključ: {key} | broj unosa: {len(entries)}")
         if (year, month) == current_month:
             user = interaction.guild.get_member(user_id)
             username = user.display_name if user else f"@{user_id}"
@@ -1376,18 +1380,25 @@ async def qcurrent(interaction: discord.Interaction):
                 user_stats[username].append((entry['date'], entry['count']))
 
     if not user_stats:
-        return await interaction.followup.send("Još nema QC reporta ovog meseca.", ephemeral=True)
+        await interaction.followup.send(
+            "Još nema QC reporta ovog meseca.\n\n"
+            f"Debug info:\n"
+            f"- Trenutni mesec: {current_month}\n"
+            f"- Ukupno sačuvanih QC ključeva: {len(qc_history)}\n"
+            f"- Proveri da li se /qc komanda pravilno čuva podatke.",
+            ephemeral=True
+        )
+        return
 
+    # ... ostatak koda za prikaz (isti kao ranije)
     lines = []
     total_reports = 0
 
     for username, data in sorted(user_stats.items()):
-        data = sorted(data)  # sortiramo po datumu
+        data = sorted(data)
         count = len(data)
         total_reports += count
-        
         dates_str = ", ".join([f"{day}. ({num})" for day, num in data])
-        
         lines.append(f"**{username}** - {count} qc reportova\n{dates_str}")
 
     response = f"**QC Report - {now.strftime('%B %Y')}**\n\n"
