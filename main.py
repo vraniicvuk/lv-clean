@@ -17,6 +17,7 @@ from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 from openai import OpenAI
 from difflib import SequenceMatcher
+from collections import defaultdict
 
 # --- env first ---
 load_dotenv()
@@ -66,6 +67,10 @@ PROGRESS_EVERY_N = 5
 # Role koje SE NIKAD NE DIRAJU kod auto-clean (pre /schedule)
 KEEP_ROLE_NAMES = {"AFTERNOON", "GRAVEYARD", "MAIN", "OBUKA", "LV CHATTER"}
 role_index = {}
+
+# QC statistika za /qcurrent
+qc_history = defaultdict(list)   # (year, month, user_id) -> list of {'date': day, 'count': num_chattera}
+
 # ---------- BOT ----------
 INTENTS = discord.Intents.default()
 INTENTS.members = True
@@ -437,6 +442,13 @@ async def qc_reminder_task():
         channel = bot.get_channel(1493996105380266114)
         if channel:
             await channel.send(f"<@&1474070997274464379> **Deadline za slanje QC je prošao.**\nMolim te ukoliko nisi do sada, popuni formu za daily QC pomoću komande `/qc`.")
+        # Čuvamo podatke za /qcurrent
+        month_key = (now.year, now.month, interaction.user.id)
+        qc_history[month_key].append({
+            'date': now.day,
+            'count': len(chatters),
+            'timestamp': now
+        })
 
 @qc_reminder_task.before_loop
 async def before_qc_reminder():
@@ -518,7 +530,7 @@ async def auto_schedule_task():
     now = _local_now()
     h, m = now.hour, now.minute
     triggers = {
-        "grave": (10, 31),  # promeni kasnije na (9, 45)
+        "grave": (9, 47),  # promeni kasnije na (9, 45)
         "after": (17, 45),
         "main": (1, 45),
     }
@@ -1344,6 +1356,48 @@ qc_counter = defaultdict(int)   # (user_id, year, month) -> broj QC-a
 def get_current_month_key():
     now = datetime.now()
     return (now.year, now.month)
+
+@tree.command(name="qcurrent", description="Pregled svih QC reporta za trenutni mesec", guild=GUILD_OBJ)
+@need_manage_roles()
+async def qcurrent(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    now = datetime.now()
+    current_month = (now.year, now.month)
+
+    user_stats = defaultdict(list)
+
+    for key, entries in qc_history.items():
+        year, month, user_id = key
+        if (year, month) == current_month:
+            user = interaction.guild.get_member(user_id)
+            username = user.display_name if user else f"@{user_id}"
+            for entry in entries:
+                user_stats[username].append((entry['date'], entry['count']))
+
+    if not user_stats:
+        return await interaction.followup.send("Još nema QC reporta ovog meseca.", ephemeral=True)
+
+    lines = []
+    total_reports = 0
+
+    for username, data in sorted(user_stats.items()):
+        data = sorted(data)  # sortiramo po datumu
+        count = len(data)
+        total_reports += count
+        
+        dates_str = ", ".join([f"{day}. ({num})" for day, num in data])
+        
+        lines.append(f"**{username}** - {count} qc reportova\n{dates_str}")
+
+    response = f"**QC Report - {now.strftime('%B %Y')}**\n\n"
+    response += "\n\n".join(lines)
+    response += f"\n\n**Ukupno: {total_reports} QC reportova ovog meseca**"
+
+    embed = discord.Embed(description=response, color=0x00ff88)
+    embed.set_footer(text=f"Generisano: {now.strftime('%d.%m.%Y %H:%M')}")
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 # ========== SIMPLE QC SA BROJANJEM ==========
 @tree.command(name="qc", description="Pošalji Daily QC listu chattera", guild=GUILD_OBJ)
