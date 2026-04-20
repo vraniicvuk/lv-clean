@@ -1628,7 +1628,7 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
                 unknown.append(base)
         return wanted, unknown
 
-        def split_assignees_and_roles(first_user: str, tail: str):
+    def split_assignees_and_roles(first_user: str, tail: str):
         """NAJROBUSNIJA VERZIJA za tvoj format: @chatter1 / @chatter2 modeli..."""
         full_line = (first_user + " " + tail).strip()
         
@@ -1645,7 +1645,6 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
 
         # Sve posle toga su modeli
         roles_text = full_line[last_pos:].strip()
-        # Uklanjamo eventualne početne separatore
         roles_text = roles_text.lstrip(' /:,-').strip()
 
         return assignees, roles_text
