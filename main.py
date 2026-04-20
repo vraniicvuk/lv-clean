@@ -1611,8 +1611,10 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
 
     await interaction.response.defer(ephemeral=True, thinking=True)
 
-    # normalizacija slash / i razbijanje po blokovima
-    text_norm = (text or "").replace("⁄", "/").replace("／", "/")
+    # Normalizacija teksta
+    text_norm = (text or "").replace("⁄", "/").replace("／", "/").replace("⸻", "\n")
+
+    # Razbijamo na blokove po svakom @mention
     raw_blocks = []
     pattern = re.compile(r"(@\S+|\<@!?[\d]+\>)(.*?)(?=(?:@\S+|\<@!?[\d]+\>)|$)", re.S)
     for m in pattern.finditer(text_norm):
@@ -1621,9 +1623,7 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
         raw_blocks.append((head_user, tail))
 
     if not raw_blocks:
-        return await interaction.followup.send(
-            "nisam našao blokove '@user' → role…", ephemeral=True
-        )
+        return await interaction.followup.send("nisam našao blokove sa @user", ephemeral=True)
 
     # ====================== POMOĆNE FUNKCIJE ======================
     def parse_roles_list_with_unknowns(guild: discord.Guild, roles_text: str):
@@ -1647,16 +1647,16 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
         return wanted, unknown
 
     def split_assignees_and_roles(first_user: str, tail: str):
-        """Najrobustnija verzija - svaka linija sa @ je novi chatter"""
+        """Najrobusnija verzija - hvata sve @mention u liniji kao chatter-e"""
         full_line = (first_user + " " + tail).strip()
         
-        # Hvata sve mention-e u celoj liniji
+        # Hvata SVE @mention u celoj liniji
         assignees = re.findall(r'(@[\.\w]+|<\@!?\d+>)', full_line)
         
         if not assignees:
             return [first_user], full_line
 
-        # Models tekst = sve posle poslednjeg mention-a u liniji
+        # Models tekst = sve posle poslednjeg @mention
         last_chatter = assignees[-1]
         last_pos = full_line.rfind(last_chatter) + len(last_chatter)
         roles_text = full_line[last_pos:].strip()
@@ -1670,13 +1670,11 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
     total_ops_rm = 0
     global_unknown = []
 
-    # Parsiranje blokova
     blocks = []
     for u, t in raw_blocks:
         assignees, roles_text = split_assignees_and_roles(u, t)
         blocks.append((assignees, roles_text))
 
-    # Glavna petlja
     for idx, (assignees, roles_text) in enumerate(blocks, start=1):
         desired_roles, unknown_here = parse_roles_list_with_unknowns(guild, roles_text)
         if unknown_here:
@@ -1724,24 +1722,16 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
             try:
                 if bot_touchable_model_roles:
                     removed = await safe_remove_roles(
-                        member,
-                        bot_touchable_model_roles,
-                        reason=f"schedule auto-clean by {interaction.user}",
+                        member, bot_touchable_model_roles, reason=f"schedule auto-clean by {interaction.user}"
                     )
                     total_ops_rm += len(removed)
-
                 if touchable_assign:
                     added = await safe_add_roles(
-                        member,
-                        touchable_assign,
-                        reason=f"schedule assign by {interaction.user}",
+                        member, touchable_assign, reason=f"schedule assign by {interaction.user}"
                     )
                     total_ops_add += len(added)
 
-                msg = (
-                    f"[{tag}] ✅ {member.display_name} "
-                    f"(clean {len(bot_touchable_model_roles)} / assign {len(touchable_assign)})"
-                )
+                msg = f"[{tag}] ✅ {member.display_name} (clean {len(bot_touchable_model_roles)} / assign {len(touchable_assign)})"
                 if blocked_models:
                     msg += f" | blocked-clean: {', '.join(r.name for r in blocked_models)}"
                 if blocked_assign:
@@ -1755,9 +1745,7 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
                 report.append(f"[{tag}] ❌ {member.display_name} – fail: {e}")
 
         if idx % PROGRESS_EVERY_N == 0:
-            await interaction.followup.send(
-                f"schedule napredak: {idx}/{len(blocks)}…", ephemeral=True
-            )
+            await interaction.followup.send(f"schedule napredak: {idx}/{len(blocks)}…", ephemeral=True)
 
     # Završni izlaz
     header = (
@@ -1773,6 +1761,7 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
 
     for i in range(0, len(out), 1800):
         await interaction.followup.send(f"```\n{out[i:i+1800]}\n```", ephemeral=True)
+
 @tree.command(
     name="sortteamcats", description="Sort TEAM categories block A-Z", guild=GUILD_OBJ
 )
