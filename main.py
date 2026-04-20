@@ -530,7 +530,7 @@ async def auto_schedule_task():
     now = _local_now()
     h, m = now.hour, now.minute
     triggers = {
-        "grave": (9, 40),  # promeni kasnije na (9, 45)
+        "grave": (9, 48),  # promeni kasnije na (9, 45)
         "after": (17, 40),
         "main": (1, 40),
     }
@@ -563,34 +563,29 @@ async def run_auto_schedule(shift: str):
                     break
 
         if not schedule_msg:
-            await channel.send(
-                f"⚠️ Auto Schedule za **{shift.upper()}**: Nije pronađen validan raspored."
-            )
+            await channel.send(f"⚠️ Auto Schedule za **{shift.upper()}**: Nije pronađen validan raspored.")
             return
 
         schedule_text = schedule_msg.content.strip()
         print(f"[AUTO SCHEDULE] Pronađen raspored za {shift} → primenjujem...")
 
-        # === Primena rasporeda ===
+        # Primena rasporeda
         await apply_schedule_logic(guild, schedule_text)
 
-        # === Brojanje chattera kojima su dodeljene role ===
-        # Ovo računa koliko je ljudi dobilo bar jednu novu TEAM rolu u poslednjem apply-u
-        chatter_count = len([m for m in guild.members if any(r.name.upper().startswith("TEAM ") for r in m.roles)])
+        # Brojač chattera - bolji način (broji one koji imaju više od 2 TEAM role)
+        chatter_count = sum(
+            1 for member in guild.members
+            if sum(1 for r in member.roles if r.name.upper().startswith("TEAM ")) >= 2
+        )
 
-        # Role ping za smenu
         role_id = {
             "grave": GRAVE_ROLE_ID,
             "after": AFTER_ROLE_ID,
             "main": MAIN_ROLE_ID,
         }.get(shift)
 
-        if not role_id:
-            role_mention = ""
-        else:
-            role_mention = f"<@&{role_id}> "
+        role_mention = f"<@&{role_id}> " if role_id else ""
 
-        # === ZAVRŠNA PORUKA ===
         final_message = f"""{role_mention}**Role za modele koje imate na rasporedu su vam dodeljene** (dodeljeno za **{chatter_count}** chattera).
 
 Ukoliko vam fali role za nekog modela, molim vas da se obratite direktno nekome iz tima, i nakon provere rola da se clock inujete na Telegram kanalu vaše smene u formatu `ci model1/model2/itd.` kako bi tim znao da ste aktivni.
