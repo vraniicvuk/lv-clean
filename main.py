@@ -1646,38 +1646,26 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
                 unknown.append(base)
         return wanted, unknown
 
-    def split_assignees_and_roles(first_user: str, tail: str):
-        """NAJJAČA VERZIJA - posebno za @user1 / @user2"""
+        def split_assignees_and_roles(first_user: str, tail: str):
+        """Jednostavna i pouzdana verzija - razdvaja po ' / '"""
         full_line = (first_user + " " + tail).strip()
         
-        # Hvata sve @mention i <@id> 
-        assignees = re.findall(r'(@[\.\w]+|<\@!?\d+>)', full_line)
+        # Razdvajamo liniju po " / " (sa razmacima sa obe strane)
+        parts = re.split(r'\s*/\s*', full_line)
+        
+        assignees = []
+        for part in parts:
+            # Iz svakog dela vadimo mention (@ime ili <@id>)
+            found = re.findall(r'(@[\.\w]+|<\@!?\d+>)', part.strip())
+            if found:
+                assignees.extend(found)
         
         if not assignees:
             return [first_user], full_line
 
-        # Ako ima " / " između dva chattera, uzimamo oba
-        if " / " in full_line or " /" in full_line or "/ " in full_line:
-            parts = re.split(r'\s*/\s*', full_line)
-            assignees = []
-            for part in parts:
-                found = re.findall(r'(@[\.\w]+|<\@!?\d+>)', part)
-                if found:
-                    assignees.extend(found)
-            # ako smo našli više od jednog, koristimo ih
-            if len(assignees) > 1:
-                # models tekst je sve posle poslednjeg chattera
-                last_chatter = assignees[-1]
-                last_pos = full_line.rfind(last_chatter) + len(last_chatter)
-                roles_text = full_line[last_pos:].strip()
-                roles_text = roles_text.lstrip(' /:,-').strip()
-                return assignees, roles_text
-
-        # fallback za normalne linije
-        last_pos = 0
-        for match in re.finditer(r'(@[\.\w]+|<\@!?\d+>)', full_line):
-            last_pos = match.end()
-        
+        # Models tekst je sve posle poslednjeg chattera
+        last_chatter = assignees[-1]
+        last_pos = full_line.rfind(last_chatter) + len(last_chatter)
         roles_text = full_line[last_pos:].strip()
         roles_text = roles_text.lstrip(' /:,-').strip()
 
