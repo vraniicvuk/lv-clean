@@ -1646,15 +1646,13 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
                 unknown.append(base)
         return wanted, unknown
 
-        def split_assignees_and_roles(first_user: str, tail: str):
-        """! separator = half shift (oba chattera dobijaju iste modele)"""
+    def split_assignees_and_roles(first_user: str, tail: str):
+        """|| separator za half-shift (oba chattera dobijaju iste modele)"""
         full_line = (first_user + " " + tail).strip()
         
-        # Ako linija sadrži " ! " → half-shift
-        if " !" in full_line or " ! " in full_line or "!" in full_line:
-            # Razdvajamo na delove pre i posle !
-            parts = re.split(r'\s+!\s+', full_line)
-            
+        # Ako postoji " || " → half-shift
+        if " || " in full_line or "||" in full_line:
+            parts = re.split(r'\s*\|\|\s*', full_line)
             assignees = []
             for part in parts:
                 found = re.findall(r'(@[\.\w]+|<\@!?\d+>)', part.strip())
@@ -1662,7 +1660,6 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
                     assignees.extend(found)
             
             if len(assignees) >= 2:
-                # Modele uzimamo posle poslednjeg chattera
                 last_chatter = assignees[-1]
                 last_pos = full_line.rfind(last_chatter) + len(last_chatter)
                 roles_text = full_line[last_pos:].strip()
