@@ -1646,24 +1646,19 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
                 unknown.append(base)
         return wanted, unknown
 
-    def split_assignees_and_roles(first_user: str, tail: str):
-        """Jednostavna i pouzdana verzija - razdvaja po ' / '"""
+     def split_assignees_and_roles(first_user: str, tail: str):
+        """Nova logika: svaki @ počinje novog chattera"""
         full_line = (first_user + " " + tail).strip()
         
-        # Razdvajamo liniju po " / " (sa razmacima sa obe strane)
-        parts = re.split(r'\s*/\s*', full_line)
+        # Hvata sve mention-e u liniji (@ime ili <@id>)
+        mentions = re.findall(r'(@[\.\w]+|<\@!?\d+>)', full_line)
         
-        assignees = []
-        for part in parts:
-            # Iz svakog dela vadimo mention (@ime ili <@id>)
-            found = re.findall(r'(@[\.\w]+|<\@!?\d+>)', part.strip())
-            if found:
-                assignees.extend(found)
-        
-        if not assignees:
+        if not mentions:
             return [first_user], full_line
 
-        # Models tekst je sve posle poslednjeg chattera
+        assignees = mentions
+        
+        # Models tekst = sve posle poslednjeg mention-a
         last_chatter = assignees[-1]
         last_pos = full_line.rfind(last_chatter) + len(last_chatter)
         roles_text = full_line[last_pos:].strip()
