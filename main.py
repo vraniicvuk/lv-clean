@@ -1652,22 +1652,92 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
 
         return assignees, roles_text
 
-    def split_assignees_and_roles(first_user: str, tail: str):
-        """FINALNA VERZIJA"""
-        full_line = (first_user + " " + tail).strip()
-        assignees = re.findall(r'(@[\.\w]+|<\@!?\d+>)', full_line)
+        report = []
+    total_ops_add = 0
+    total_ops_rm = 0
+    global_unknown = []
+    
+    # Parsiranje svih blokova
+    blocks = []
+    for u, t in raw_blocks:
+        assignees, roles_text = split_assignees_and_roles(u, t)
+        blocks.append((assignees, roles_text))
+    
+    # Glavna petlja - prolazimo kroz SVAKOG chattera
+    for idx, (assignees, roles_text) in enumerate(blocks, start=1):
+        desired_roles, unknown_here = parse_roles_list_with_unknowns(guild, roles_text)
+        if unknown_here:
+            global_unknown.extend(unknown_here)
         
-        if not assignees:
-            return [first_user], full_line
-
-        last_pos = 0
-        for match in re.finditer(r'(@[\.\w]+|<\@!?\d+>)', full_line):
-            last_pos = match.end()
-
-        roles_text = full_line[last_pos:].strip()
-        roles_text = roles_text.lstrip(' /:,-').strip()
-
-        return assignees, roles_text
+        for a_idx, user_token in enumerate(assignees, start=1):
+            tag = f"{idx}.{a_idx}"
+            member = member_from_token(guild, user_token)
+            if not member:
+                report.append(f"[{tag}] ❌ user nije nađen: {user_token}")
+                continue
+            
+            # CLEAN stare TEAM role
+            bot_touchable_model_roles = [
+                r for r in member.roles
+                if r.name.upper().startswith("TEAM ")
+                and (r.name.upper() not in KEEP_ROLE_NAMES)
+                and can_touch_role(bot_member, r)
+            ]
+            blocked_models = [
+                r for r in member.roles
+                if r.name.upper().startswith("TEAM ")
+                and (r.name.upper() not in KEEP_ROLE_NAMES)
+                and r not in bot_touchable_model_roles
+            ]
+            
+            # ASSIGN nove role
+            touchable_assign = [r for r in desired_roles if can_touch_role(bot_member, r)]
+            blocked_assign = [r for r in desired_roles if r not in touchable_assign]
+            
+            if not apply:
+                msg = (
+                    f"[{tag}] PREVIEW {member.display_name}: "
+                    f"clean → {', '.join(r.name for r in bot_touchable_model_roles) or '—'}"
+                    f"{' | blocked-clean: ' + ', '.join(r.name for r in blocked_models) if blocked_models else ''} ; "
+                    f"assign → {', '.join(r.name for r in touchable_assign) or '—'}"
+                    f"{' | blocked-assign: ' + ', '.join(r.name for r in blocked_assign) if blocked_assign else ''}"
+                )
+                if unknown_here:
+                    msg += f" | unknown: {', '.join(unknown_here)}"
+                report.append(msg)
+                continue
+            
+            # === APPLY ===
+            try:
+                if bot_touchable_model_roles:
+                    removed = await safe_remove_roles(
+                        member, bot_touchable_model_roles,
+                        reason=f"schedule auto-clean by {interaction.user}"
+                    )
+                    total_ops_rm += len(removed)
+                
+                if touchable_assign:
+                    added = await safe_add_roles(
+                        member, touchable_assign,
+                        reason=f"schedule assign by {interaction.user}"
+                    )
+                    total_ops_add += len(added)
+                
+                msg = f"[{tag}] ✅ {member.display_name} (clean {len(bot_touchable_model_roles)} / assign {len(touchable_assign)})"
+                if blocked_models:
+                    msg += f" | blocked-clean: {', '.join(r.name for r in blocked_models)}"
+                if blocked_assign:
+                    msg += f" | blocked-assign: {', '.join(r.name for r in blocked_assign)}"
+                if unknown_here:
+                    msg += f" | unknown: {', '.join(unknown_here)}"
+                report.append(msg)
+            except discord.Forbidden:
+                report.append(f"[{tag}] ❌ {member.display_name} – nemam Manage Roles/poziciju.")
+            except Exception as e:
+                report.append(f"[{tag}] ❌ {member.display_name} – fail: {e}")
+        
+        if idx % PROGRESS_EVERY_N == 0:
+            await interaction.followup.send(f"schedule napredak: {idx}/{len(blocks)}…", ephemeral=True)
 
 @tree.command(
     name="sortteamcats", description="Sort TEAM categories block A-Z", guild=GUILD_OBJ
