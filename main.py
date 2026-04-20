@@ -1611,19 +1611,30 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
 
     await interaction.response.defer(ephemeral=True, thinking=True)
 
-    # Normalizacija teksta
-    text_norm = (text or "").replace("⁄", "/").replace("／", "/").replace("⸻", "\n")
+    # Čišćenje teksta
+    text_norm = (text or "").replace("⁄", "/").replace("／", "/").replace("⸻", "\n").replace("\r", "\n")
 
-    # Razbijamo na blokove po svakom @mention
+    # Razbijamo na linije i pravimo blokove
+    lines = [line.strip() for line in text_norm.split('\n') if line.strip()]
     raw_blocks = []
-    pattern = re.compile(r"(@\S+|\<@!?[\d]+\>)(.*?)(?=(?:@\S+|\<@!?[\d]+\>)|$)", re.S)
-    for m in pattern.finditer(text_norm):
-        head_user = m.group(1).strip()
-        tail = (m.group(2) or "").strip()
-        raw_blocks.append((head_user, tail))
+    current_user = None
+    current_tail = ""
+
+    for line in lines:
+        if re.match(r'^(@[\.\w]+|<\@!?\d+>)', line):
+            if current_user:
+                raw_blocks.append((current_user, current_tail))
+            current_user = line.split()[0]  # prvi @ u liniji
+            current_tail = line[len(current_user):].strip()
+        else:
+            if current_user:
+                current_tail += " " + line
+
+    if current_user:
+        raw_blocks.append((current_user, current_tail))
 
     if not raw_blocks:
-        return await interaction.followup.send("nisam našao blokove sa @user", ephemeral=True)
+        return await interaction.followup.send("Nisam našao nijedan @user blok.", ephemeral=True)
 
     # ====================== POMOĆNE FUNKCIJE ======================
     def parse_roles_list_with_unknowns(guild: discord.Guild, roles_text: str):
@@ -1647,41 +1658,16 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
         return wanted, unknown
 
     def split_assignees_and_roles(first_user: str, tail: str):
-        """Marker '>' za half-shift (oba chattera dobijaju iste modele)"""
-        full_text = (first_user + "\n" + tail).strip()
+        """Jednostavna i robusna - hvata sve @ u celoj liniji"""
+        full_line = (first_user + " " + tail).strip()
+        assignees = re.findall(r'(@[\.\w]+|<\@!?\d+>)', full_line)
         
-        lines = [line.strip() for line in full_text.split('\n') if line.strip()]
-        
-        assignees = []
-        roles_text = ""
-        previous_chatter = None
-        
-        for line in lines:
-            if line.startswith(">"):
-                # Ovo je nastavak prethodnog chattera (half-shift)
-                clean_line = line[1:].strip()
-                found = re.findall(r'(@[\.\w]+|<\@!?\d+>)', clean_line)
-                if found:
-                    assignees.extend(found)
-                # modeli idu u roles_text
-                roles_part = re.sub(r'(@[\.\w]+|<\@!?\d+>)', '', clean_line).strip()
-                if roles_part:
-                    roles_text += " " + roles_part
-            else:
-                # Normalna linija sa chatterom
-                found = re.findall(r'(@[\.\w]+|<\@!?\d+>)', line)
-                if found:
-                    assignees.extend(found)
-                    previous_chatter = found[-1]
-                # sve ostalo su modeli
-                roles_part = re.sub(r'(@[\.\w]+|<\@!?\d+>)', '', line).strip()
-                if roles_part:
-                    roles_text += " " + roles_part
-
         if not assignees:
-            return [first_user], full_text
+            return [first_user], full_line
 
-        roles_text = roles_text.strip()
+        last_chatter = assignees[-1]
+        last_pos = full_line.rfind(last_chatter) + len(last_chatter)
+        roles_text = full_line[last_pos:].strip()
         roles_text = roles_text.lstrip(' /:,-').strip()
 
         return assignees, roles_text
@@ -1692,21 +1678,20 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
     total_ops_rm = 0
     global_unknown = []
 
-    blocks = []
-    for u, t in raw_blocks:
-        assignees, roles_text = split_assignees_and_roles(u, t)
-        blocks.append((assignees, roles_text))
+    for idx, (user_token, roles_text) in enumerate(raw_blocks, start=1):
+        assignees = re.findall(r'(@[\.\w]+|<\@!?\d+>)', user_token + " " + roles_text)
+        if not assignees:
+            assignees = [user_token]
 
-    for idx, (assignees, roles_text) in enumerate(blocks, start=1):
         desired_roles, unknown_here = parse_roles_list_with_unknowns(guild, roles_text)
         if unknown_here:
             global_unknown.extend(unknown_here)
 
-        for a_idx, user_token in enumerate(assignees, start=1):
+        for a_idx, token in enumerate(assignees, start=1):
             tag = f"{idx}.{a_idx}"
-            member = member_from_token(guild, user_token)
+            member = member_from_token(guild, token)
             if not member:
-                report.append(f"[{tag}] ❌ user nije nađen: {user_token}")
+                report.append(f"[{tag}] ❌ user nije nađen: {token}")
                 continue
 
             # CLEAN
@@ -1765,9 +1750,6 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
                 report.append(f"[{tag}] ❌ {member.display_name} – nemam Manage Roles/poziciju.")
             except Exception as e:
                 report.append(f"[{tag}] ❌ {member.display_name} – fail: {e}")
-
-        if idx % PROGRESS_EVERY_N == 0:
-            await interaction.followup.send(f"schedule napredak: {idx}/{len(blocks)}…", ephemeral=True)
 
     # Završni izlaz
     header = (
