@@ -1647,19 +1647,41 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
         return wanted, unknown
 
     def split_assignees_and_roles(first_user: str, tail: str):
-        """Najrobusnija verzija - hvata sve @mention u liniji kao chatter-e"""
-        full_line = (first_user + " " + tail).strip()
+        """Marker '>' za half-shift (oba chattera dobijaju iste modele)"""
+        full_text = (first_user + "\n" + tail).strip()
         
-        # Hvata SVE @mention u celoj liniji
-        assignees = re.findall(r'(@[\.\w]+|<\@!?\d+>)', full_line)
+        lines = [line.strip() for line in full_text.split('\n') if line.strip()]
         
-        if not assignees:
-            return [first_user], full_line
+        assignees = []
+        roles_text = ""
+        previous_chatter = None
+        
+        for line in lines:
+            if line.startswith(">"):
+                # Ovo je nastavak prethodnog chattera (half-shift)
+                clean_line = line[1:].strip()
+                found = re.findall(r'(@[\.\w]+|<\@!?\d+>)', clean_line)
+                if found:
+                    assignees.extend(found)
+                # modeli idu u roles_text
+                roles_part = re.sub(r'(@[\.\w]+|<\@!?\d+>)', '', clean_line).strip()
+                if roles_part:
+                    roles_text += " " + roles_part
+            else:
+                # Normalna linija sa chatterom
+                found = re.findall(r'(@[\.\w]+|<\@!?\d+>)', line)
+                if found:
+                    assignees.extend(found)
+                    previous_chatter = found[-1]
+                # sve ostalo su modeli
+                roles_part = re.sub(r'(@[\.\w]+|<\@!?\d+>)', '', line).strip()
+                if roles_part:
+                    roles_text += " " + roles_part
 
-        # Models tekst = sve posle poslednjeg @mention
-        last_chatter = assignees[-1]
-        last_pos = full_line.rfind(last_chatter) + len(last_chatter)
-        roles_text = full_line[last_pos:].strip()
+        if not assignees:
+            return [first_user], full_text
+
+        roles_text = roles_text.strip()
         roles_text = roles_text.lstrip(' /:,-').strip()
 
         return assignees, roles_text
