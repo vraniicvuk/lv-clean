@@ -1646,7 +1646,7 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
                 unknown.append(base)
         return wanted, unknown
 
-        def split_assignees_and_roles(first_user: str, tail: str):
+    def split_assignees_and_roles(first_user: str, tail: str):
         """Jednostavna i pouzdana verzija - razdvaja po ' / '"""
         full_line = (first_user + " " + tail).strip()
         
