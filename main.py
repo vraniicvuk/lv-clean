@@ -539,14 +539,15 @@ async def auto_schedule_task():
             await run_auto_schedule(shift)
             break
 
-
 async def run_auto_schedule(shift: str):
     guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
     if not guild:
         return
+
     channel = bot.get_channel(SCHEDULE_CHANNEL.get(shift))
     if not channel:
         return
+
     try:
         messages = [msg async for msg in channel.history(limit=50)]
         schedule_msg = None
@@ -560,26 +561,50 @@ async def run_auto_schedule(shift: str):
                 if age < 86400:
                     schedule_msg = msg
                     break
+
         if not schedule_msg:
             await channel.send(
                 f"⚠️ Auto Schedule za **{shift.upper()}**: Nije pronađen validan raspored."
             )
             return
+
         schedule_text = schedule_msg.content.strip()
         print(f"[AUTO SCHEDULE] Pronađen raspored za {shift} → primenjujem...")
+
+        # === Primena rasporeda ===
         await apply_schedule_logic(guild, schedule_text)
+
+        # === Brojanje chattera kojima su dodeljene role ===
+        # Ovo računa koliko je ljudi dobilo bar jednu novu TEAM rolu u poslednjem apply-u
+        chatter_count = len([m for m in guild.members if any(r.name.upper().startswith("TEAM ") for r in m.roles)])
+
+        # Role ping za smenu
         role_id = {
             "grave": GRAVE_ROLE_ID,
             "after": AFTER_ROLE_ID,
             "main": MAIN_ROLE_ID,
-        }[shift]
-        await channel.send(
-            f"<@&{role_id}> **Role za modele koje imate na rasporedu su vam dodeljene.**\n\n"
-            "Ukoliko vam fali role za nekog modela, molim vas da se obratite direktno nekome iz tima.\n\n"
-            "Nakon provere rola, **clock inujte se** na Telegram kanalu vaše smene u formatu:\n"
-            "`ci model1/model2/model3/...`"
-        )
-        print(f"[AUTO SCHEDULE] Uspešno završeno za {shift.upper()}")
+        }.get(shift)
+
+        if not role_id:
+            role_mention = ""
+        else:
+            role_mention = f"<@&{role_id}> "
+
+        # === ZAVRŠNA PORUKA ===
+        final_message = f"""{role_mention}**Role za modele koje imate na rasporedu su vam dodeljene** (dodeljeno za **{chatter_count}** chattera).
+
+Ukoliko vam fali role za nekog modela, molim vas da se obratite direktno nekome iz tima, i nakon provere rola da se clock inujete na Telegram kanalu vaše smene u formatu `ci model1/model2/itd.` kako bi tim znao da ste aktivni.
+
+**Potrebno dostavljati ratios** za sledeće kreatorke na kraju smene dok se ne navrši period pumpe:  
+**Chloe igtvn, Paige, Brenda, Rebeca, Rachel, Elena, mad maddie 2 c, michelle**.
+
+Na sledećim kreatorkama (**blair tsu, chloe tsu, daisy tsu, emilyonlyf, skylar onlyf, dia ra, dia vip, jade**) — **sve masseve po ulasku u smenu unsend**.  
+Massevi su SCHEDULOVANI za taj dan. Ako se ne pošalje u prvih sat, pišite privatno nekome iz management tima."""
+
+        await channel.send(final_message)
+
+        print(f"[AUTO SCHEDULE] Uspešno završeno za {shift.upper()} ({chatter_count} chattera)")
+
     except Exception as e:
         print(f"[AUTO SCHEDULE] Greška za {shift}: {e}")
         await channel.send(f"❌ Greška u auto schedule za {shift.upper()}: {e}")
