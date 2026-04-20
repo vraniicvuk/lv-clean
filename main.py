@@ -1579,7 +1579,6 @@ async def ratio_command(interaction: discord.Interaction):
 async def schedule(interaction: discord.Interaction, text: str, apply: bool = False):
     guild = interaction.guild
     bot_member = guild.me
-
     global role_index
     role_index = {}
     for r in guild.roles:
@@ -1595,7 +1594,8 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
             role_index.setdefault(base, []).append(r)
 
     await interaction.response.defer(ephemeral=True, thinking=True)
-    # normalizacija slash / i razbijanje po blokovima @user...
+
+    # normalizacija slash / i razbijanje po blokovima
     text_norm = (text or "").replace("⁄", "/").replace("／", "/")
     raw_blocks = []
     pattern = re.compile(r"(@\S+|\<@!?[\d]+\>)(.*?)(?=(?:@\S+|\<@!?[\d]+\>)|$)", re.S)
@@ -1603,11 +1603,13 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
         head_user = m.group(1).strip()
         tail = (m.group(2) or "").strip()
         raw_blocks.append((head_user, tail))
+
     if not raw_blocks:
         return await interaction.followup.send(
             "nisam našao blokove '@user' → role…", ephemeral=True
         )
-    # pomocne funkcije
+
+    # ====================== POMOĆNE FUNKCIJE ======================
     def parse_roles_list_with_unknowns(guild: discord.Guild, roles_text: str):
         txt = (roles_text or "").replace("\\", "/")
         segs = [s.strip() for s in re.split(r"[\/,;|]+", txt) if s.strip()]
@@ -1629,20 +1631,16 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
         return wanted, unknown
 
     def split_assignees_and_roles(first_user: str, tail: str):
-        """ULTRA FINALNA VERZIJA za tvoj haotičan format"""
+        """FINALNA VERZIJA - radi sa @chatter1 / @chatter2 formatom"""
         full_line = (first_user + " " + tail).strip()
-
-        # Hvata sve mention-e na početku linije (do prvog modela)
-        assignees = re.findall(r'(@[\.\w]+|<\@!?\d+>)', full_line[:full_line.find('/') if '/' in full_line else None])
-
-        if not assignees:
-            # fallback - hvata sve mention-e u celoj liniji
-            assignees = re.findall(r'(@[\.\w]+|<\@!?\d+>)', full_line)
-
+        
+        # Hvata sve mention-e
+        assignees = re.findall(r'(@[\.\w]+|<\@!?\d+>)', full_line)
+        
         if not assignees:
             return [first_user], full_line
 
-        # Pronalazimo poziciju POSLE poslednjeg chattera
+        # Pronalazimo poziciju POSLE poslednjeg mention-a
         last_pos = 0
         for match in re.finditer(r'(@[\.\w]+|<\@!?\d+>)', full_line):
             last_pos = match.end()
@@ -1652,31 +1650,32 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
 
         return assignees, roles_text
 
-        report = []
+    # ====================== GLAVNA LOGIKA ======================
+    report = []
     total_ops_add = 0
     total_ops_rm = 0
     global_unknown = []
-    
-    # Parsiranje svih blokova
+
+    # Parsiranje blokova
     blocks = []
     for u, t in raw_blocks:
         assignees, roles_text = split_assignees_and_roles(u, t)
         blocks.append((assignees, roles_text))
-    
-    # Glavna petlja - prolazimo kroz SVAKOG chattera
+
+    # Glavna petlja
     for idx, (assignees, roles_text) in enumerate(blocks, start=1):
         desired_roles, unknown_here = parse_roles_list_with_unknowns(guild, roles_text)
         if unknown_here:
             global_unknown.extend(unknown_here)
-        
+
         for a_idx, user_token in enumerate(assignees, start=1):
             tag = f"{idx}.{a_idx}"
             member = member_from_token(guild, user_token)
             if not member:
                 report.append(f"[{tag}] ❌ user nije nađen: {user_token}")
                 continue
-            
-            # CLEAN stare TEAM role
+
+            # CLEAN
             bot_touchable_model_roles = [
                 r for r in member.roles
                 if r.name.upper().startswith("TEAM ")
@@ -1689,11 +1688,11 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
                 and (r.name.upper() not in KEEP_ROLE_NAMES)
                 and r not in bot_touchable_model_roles
             ]
-            
-            # ASSIGN nove role
+
+            # ASSIGN
             touchable_assign = [r for r in desired_roles if can_touch_role(bot_member, r)]
             blocked_assign = [r for r in desired_roles if r not in touchable_assign]
-            
+
             if not apply:
                 msg = (
                     f"[{tag}] PREVIEW {member.display_name}: "
@@ -1706,24 +1705,29 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
                     msg += f" | unknown: {', '.join(unknown_here)}"
                 report.append(msg)
                 continue
-            
-            # === APPLY ===
+
+            # APPLY
             try:
                 if bot_touchable_model_roles:
                     removed = await safe_remove_roles(
-                        member, bot_touchable_model_roles,
-                        reason=f"schedule auto-clean by {interaction.user}"
+                        member,
+                        bot_touchable_model_roles,
+                        reason=f"schedule auto-clean by {interaction.user}",
                     )
                     total_ops_rm += len(removed)
-                
+
                 if touchable_assign:
                     added = await safe_add_roles(
-                        member, touchable_assign,
-                        reason=f"schedule assign by {interaction.user}"
+                        member,
+                        touchable_assign,
+                        reason=f"schedule assign by {interaction.user}",
                     )
                     total_ops_add += len(added)
-                
-                msg = f"[{tag}] ✅ {member.display_name} (clean {len(bot_touchable_model_roles)} / assign {len(touchable_assign)})"
+
+                msg = (
+                    f"[{tag}] ✅ {member.display_name} "
+                    f"(clean {len(bot_touchable_model_roles)} / assign {len(touchable_assign)})"
+                )
                 if blocked_models:
                     msg += f" | blocked-clean: {', '.join(r.name for r in blocked_models)}"
                 if blocked_assign:
@@ -1735,10 +1739,26 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
                 report.append(f"[{tag}] ❌ {member.display_name} – nemam Manage Roles/poziciju.")
             except Exception as e:
                 report.append(f"[{tag}] ❌ {member.display_name} – fail: {e}")
-        
-        if idx % PROGRESS_EVERY_N == 0:
-            await interaction.followup.send(f"schedule napredak: {idx}/{len(blocks)}…", ephemeral=True)
 
+        if idx % PROGRESS_EVERY_N == 0:
+            await interaction.followup.send(
+                f"schedule napredak: {idx}/{len(blocks)}…", ephemeral=True
+            )
+
+    # Završni izlaz
+    header = (
+        "SCHEDULE PREVIEW (auto CLEAN model roles → ASSIGN)\n"
+        if not apply
+        else f"SCHEDULE APPLY done (removed={total_ops_rm}, added={total_ops_add})\n"
+    )
+    out = header + "\n".join(report)
+
+    if global_unknown:
+        dedup = sorted({u for u in global_unknown})
+        out += "\n\nUNKNOWN MODELS (no matching role found):\n- " + "\n- ".join(dedup)
+
+    for i in range(0, len(out), 1800):
+        await interaction.followup.send(f"```\n{out[i:i+1800]}\n```", ephemeral=True)
 @tree.command(
     name="sortteamcats", description="Sort TEAM categories block A-Z", guild=GUILD_OBJ
 )
