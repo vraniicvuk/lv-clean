@@ -1630,21 +1630,38 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
                 unknown.append(base)
         return wanted, unknown
 
-    def split_assignees_and_roles(first_user: str, tail: str):
-        """FINALNA VERZIJA - radi sa @chatter1 / @chatter2 formatom"""
+        def split_assignees_and_roles(first_user: str, tail: str):
+        """NAJJAČA VERZIJA - posebno za @user1 / @user2"""
         full_line = (first_user + " " + tail).strip()
         
-        # Hvata sve mention-e
+        # Hvata sve @mention i <@id> 
         assignees = re.findall(r'(@[\.\w]+|<\@!?\d+>)', full_line)
         
         if not assignees:
             return [first_user], full_line
 
-        # Pronalazimo poziciju POSLE poslednjeg mention-a
+        # Ako ima " / " između dva chattera, uzimamo oba
+        if " / " in full_line or " /" in full_line or "/ " in full_line:
+            parts = re.split(r'\s*/\s*', full_line)
+            assignees = []
+            for part in parts:
+                found = re.findall(r'(@[\.\w]+|<\@!?\d+>)', part)
+                if found:
+                    assignees.extend(found)
+            # ako smo našli više od jednog, koristimo ih
+            if len(assignees) > 1:
+                # models tekst je sve posle poslednjeg chattera
+                last_chatter = assignees[-1]
+                last_pos = full_line.rfind(last_chatter) + len(last_chatter)
+                roles_text = full_line[last_pos:].strip()
+                roles_text = roles_text.lstrip(' /:,-').strip()
+                return assignees, roles_text
+
+        # fallback za normalne linije
         last_pos = 0
         for match in re.finditer(r'(@[\.\w]+|<\@!?\d+>)', full_line):
             last_pos = match.end()
-
+        
         roles_text = full_line[last_pos:].strip()
         roles_text = roles_text.lstrip(' /:,-').strip()
 
