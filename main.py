@@ -1471,6 +1471,98 @@ async def qcurrent(interaction: discord.Interaction):
 
     await interaction.followup.send(embed=embed, ephemeral=True)
 
+# ========== /ratio - RATIO REPORT (kao /farm) ==========
+class RatioModal(Modal, title="Ratio Report"):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+        self.model = TextInput(
+            label="Ime modela",
+            placeholder="npr. Celeste ili Kara",
+            required=True,
+            max_length=100
+        )
+        self.shift = TextInput(
+            label="Shift",
+            placeholder="GRAVEYARD / AFTERNOON / MAIN",
+            required=True,
+            max_length=50
+        )
+        self.net_made = TextInput(
+            label="Net Made ($)",
+            placeholder="npr. 1240",
+            required=True,
+            max_length=20
+        )
+        self.new_subs = TextInput(
+            label="New Subs",
+            placeholder="npr. 45",
+            required=True,
+            max_length=10
+        )
+        self.avg_sub_price = TextInput(
+            label="Avg Sub Price ($)",
+            placeholder="npr. 8.5",
+            required=True,
+            max_length=10
+        )
+
+        self.add_item(self.model)
+        self.add_item(self.shift)
+        self.add_item(self.net_made)
+        self.add_item(self.new_subs)
+        self.add_item(self.avg_sub_price)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            model_name = self.model.value.strip()
+            shift_name = self.shift.value.strip().upper()
+            net_made = float(self.net_made.value.replace(',', '.').strip())
+            new_subs = int(self.new_subs.value.strip())
+            avg_price = float(self.avg_sub_price.value.replace(',', '.').strip())
+
+            if new_subs <= 0:
+                ratio_formatted = "N/A (0 subs)"
+            else:
+                expected = new_subs * avg_price
+                ratio_value = net_made / expected
+                # Format: 1:5.7 ili 0.8:1
+                if ratio_value >= 1:
+                    ratio_formatted = f"1:{ratio_value:.1f}"
+                else:
+                    ratio_formatted = f"{ratio_value:.1f}:1"
+
+            now = _local_now()
+
+            report = (
+                f"<@886983698321391667> "  # ← OVO JE NOVO - taguje supervizora
+                f"**{interaction.user.mention}** je **{now.strftime('%d.%m.%Y')}** u **{now.strftime('%H:%M')}** "
+                f"poslao **RATIO** za model **{model_name}** u **{shift_name}** smeni.\n\n"
+                f"**Net Made:** ${net_made:,.0f}\n"
+                f"**New Subs:** {new_subs}\n"
+                f"**Avg Sub Price:** ${avg_price:.2f}\n"
+                f"**Ratio:** `{ratio_formatted}`"
+            )
+
+            await interaction.response.send_message(report, allowed_mentions=discord.AllowedMentions(users=True))
+
+        except ValueError:
+            await interaction.response.send_message(
+                "❌ Greška pri unosu brojeva. Proveri da li si uneo validne brojeve (net made, new subs, avg price).",
+                ephemeral=True
+            )
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Neočekivana greška: {e}", ephemeral=True)
+
+
+@tree.command(
+    name="ratio",
+    description="Popuni i pošalji Ratio Report",
+    guild=GUILD_OBJ
+)
+async def ratio_command(interaction: discord.Interaction):
+    await interaction.response.send_modal(RatioModal())
+
 # ---------- /schedule — CLEAN-THEN-ASSIGN + unknown models report ----------
 @tree.command(
     name="schedule",
