@@ -1628,17 +1628,16 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
                 unknown.append(base)
         return wanted, unknown
 
-        def split_assignees_and_roles(first_user: str, tail: str):
-        """FINALNA VERZIJA - radi sa @user1 / @user2 formatom"""
+    def split_assignees_and_roles(first_user: str, tail: str):
         full_line = (first_user + " " + tail).strip()
         
-        # Hvata sve mention-e: @username, @.username, <@123>, <@!123>
+        # Hvata sve chatter mention-e
         assignees = re.findall(r'(@[\.\w]+|<\@!?\d+>)', full_line)
         
         if not assignees:
             return [first_user], full_line
 
-        # Pronalazimo gde se završava deo sa chatterima
+        # Pronalazimo poziciju POSLE poslednjeg chatter mention-a
         last_pos = 0
         for match in re.finditer(r'(@[\.\w]+|<\@!?\d+>)', full_line):
             last_pos = match.end()
@@ -1646,10 +1645,6 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
         # Models tekst = sve posle poslednjeg mention-a
         roles_text = full_line[last_pos:].strip()
         roles_text = roles_text.lstrip(' /:,-').strip()
-
-        # Dodatno čišćenje ako je ostalo " / " na početku
-        if roles_text.startswith('/'):
-            roles_text = roles_text[1:].strip()
 
         return assignees, roles_text
 
