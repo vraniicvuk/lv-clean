@@ -621,41 +621,26 @@ async def apply_schedule_logic(guild, text: str):
                 unknown.append(base)
         return wanted, unknown
 
-    def split_assignees_and_roles(line: str):
-    """
-    Robusna funkcija za tvoj tačan format:
-    <@id1> / <@id2> modeli...
-    @chatter1 / @chatter2 modeli...
-    @.chodex / @fap19 modeli...
-    """
-    line = line.strip()
-    
-    # Hvata sve chatter mention-e (i <@id> i @username i @.username)
-    assignee_matches = re.findall(r'(<@!?\d+>|@[\.\w]+)', line)
-    
-    if not assignee_matches:
-        return [], line  # nema chattera
+    def split_assignees_and_roles(first_user: str, tail: str):
+        """NAJROBUSNIJA VERZIJA za tvoj format: @chatter1 / @chatter2 modeli..."""
+        full_line = (first_user + " " + tail).strip()
+        
+        # Hvata SVE chatter mention-e (@username, @.username, <@id>, <@!id>)
+        assignees = re.findall(r'(@[\.\w]+|<\@!?\d+>)', full_line)
+        
+        if not assignees:
+            return [first_user], full_line
 
-    # Čistimo assignees da uvek budu u mention formatu
-    assignees = []
-    for m in assignee_matches:
-        if m.startswith('<@'):
-            assignees.append(m)                    # već je mention
-        else:
-            assignees.append(m)                    # @.chodex ili @nick ostaje
+        # Pronalazimo poziciju POSLE poslednjeg chatter mention-a
+        last_pos = 0
+        for match in re.finditer(r'(@[\.\w]+|<\@!?\d+>)', full_line):
+            last_pos = match.end()
 
-    # Pronalazimo gde prestaje deo sa chatterima (posle poslednjeg / ili mention-a)
-    # Tražimo poziciju posle poslednjeg mention-a
-    last_pos = 0
-    for match in re.finditer(r'(<@!?\d+>|@[\.\w]+)', line):
-        last_pos = match.end()
+        # Sve posle toga su modeli
+        roles_text = full_line[last_pos:].strip()
+        roles_text = roles_text.lstrip(' /:,-').strip()
 
-    # Models tekst = sve što dolazi posle poslednjeg chattera
-    models_text = line[last_pos:].strip()
-    # Uklanjamo eventualne početne / : - razmake
-    models_text = models_text.lstrip(' /:,-').strip()
-
-    return assignees, models_text
+        return assignees, roles_text
 
     for _, (assignees_raw, roles_text) in enumerate(raw_blocks, start=1):
         desired_roles, _ = parse_roles_list_with_unknowns(roles_text)
