@@ -569,15 +569,10 @@ async def run_auto_schedule(shift: str):
         schedule_text = schedule_msg.content.strip()
         print(f"[AUTO SCHEDULE] Pronađen raspored za {shift} → primenjujem...")
 
-        # Primena rasporeda
-        await apply_schedule_logic(guild, schedule_text)
+        # === Primena rasporeda + vraća tačan broj chattera iz ovog rasporeda ===
+        chatter_count = await apply_schedule_logic(guild, schedule_text)
 
-        # Brojač chattera - bolji način (broji one koji imaju više od 2 TEAM role)
-        chatter_count = sum(
-            1 for member in guild.members
-            if sum(1 for r in member.roles if r.name.upper().startswith("TEAM ")) >= 2
-        )
-
+        # Role ping za smenu
         role_id = {
             "grave": GRAVE_ROLE_ID,
             "after": AFTER_ROLE_ID,
@@ -586,6 +581,7 @@ async def run_auto_schedule(shift: str):
 
         role_mention = f"<@&{role_id}> " if role_id else ""
 
+        # === ZAVRŠNA PORUKA (sa tačnim brojačem) ===
         final_message = f"""{role_mention}**Role za modele koje imate na rasporedu su vam dodeljene** (dodeljeno za **{chatter_count}** chattera).
 
 Ukoliko vam fali role za nekog modela, molim vas da se obratite direktno nekome iz tima, i nakon provere rola da se clock inujete na Telegram kanalu vaše smene u formatu `ci model1/model2/itd.` kako bi tim znao da ste aktivni.
