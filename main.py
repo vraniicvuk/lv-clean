@@ -621,20 +621,41 @@ async def apply_schedule_logic(guild, text: str):
                 unknown.append(base)
         return wanted, unknown
 
-    def split_assignees_and_roles(first_user: str, tail: str):
-        full_line = (first_user + " " + tail).strip()
-        # Hvata @.chodex, @fap19, @nick itd.
-        assignees = re.findall(r'@[\.\w]+|\<@!?[\d]+\>', full_line)
-        if not assignees:
-            assignees = [first_user]
+    def split_assignees_and_roles(line: str):
+    """
+    Robusna funkcija za tvoj tačan format:
+    <@id1> / <@id2> modeli...
+    @chatter1 / @chatter2 modeli...
+    @.chodex / @fap19 modeli...
+    """
+    line = line.strip()
+    
+    # Hvata sve chatter mention-e (i <@id> i @username i @.username)
+    assignee_matches = re.findall(r'(<@!?\d+>|@[\.\w]+)', line)
+    
+    if not assignee_matches:
+        return [], line  # nema chattera
 
-        # Sve posle poslednjeg @user su modeli
-        last_end = 0
-        for match in re.finditer(r'(@[\.\w]+|\<@!?[\d]+\>)', full_line):
-            last_end = match.end()
-        roles_text = full_line[last_end:].strip()
+    # Čistimo assignees da uvek budu u mention formatu
+    assignees = []
+    for m in assignee_matches:
+        if m.startswith('<@'):
+            assignees.append(m)                    # već je mention
+        else:
+            assignees.append(m)                    # @.chodex ili @nick ostaje
 
-        return assignees, roles_text
+    # Pronalazimo gde prestaje deo sa chatterima (posle poslednjeg / ili mention-a)
+    # Tražimo poziciju posle poslednjeg mention-a
+    last_pos = 0
+    for match in re.finditer(r'(<@!?\d+>|@[\.\w]+)', line):
+        last_pos = match.end()
+
+    # Models tekst = sve što dolazi posle poslednjeg chattera
+    models_text = line[last_pos:].strip()
+    # Uklanjamo eventualne početne / : - razmake
+    models_text = models_text.lstrip(' /:,-').strip()
+
+    return assignees, models_text
 
     for _, (assignees_raw, roles_text) in enumerate(raw_blocks, start=1):
         desired_roles, _ = parse_roles_list_with_unknowns(roles_text)
@@ -1622,30 +1643,36 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
                 unknown.append(base)
         return wanted, unknown
 
-    def split_assignees_and_roles(first_user: str, tail: str):
-        """Robusna verzija za sve varijante rasporeda"""
-        roles_text = tail.strip()
-        header = ""
-        if ":" in roles_text:
-            header, roles_text = roles_text.split(":", 1)
-        else:
-            m = re.match(
-                r"^(\s*(?:@[\.\w]+|\<@!?[\d]+\>)(?:\s*[\/,|]\s*(?:@[\.\w]+|\<@!?[\d]+\>))*)",
-                roles_text,
-            )
-            if m:
-                header = m.group(1).strip()
-                roles_text = roles_text[len(header) :].strip()
-        assignees = re.findall(r"@[\.\w]+|\<@!?[\d]+\>", header or first_user)
+        def split_assignees_and_roles(first_user: str, tail: str):
+        """NAJROBUSNIJA VERZIJA za tvoj format: @chatter1 / @chatter2 modeli..."""
+        full_line = (first_user + " " + tail).strip()
+        
+        # Hvata SVE chatter mention-e (@username, @.username, <@id>, <@!id>)
+        assignees = re.findall(r'(@[\.\w]+|<\@!?\d+>)', full_line)
+        
         if not assignees:
-            assignees = [first_user]
-        return assignees, roles_text.strip()
+            return [first_user], full_line
+
+        # Pronalazimo poziciju POSLE poslednjeg chatter mention-a
+        last_pos = 0
+        for match in re.finditer(r'(@[\.\w]+|<\@!?\d+>)', full_line):
+            last_pos = match.end()
+
+        # Sve posle toga su modeli
+        roles_text = full_line[last_pos:].strip()
+        # Uklanjamo eventualne početne separatore
+        roles_text = roles_text.lstrip(' /:,-').strip()
+
+        return assignees, roles_text
 
     report = []
     total_ops_add = 0
     total_ops_rm = 0
     global_unknown = []
-    blocks = [split_assignees_and_roles(u, t) for (u, t) in raw_blocks]
+    blocks = []
+    for u, t in raw_blocks:
+        assignees, roles_text = split_assignees_and_roles(u, t)
+        blocks.append((assignees, roles_text))
     for idx, (assignees, roles_text) in enumerate(blocks, start=1):
         desired_roles, unknown_here = parse_roles_list_with_unknowns(guild, roles_text)
         if unknown_here:
