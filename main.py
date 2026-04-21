@@ -1581,7 +1581,6 @@ class RatioModal(Modal, title="Ratio Report"):
             short_confirm = (
                 f"✅ {interaction.user.mention} je uspešno poslao ratio za **{model_name}** "
                 f"({now.strftime('%d.%m.%Y %H:%M')}, {shift_name} smena).\n"
-                f"**Ratio:** `{ratio_formatted}`"
             )
             await interaction.response.send_message(short_confirm, ephemeral=False)
 
