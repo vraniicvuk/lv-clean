@@ -1493,7 +1493,7 @@ async def qcurrent(interaction: discord.Interaction):
 
     await interaction.followup.send(embed=embed, ephemeral=True)
 
-# ========== /ratio - RATIO REPORT (kao /farm) ==========
+# ========== /ratio - RATIO REPORT (sa 20% odbitkom + ko je poslao) ==========
 class RatioModal(Modal, title="Ratio Report"):
     def __init__(self):
         super().__init__(timeout=None)
@@ -1510,9 +1510,9 @@ class RatioModal(Modal, title="Ratio Report"):
             required=True,
             max_length=50
         )
-        self.net_made = TextInput(
-            label="Net Made ($)",
-            placeholder="npr. 1240",
+        self.gross_made = TextInput(
+            label="Gross Made ($)",
+            placeholder="npr. 1550",
             required=True,
             max_length=20
         )
@@ -1531,7 +1531,7 @@ class RatioModal(Modal, title="Ratio Report"):
 
         self.add_item(self.model)
         self.add_item(self.shift)
-        self.add_item(self.net_made)
+        self.add_item(self.gross_made)
         self.add_item(self.new_subs)
         self.add_item(self.avg_sub_price)
 
@@ -1539,16 +1539,18 @@ class RatioModal(Modal, title="Ratio Report"):
         try:
             model_name = self.model.value.strip()
             shift_name = self.shift.value.strip().upper()
-            net_made = float(self.net_made.value.replace(',', '.').strip())
+            gross_made = float(self.gross_made.value.replace(',', '.').strip())
             new_subs = int(self.new_subs.value.strip())
-            avg_price = float(self.avg_sub_price.value.replace(',', '.').strip())
+            avg_sub_price = float(self.avg_sub_price.value.replace(',', '.').strip())
 
             if new_subs <= 0:
                 ratio_formatted = "N/A (0 subs)"
             else:
-                expected = new_subs * avg_price
+                net_made = gross_made * 0.8
+                effective_sub_price = avg_sub_price * 0.8
+                expected = new_subs * effective_sub_price
                 ratio_value = net_made / expected
-                # Format: 1:5.7 ili 0.8:1
+
                 if ratio_value >= 1:
                     ratio_formatted = f"1:{ratio_value:.1f}"
                 else:
@@ -1556,21 +1558,36 @@ class RatioModal(Modal, title="Ratio Report"):
 
             now = _local_now()
 
-            report = (
-                f"<@886983698321391667> "  # ← OVO JE NOVO - taguje supervizora
-                f"**{interaction.user.mention}** je **{now.strftime('%d.%m.%Y')}** u **{now.strftime('%H:%M')}** "
-                f"poslao **RATIO** za model **{model_name}** u **{shift_name}** smeni.\n\n"
-                f"**Net Made:** ${net_made:,.0f}\n"
+            # === PUNA PORUKA U PRIVATNI KANAL (sa imenom chattera) ===
+            full_report = (
+                f"**Ratio Report**\n"
+                f"**Poslao:** {interaction.user.mention} ({interaction.user.display_name})\n"
+                f"**Datum i vreme:** {now.strftime('%d.%m.%Y %H:%M')}\n"
+                f"**Model:** {model_name}\n"
+                f"**Shift:** {shift_name}\n"
+                f"**Gross Made:** ${gross_made:,.0f}\n"
+                f"**Net Made (posle 20%):** ${net_made:,.0f}\n"
                 f"**New Subs:** {new_subs}\n"
-                f"**Avg Sub Price:** ${avg_price:.2f}\n"
+                f"**Avg Sub Price:** ${avg_sub_price:.2f}\n"
+                f"**Effective Sub Price (posle 20%):** ${effective_sub_price:.2f}\n"
                 f"**Ratio:** `{ratio_formatted}`"
             )
 
-            await interaction.response.send_message(report, allowed_mentions=discord.AllowedMentions(users=True))
+            private_channel = bot.get_channel(1496174722151354418)
+            if private_channel:
+                await private_channel.send(full_report)
+
+            # === KRATKA POTVRDA U JAVNOM KANALU ===
+            short_confirm = (
+                f"✅ {interaction.user.mention} je uspešno poslao ratio za **{model_name}** "
+                f"({now.strftime('%d.%m.%Y %H:%M')}, {shift_name} smena).\n"
+                f"**Ratio:** `{ratio_formatted}`"
+            )
+            await interaction.response.send_message(short_confirm, ephemeral=False)
 
         except ValueError:
             await interaction.response.send_message(
-                "❌ Greška pri unosu brojeva. Proveri da li si uneo validne brojeve (net made, new subs, avg price).",
+                "❌ Greška pri unosu brojeva. Proveri da li si uneo validne brojeve (Gross Made, New Subs, Avg Sub Price).",
                 ephemeral=True
             )
         except Exception as e:
@@ -1579,7 +1596,7 @@ class RatioModal(Modal, title="Ratio Report"):
 
 @tree.command(
     name="ratio",
-    description="Popuni i pošalji Ratio Report",
+    description="Popuni i pošalji Ratio Report (sa 20% odbitkom)",
     guild=GUILD_OBJ
 )
 async def ratio_command(interaction: discord.Interaction):
