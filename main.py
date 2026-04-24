@@ -1628,24 +1628,19 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
     lines = [line.strip() for line in text_norm.split('\n') if line.strip()]
 
     raw_blocks = []
-    current_user = None
     current_tail = ""
 
     for line in lines:
-        # Ako linija počinje sa @ ili <@ → novi chatter
-        if re.match(r'^(@[\.\w]+|<\@!?\d+>)', line):
-            if current_user is not None:
-                raw_blocks.append((current_user, current_tail))
-            # Uzimamo prvi @mention kao chatter
-            match = re.search(r'(@[\.\w]+|<\@!?\d+>)', line)
-            current_user = match.group(1) if match else line.split()[0]
-            current_tail = line[len(current_user):].strip() if match else ""
+        # Ako linija sadrži @ → novi chatter
+        if re.search(r'@[\.\w]+|<\@!?\d+>', line):
+            if current_tail:  # sačuvaj prethodni blok
+                raw_blocks.append(current_tail)
+            current_tail = line
         else:
-            if current_user is not None:
-                current_tail += " " + line
+            current_tail += " " + line
 
-    if current_user is not None:
-        raw_blocks.append((current_user, current_tail))
+    if current_tail:
+        raw_blocks.append(current_tail)
 
     if not raw_blocks:
         return await interaction.followup.send("Nisam našao nijedan @user blok.", ephemeral=True)
@@ -1671,18 +1666,28 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
                 unknown.append(base)
         return wanted, unknown
 
+    def split_assignees_and_roles(line: str):
+        """Hvata sve @mention u liniji kao chatter-e"""
+        assignees = re.findall(r'(@[\.\w]+|<\@!?\d+>)', line)
+        if not assignees:
+            return [line.split()[0] if line else "unknown"], line
+
+        # Models tekst = sve posle poslednjeg @mention
+        last_chatter = assignees[-1]
+        last_pos = line.rfind(last_chatter) + len(last_chatter)
+        roles_text = line[last_pos:].strip()
+        roles_text = roles_text.lstrip(' /:,-').strip()
+
+        return assignees, roles_text
+
     # ====================== GLAVNA LOGIKA ======================
     report = []
     total_ops_add = 0
     total_ops_rm = 0
     global_unknown = []
 
-    for idx, (user_token, roles_text) in enumerate(raw_blocks, start=1):
-        # Hvata sve @ u ovoj liniji kao chatter-e
-        assignees = re.findall(r'(@[\.\w]+|<\@!?\d+>)', user_token + " " + roles_text)
-        if not assignees:
-            assignees = [user_token]
-
+    for idx, block in enumerate(raw_blocks, start=1):
+        assignees, roles_text = split_assignees_and_roles(block)
         desired_roles, unknown_here = parse_roles_list_with_unknowns(guild, roles_text)
         if unknown_here:
             global_unknown.extend(unknown_here)
