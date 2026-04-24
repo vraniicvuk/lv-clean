@@ -1621,28 +1621,55 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
         base = normalize_model_name(r.name[5:])
         role_index.setdefault(base, []).append(r)
 
-    # Čišćenje i razbijanje na linije
+    # Čišćenje teksta
     text_norm = (text or "").replace("⁄", "/").replace("／", "/").replace("⸻", "\n").replace("\r", "\n")
+
+    # Razbijamo na linije
     lines = [line.strip() for line in text_norm.split('\n') if line.strip()]
 
+    # ====================== POMOĆNE FUNKCIJE ======================
+    def parse_roles_list_with_unknowns(roles_text: str):
+        txt = (roles_text or "").replace("\\", "/")
+        segs = [s.strip() for s in re.split(r"[\/,;|]+", txt) if s.strip()]
+        wanted = []
+        unknown = []
+        seen = set()
+        for seg in segs:
+            model = extract_model_name(seg)
+            base = clean_role_phrase(model)
+            if not base:
+                continue
+            r = role_from_phrase(guild, base)
+            if r:
+                if r.id not in seen:
+                    wanted.append(r)
+                    seen.add(r.id)
+            else:
+                unknown.append(base)
+        return wanted, unknown
+
+    def split_assignees_and_roles(line: str):
+        """Hvata sve @mention u liniji"""
+        assignees = re.findall(r'(@[\.\w]+|<\@!?\d+>)', line)
+        if not assignees:
+            return [line.split()[0] if line else "unknown"], line
+
+        last_chatter = assignees[-1]
+        last_pos = line.rfind(last_chatter) + len(last_chatter)
+        roles_text = line[last_pos:].strip()
+        roles_text = roles_text.lstrip(' /:,-').strip()
+
+        return assignees, roles_text
+
+    # ====================== GLAVNA LOGIKA ======================
     report = []
     total_ops_add = 0
     total_ops_rm = 0
     global_unknown = []
 
     for idx, line in enumerate(lines, start=1):
-        # Hvata sve @mention u ovoj liniji
-        assignees = re.findall(r'(@[\.\w]+|<\@!?\d+>)', line)
-        if not assignees:
-            continue
-
-        # Models tekst = sve posle poslednjeg @ u liniji
-        last_chatter = assignees[-1]
-        last_pos = line.rfind(last_chatter) + len(last_chatter)
-        roles_text = line[last_pos:].strip()
-        roles_text = roles_text.lstrip(' /:,-').strip()
-
-        desired_roles, unknown_here = parse_roles_list_with_unknowns(guild, roles_text)
+        assignees, roles_text = split_assignees_and_roles(line)
+        desired_roles, unknown_here = parse_roles_list_with_unknowns(roles_text)
         if unknown_here:
             global_unknown.extend(unknown_here)
 
@@ -1705,33 +1732,6 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
 
     for i in range(0, len(out), 1800):
         await interaction.followup.send(f"```\n{out[i:i+1800]}\n```", ephemeral=True)
-
-@tree.command(
-    name="sortteamcats", description="Sort TEAM categories block A-Z", guild=GUILD_OBJ
-)
-@need_manage_channels()
-async def sortteamcats(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    guild = interaction.guild
-    team_cats = [c for c in guild.categories if c.name.upper().startswith("TEAM ")]
-    non_team_cats = [
-        c for c in guild.categories if not c.name.upper().startswith("TEAM ")
-    ]
-    if not non_team_cats:
-        return await interaction.followup.send(
-            "Nema NON TEAM kategorija.", ephemeral=True
-        )
-    anchor = max(c.position for c in non_team_cats)
-    team_sorted = sorted(team_cats, key=lambda c: c.name.lower())
-    moved = 0
-    for i, cat in enumerate(team_sorted):
-        try:
-            await cat.edit(position=anchor + 1 + i)
-            moved += 1
-            await asyncio.sleep(0.4)
-        except:
-            pass
-    await interaction.followup.send(f"Sorted {moved} TEAM categories.", ephemeral=True)
 
 
 @tree.command(name="sortteamroles", description="Bulk sort TEAM roles", guild=GUILD_OBJ)
