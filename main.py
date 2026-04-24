@@ -1627,49 +1627,24 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
     # Razbijamo na linije
     lines = [line.strip() for line in text_norm.split('\n') if line.strip()]
 
-    # ====================== POMOĆNE FUNKCIJE ======================
-    def parse_roles_list_with_unknowns(roles_text: str):
-        txt = (roles_text or "").replace("\\", "/")
-        segs = [s.strip() for s in re.split(r"[\/,;|]+", txt) if s.strip()]
-        wanted = []
-        unknown = []
-        seen = set()
-        for seg in segs:
-            model = extract_model_name(seg)
-            base = clean_role_phrase(model)
-            if not base:
-                continue
-            r = role_from_phrase(guild, base)
-            if r:
-                if r.id not in seen:
-                    wanted.append(r)
-                    seen.add(r.id)
-            else:
-                unknown.append(base)
-        return wanted, unknown
-
-    def split_assignees_and_roles(line: str):
-        """Hvata sve @mention u liniji"""
-        assignees = re.findall(r'(@[\.\w]+|<\@!?\d+>)', line)
-        if not assignees:
-            return [line.split()[0] if line else "unknown"], line
-
-        last_chatter = assignees[-1]
-        last_pos = line.rfind(last_chatter) + len(last_chatter)
-        roles_text = line[last_pos:].strip()
-        roles_text = roles_text.lstrip(' /:,-').strip()
-
-        return assignees, roles_text
-
-    # ====================== GLAVNA LOGIKA ======================
     report = []
     total_ops_add = 0
     total_ops_rm = 0
     global_unknown = []
 
     for idx, line in enumerate(lines, start=1):
-        assignees, roles_text = split_assignees_and_roles(line)
-        desired_roles, unknown_here = parse_roles_list_with_unknowns(roles_text)
+        # Hvata sve @mention u ovoj liniji
+        assignees = re.findall(r'(@[\.\w]+|<\@!?\d+>)', line)
+        if not assignees:
+            continue
+
+        # Models tekst = sve posle poslednjeg @ u ovoj liniji
+        last_chatter = assignees[-1]
+        last_pos = line.rfind(last_chatter) + len(last_chatter)
+        roles_text = line[last_pos:].strip()
+        roles_text = roles_text.lstrip(' /:,-').strip()
+
+        desired_roles, unknown_here = parse_roles_list_with_unknowns(guild, roles_text)
         if unknown_here:
             global_unknown.extend(unknown_here)
 
