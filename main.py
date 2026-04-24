@@ -1601,10 +1601,10 @@ class RatioModal(Modal, title="Ratio Report"):
 async def ratio_command(interaction: discord.Interaction):
     await interaction.response.send_modal(RatioModal())
 
-# ---------- /schedule — ORIGINALNA VERZIJA (pre split shift) ----------
+# ========== ORIGINALNA /schedule - pre split shift pokušaja ==========
 @tree.command(
     name="schedule",
-    description="Nalepi raspored - originalna verzija (jedan chatter po bloku)",
+    description="Originalna verzija - radi sa jednim chatterom po bloku",
     guild=GUILD_OBJ,
 )
 @need_manage_roles()
@@ -1622,67 +1622,76 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
             base = normalize_model_name(r.name[5:])
             role_index.setdefault(base, []).append(r)
 
+    # Parsing
     text_norm = (text or "").replace("⁄", "/").replace("／", "/")
-    
-    # Razbijamo po @mention (jednostavno)
     pattern = re.compile(r"(@\S+|\<@!?[\d]+\>)(.*?)(?=(?:@\S+|\<@!?[\d]+\>)|$)", re.S)
-    raw_blocks = [(m.group(1).strip(), m.group(2).strip()) for m in pattern.finditer(text_norm)]
+    blocks = [(m.group(1).strip(), m.group(2).strip()) for m in pattern.finditer(text_norm)]
 
     report = []
-    total_ops_add = 0
-    total_ops_rm = 0
-    global_unknown = []
+    total_rm = 0
+    total_add = 0
+    unknowns = []
 
-    for idx, (user_token, roles_text) in enumerate(raw_blocks, start=1):
+    for idx, (user_token, role_part) in enumerate(blocks, start=1):
         member = member_from_token(guild, user_token)
         if not member:
             report.append(f"[{idx}] ❌ User nije nađen: {user_token}")
             continue
 
-        desired_roles, unknown_here = parse_roles_list_with_unknowns(guild, roles_text)
-        if unknown_here:
-            global_unknown.extend(unknown_here)
+        # Parse modele
+        desired = []
+        unk = []
+        for seg in re.split(r"[\/,;|]+", role_part):
+            seg = seg.strip()
+            if not seg:
+                continue
+            base = clean_role_phrase(extract_model_name(seg))
+            if not base:
+                continue
+            role = role_from_phrase(guild, base)
+            if role:
+                if role not in desired:
+                    desired.append(role)
+            else:
+                if base not in unk:
+                    unk.append(base)
 
-        # CLEAN old TEAM roles
+        if unk:
+            unknowns.extend(unk)
+
+        # Old roles za clean
         old_roles = [
             r for r in member.roles
-            if r.name.upper().startswith("TEAM ") and r.name.upper() not in KEEP_ROLE_NAMES
+            if r.name.upper().startswith("TEAM ") 
+            and r.name.upper() not in KEEP_ROLE_NAMES
             and can_touch_role(bot_member, r)
         ]
 
-        # ASSIGN new roles
-        touchable_assign = [r for r in desired_roles if can_touch_role(bot_member, r)]
+        touchable_new = [r for r in desired if can_touch_role(bot_member, r)]
 
         if not apply:
-            msg = f"[{idx}] PREVIEW {member.display_name}: assign → {', '.join(r.name for r in touchable_assign) or '—'}"
-            if unknown_here:
-                msg += f" | unknown: {', '.join(unknown_here)}"
-            report.append(msg)
+            report.append(f"[{idx}] PREVIEW {member.display_name} → {len(touchable_new)} role")
             continue
 
-        # REAL APPLY
+        # Apply
         try:
             if old_roles:
-                removed = await safe_remove_roles(member, old_roles, reason=f"schedule clean by {interaction.user}")
-                total_ops_rm += len(removed)
+                rem = await safe_remove_roles(member, old_roles, reason=f"schedule by {interaction.user}")
+                total_rm += len(rem)
+            if touchable_new:
+                add = await safe_add_roles(member, touchable_new, reason=f"schedule by {interaction.user}")
+                total_add += len(add)
 
-            if touchable_assign:
-                added = await safe_add_roles(member, touchable_assign, reason=f"schedule assign by {interaction.user}")
-                total_ops_add += len(added)
-
-            report.append(
-                f"[{idx}] ✅ {member.display_name} (clean {len(old_roles)} / assign {len(touchable_assign)})"
-            )
-        except discord.Forbidden:
-            report.append(f"[{idx}] ❌ {member.display_name} – Missing Permissions")
+            report.append(f"[{idx}] ✅ {member.display_name} (clean {len(old_roles)} / assign {len(touchable_new)})")
         except Exception as e:
-            report.append(f"[{idx}] ❌ {member.display_name} – Error: {e}")
+            report.append(f"[{idx}] ❌ {member.display_name} — greška: {e}")
 
-    header = "SCHEDULE PREVIEW\n" if not apply else f"SCHEDULE APPLY done (removed={total_ops_rm}, added={total_ops_add})\n"
+    # Final output
+    header = "SCHEDULE PREVIEW\n" if not apply else f"SCHEDULE APPLY done (removed={total_rm}, added={total_add})\n"
     out = header + "\n".join(report)
 
-    if global_unknown:
-        out += "\n\nUNKNOWN MODELS:\n- " + "\n- ".join(sorted(set(global_unknown)))
+    if unknowns:
+        out += f"\n\nUNKNOWN MODELS:\n- " + "\n- ".join(sorted(set(unknowns)))
 
     for i in range(0, len(out), 1800):
         await interaction.followup.send(f"```\n{out[i:i+1800]}\n```", ephemeral=True)
