@@ -1610,151 +1610,101 @@ async def ratio_command(interaction: discord.Interaction):
 @need_manage_roles()
 async def schedule(interaction: discord.Interaction, text: str, apply: bool = False):
     await interaction.response.defer(ephemeral=True, thinking=True)
-    
-    # Pokrećemo tešku logiku u pozadini
-    asyncio.create_task(schedule_background(interaction, text, apply))
 
+    guild = interaction.guild
+    bot_member = guild.me
+    global role_index
+    role_index = {}
+    for r in guild.roles:
+        if not r.name.lower().startswith("team "):
+            continue
+        base = normalize_model_name(r.name[5:])
+        role_index.setdefault(base, []).append(r)
 
-async def schedule_background(interaction: discord.Interaction, text: str, apply: bool = False):
-    """Pozadinska logika - sprečava timeout"""
-    try:
-        guild = interaction.guild
-        bot_member = guild.me
-        global role_index
-        role_index = {}
-        for r in guild.roles:
-            if not r.name.lower().startswith("team "):
+    # Čišćenje i razbijanje na linije
+    text_norm = (text or "").replace("⁄", "/").replace("／", "/").replace("⸻", "\n").replace("\r", "\n")
+    lines = [line.strip() for line in text_norm.split('\n') if line.strip()]
+
+    report = []
+    total_ops_add = 0
+    total_ops_rm = 0
+    global_unknown = []
+
+    for idx, line in enumerate(lines, start=1):
+        # Hvata sve @mention u ovoj liniji
+        assignees = re.findall(r'(@[\.\w]+|<\@!?\d+>)', line)
+        if not assignees:
+            continue
+
+        # Models tekst = sve posle poslednjeg @ u liniji
+        last_chatter = assignees[-1]
+        last_pos = line.rfind(last_chatter) + len(last_chatter)
+        roles_text = line[last_pos:].strip()
+        roles_text = roles_text.lstrip(' /:,-').strip()
+
+        desired_roles, unknown_here = parse_roles_list_with_unknowns(guild, roles_text)
+        if unknown_here:
+            global_unknown.extend(unknown_here)
+
+        for a_idx, token in enumerate(assignees, start=1):
+            tag = f"{idx}.{a_idx}"
+            member = member_from_token(guild, token)
+            if not member:
+                report.append(f"[{tag}] ❌ user nije nađen: {token}")
                 continue
-            base = normalize_model_name(r.name[5:])
-            role_index.setdefault(base, []).append(r)
 
-        # Čišćenje teksta
-        text_norm = (text or "").replace("⁄", "/").replace("／", "/").replace("⸻", "\n").replace("\r", "\n")
+            # CLEAN
+            bot_touchable_model_roles = [
+                r for r in member.roles
+                if r.name.upper().startswith("TEAM ")
+                and (r.name.upper() not in KEEP_ROLE_NAMES)
+                and can_touch_role(bot_member, r)
+            ]
+            blocked_models = [
+                r for r in member.roles
+                if r.name.upper().startswith("TEAM ")
+                and (r.name.upper() not in KEEP_ROLE_NAMES)
+                and r not in bot_touchable_model_roles
+            ]
 
-        # Razbijamo na linije
-        lines = [line.strip() for line in text_norm.split('\n') if line.strip()]
+            # ASSIGN
+            touchable_assign = [r for r in desired_roles if can_touch_role(bot_member, r)]
+            blocked_assign = [r for r in desired_roles if r not in touchable_assign]
 
-        raw_blocks = []
-        current_tail = ""
+            if not apply:
+                msg = f"[{tag}] PREVIEW {member.display_name}: clean → {', '.join(r.name for r in bot_touchable_model_roles) or '—'} ; assign → {', '.join(r.name for r in touchable_assign) or '—'}"
+                if unknown_here:
+                    msg += f" | unknown: {', '.join(unknown_here)}"
+                report.append(msg)
+                continue
 
-        for line in lines:
-            if re.search(r'@[\.\w]+|<\@!?\d+>', line):
-                if current_tail:
-                    raw_blocks.append(current_tail)
-                current_tail = line
-            else:
-                current_tail += " " + line
+            # APPLY
+            try:
+                if bot_touchable_model_roles:
+                    removed = await safe_remove_roles(member, bot_touchable_model_roles, reason=f"schedule by {interaction.user}")
+                    total_ops_rm += len(removed)
+                if touchable_assign:
+                    added = await safe_add_roles(member, touchable_assign, reason=f"schedule by {interaction.user}")
+                    total_ops_add += len(added)
 
-        if current_tail:
-            raw_blocks.append(current_tail)
+                msg = f"[{tag}] ✅ {member.display_name} (clean {len(bot_touchable_model_roles)} / assign {len(touchable_assign)})"
+                if unknown_here:
+                    msg += f" | unknown: {', '.join(unknown_here)}"
+                report.append(msg)
+            except discord.Forbidden:
+                report.append(f"[{tag}] ❌ {member.display_name} – nemam Manage Roles/poziciju.")
+            except Exception as e:
+                report.append(f"[{tag}] ❌ {member.display_name} – fail: {e}")
 
-        if not raw_blocks:
-            await interaction.followup.send("Nisam našao nijedan @user blok.", ephemeral=True)
-            return
+    header = "SCHEDULE PREVIEW (auto CLEAN model roles → ASSIGN)\n" if not apply else f"SCHEDULE APPLY done (removed={total_ops_rm}, added={total_ops_add})\n"
+    out = header + "\n".join(report)
 
-        # ====================== POMOĆNE FUNKCIJE ======================
-        def parse_roles_list_with_unknowns(guild: discord.Guild, roles_text: str):
-            txt = (roles_text or "").replace("\\", "/")
-            segs = [s.strip() for s in re.split(r"[\/,;|]+", txt) if s.strip()]
-            wanted = []
-            unknown = []
-            seen = set()
-            for seg in segs:
-                model = extract_model_name(seg)
-                base = clean_role_phrase(model)
-                if not base:
-                    continue
-                r = role_from_phrase(guild, base)
-                if r:
-                    if r.id not in seen:
-                        wanted.append(r)
-                        seen.add(r.id)
-                else:
-                    unknown.append(base)
-            return wanted, unknown
+    if global_unknown:
+        dedup = sorted({u for u in global_unknown})
+        out += "\n\nUNKNOWN MODELS:\n- " + "\n- ".join(dedup)
 
-        def split_assignees_and_roles(line: str):
-            """Hvata sve @ u liniji"""
-            assignees = re.findall(r'(@[\.\w]+|<\@!?\d+>)', line)
-            if not assignees:
-                return [line.split()[0] if line else "unknown"], line
-
-            last_chatter = assignees[-1]
-            last_pos = line.rfind(last_chatter) + len(last_chatter)
-            roles_text = line[last_pos:].strip()
-            roles_text = roles_text.lstrip(' /:,-').strip()
-
-            return assignees, roles_text
-
-        # ====================== GLAVNA LOGIKA ======================
-        report = []
-        total_ops_add = 0
-        total_ops_rm = 0
-        global_unknown = []
-
-        for idx, block in enumerate(raw_blocks, start=1):
-            assignees, roles_text = split_assignees_and_roles(block)
-            desired_roles, unknown_here = parse_roles_list_with_unknowns(guild, roles_text)
-            if unknown_here:
-                global_unknown.extend(unknown_here)
-
-            for a_idx, token in enumerate(assignees, start=1):
-                tag = f"{idx}.{a_idx}"
-                member = member_from_token(guild, token)
-                if not member:
-                    report.append(f"[{tag}] ❌ user nije nađen: {token}")
-                    continue
-
-                bot_touchable_model_roles = [
-                    r for r in member.roles
-                    if r.name.upper().startswith("TEAM ")
-                    and (r.name.upper() not in KEEP_ROLE_NAMES)
-                    and can_touch_role(bot_member, r)
-                ]
-                blocked_models = [
-                    r for r in member.roles
-                    if r.name.upper().startswith("TEAM ")
-                    and (r.name.upper() not in KEEP_ROLE_NAMES)
-                    and r not in bot_touchable_model_roles
-                ]
-
-                touchable_assign = [r for r in desired_roles if can_touch_role(bot_member, r)]
-                blocked_assign = [r for r in desired_roles if r not in touchable_assign]
-
-                if not apply:
-                    msg = f"[{tag}] PREVIEW {member.display_name}: clean → {', '.join(r.name for r in bot_touchable_model_roles) or '—'} ; assign → {', '.join(r.name for r in touchable_assign) or '—'}"
-                    if unknown_here:
-                        msg += f" | unknown: {', '.join(unknown_here)}"
-                    report.append(msg)
-                    continue
-
-                try:
-                    if bot_touchable_model_roles:
-                        removed = await safe_remove_roles(member, bot_touchable_model_roles, reason=f"schedule by {interaction.user}")
-                        total_ops_rm += len(removed)
-                    if touchable_assign:
-                        added = await safe_add_roles(member, touchable_assign, reason=f"schedule by {interaction.user}")
-                        total_ops_add += len(added)
-
-                    msg = f"[{tag}] ✅ {member.display_name} (clean {len(bot_touchable_model_roles)} / assign {len(touchable_assign)})"
-                    if unknown_here:
-                        msg += f" | unknown: {', '.join(unknown_here)}"
-                    report.append(msg)
-                except Exception as e:
-                    report.append(f"[{tag}] ❌ {member.display_name} – fail: {e}")
-
-        header = "SCHEDULE PREVIEW (auto CLEAN model roles → ASSIGN)\n" if not apply else f"SCHEDULE APPLY done (removed={total_ops_rm}, added={total_ops_add})\n"
-        out = header + "\n".join(report)
-
-        if global_unknown:
-            dedup = sorted({u for u in global_unknown})
-            out += "\n\nUNKNOWN MODELS:\n- " + "\n- ".join(dedup)
-
-        for i in range(0, len(out), 1800):
-            await interaction.followup.send(f"```\n{out[i:i+1800]}\n```", ephemeral=True)
-
-    except Exception as e:
-        await interaction.followup.send(f"❌ Velika greška: {e}", ephemeral=True)
+    for i in range(0, len(out), 1800):
+        await interaction.followup.send(f"```\n{out[i:i+1800]}\n```", ephemeral=True)
 
 @tree.command(
     name="sortteamcats", description="Sort TEAM categories block A-Z", guild=GUILD_OBJ
