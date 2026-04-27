@@ -1756,10 +1756,12 @@ async def sortteamcats(interaction: discord.Interaction):
     except Exception as e:
         await interaction.followup.send(f"❌ Greška pri sortiranju kategorija: {e}", ephemeral=True)
 
-# ========== /cic - Clock In Check (pojedinačne poruke + reakcije) ==========
+# ========== /cic - Clock In Check (Voice + Reaction sistem) ==========
+NOTCI_VOICE_CHANNEL_ID = 1498226709214920714  # notci voice kanal
+
 @tree.command(
     name="cic",
-    description="Clock In Check - šalje pojedinačne poruke za svakog chattera",
+    description="Clock In Check - pomera sve u notci + reakcije za izbacivanje",
     guild=GUILD_OBJ
 )
 @need_manage_roles()
@@ -1768,19 +1770,21 @@ async def cic(interaction: discord.Interaction, shift: str = None):
 
     # Određivanje smene
     if shift is None:
-        channel_name = interaction.channel.name.lower()
-        if "grave" in channel_name:
+        ch_name = interaction.channel.name.lower()
+        if "grave" in ch_name:
             shift = "grave"
-        elif "after" in channel_name or "afternoon" in channel_name:
+        elif "after" in ch_name or "afternoon" in ch_name:
             shift = "after"
-        elif "main" in channel_name:
+        elif "main" in ch_name:
             shift = "main"
         else:
-            return await interaction.followup.send("❌ Koristi: `/cic grave`, `/cic after` ili `/cic main`", ephemeral=True)
+            return await interaction.followup.send("❌ Koristi: `/cic grave` / `after` / `main`", ephemeral=True)
 
     management_channel = bot.get_channel(1498220907775262750)
-    if not management_channel:
-        return await interaction.followup.send("❌ Management kanal nije pronađen.", ephemeral=True)
+    voice_channel = bot.get_channel(NOTCI_VOICE_CHANNEL_ID)
+
+    if not management_channel or not voice_channel:
+        return await interaction.followup.send("❌ Neki od kanala nije pronađen.", ephemeral=True)
 
     schedule_channel = bot.get_channel(SCHEDULE_CHANNEL.get(shift))
     if not schedule_channel:
@@ -1795,7 +1799,7 @@ async def cic(interaction: discord.Interaction, shift: str = None):
             break
 
     if not schedule_msg:
-        return await interaction.followup.send(f"❌ Nisam pronašao raspored u **{shift.upper()}** kanalu.", ephemeral=True)
+        return await interaction.followup.send(f"❌ Nisam pronašao raspored u **{shift.upper()}**.", ephemeral=True)
 
     # Parsiranje chattera
     text = schedule_msg.content
@@ -1807,26 +1811,65 @@ async def cic(interaction: discord.Interaction, shift: str = None):
         assignees = re.findall(r'(@[\.\w]+|<\@!?\d+>)', first_user + content)
         for token in assignees:
             member = member_from_token(interaction.guild, token)
-            name = member.display_name if member else token
-            chatter_list.append((name, token))
+            if member:
+                chatter_list.append(member)
 
     unique_chatters = list(dict.fromkeys(chatter_list))  # uklanja duplikate
 
-    # Slanje u management kanal
-    await management_channel.send(f"**🕒 {shift.upper()} CLOCK IN CHECK**\n"
-                                  f"**Poslednji raspored:** {schedule_msg.jump_url}\n"
-                                  f"**Ukupno chattera:** {len(unique_chatters)}\n")
+    # Poruka u management kanal
+    await management_channel.send(
+        f"**🕒 {shift.upper()} CLOCK IN CHECK**\n"
+        f"**Raspored:** {schedule_msg.jump_url}\n"
+        f"**Ukupno:** {len(unique_chatters)} chattera\n"
+        "Reaguj sa ✅ da izbaciš iz **notci** voice kanala."
+    )
 
-    for i, (display_name, token) in enumerate(unique_chatters, 1):
-        msg = await management_channel.send(f"`{i:2d}.` **{display_name}**")
-        await msg.add_reaction("✅")   # clock-in-ovao
-        await msg.add_reaction("❌")   # fali
+    # Pomeri sve u notci + pošalji pojedinačne poruke
+    moved = 0
+    for member in unique_chatters:
+        try:
+            if member.voice and member.voice.channel:
+                await member.move_to(voice_channel)
+                moved += 1
+        except:
+            pass
+
+        # Pojedinačna poruka sa reakcijom
+        msg = await management_channel.send(f"**{member.display_name}**")
+        await msg.add_reaction("✅")
 
     await interaction.followup.send(
-        f"✅ Poslao sam **{len(unique_chatters)}** pojedinačnih poruka u management kanal.\n"
-        f"Reaguj sa ✅ ako je clock-in-ovao, ❌ ako fali.", 
+        f"✅ **{moved}** chattera pomerena u **notci** voice.\n"
+        f"Proveri management kanal.", 
         ephemeral=True
     )
+
+
+# ========== REAKCIJA HANDLER - Izbacivanje iz notci ==========
+@bot.event
+async def on_reaction_add(reaction: discord.Reaction, user: discord.Member):
+    if user.bot:
+        return
+    if str(reaction.emoji) != "✅":
+        return
+
+    channel = reaction.message.channel
+    if channel.id != 1498220907775262750:  # management kanal
+        return
+
+    # Pronalazimo mention u poruci
+    if not reaction.message.mentions:
+        return
+
+    member = reaction.message.mentions[0]
+    voice_channel = bot.get_channel(NOTCI_VOICE_CHANNEL_ID)
+
+    if member.voice and member.voice.channel and member.voice.channel.id == NOTCI_VOICE_CHANNEL_ID:
+        try:
+            await member.move_to(None)  # izbaci iz voice-a
+            await reaction.message.add_reaction("✅")
+        except:
+            pass
 
 # /newm
 @tree.command(
