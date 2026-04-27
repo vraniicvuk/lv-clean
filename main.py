@@ -1756,6 +1756,97 @@ async def sortteamcats(interaction: discord.Interaction):
     except Exception as e:
         await interaction.followup.send(f"❌ Greška pri sortiranju kategorija: {e}", ephemeral=True)
 
+# ========== /cic - Clock In Check (samo za management) ==========
+@tree.command(
+    name="cic",
+    description="Izvlači sve chatter-e iz poslednjeg rasporeda i šalje u management kanal",
+    guild=GUILD_OBJ
+)
+@need_manage_roles()
+async def cic(interaction: discord.Interaction, shift: str = None):
+    await interaction.response.defer(ephemeral=True)
+
+    # Ako nije prosleđen shift, pokušavamo da pogodimo po trenutnom kanalu
+    if shift is None:
+        channel_name = interaction.channel.name.lower()
+        if "grave" in channel_name:
+            shift = "grave"
+        elif "after" in channel_name or "afternoon" in channel_name:
+            shift = "after"
+        elif "main" in channel_name:
+            shift = "main"
+        else:
+            return await interaction.followup.send(
+                "❌ Nisi naveo shift. Koristi: `/cic grave`, `/cic after` ili `/cic main`", 
+                ephemeral=True
+            )
+
+    # Management kanal (privatni)
+    management_channel = bot.get_channel(1498220907775262750)
+    if not management_channel:
+        return await interaction.followup.send("❌ Management kanal nije pronađen.", ephemeral=True)
+
+    # Pronalazimo general kanal za shift
+    schedule_channel_id = SCHEDULE_CHANNEL.get(shift)
+    if not schedule_channel_id:
+        return await interaction.followup.send("❌ Neispravan shift.", ephemeral=True)
+
+    schedule_channel = bot.get_channel(schedule_channel_id)
+    if not schedule_channel:
+        return await interaction.followup.send("❌ General kanal nije pronađen.", ephemeral=True)
+
+    # Uzimamo poslednjih 30 poruka i tražimo raspored
+    messages = [msg async for msg in schedule_channel.history(limit=30)]
+    schedule_msg = None
+    for msg in messages:
+        if "@" in msg.content and any(x in msg.content for x in [":", "/", ","]):
+            schedule_msg = msg
+            break
+
+    if not schedule_msg:
+        return await interaction.followup.send(
+            f"❌ Nisam pronašao validan raspored u **{shift.upper()}** kanalu.", 
+            ephemeral=True
+        )
+
+    # Parsiranje chattera
+    text = schedule_msg.content
+    pattern = re.compile(r'(@[\.\w]+|<\@!?\d+>)(.*?)((?=@[\.\w]+|<\@!?\d+>)|$)', re.S)
+    blocks = pattern.findall(text)
+
+    chatter_list = []
+    for first_user, content, _ in blocks:
+        assignees = re.findall(r'(@[\.\w]+|<\@!?\d+>)', first_user + content)
+        for token in assignees:
+            member = member_from_token(interaction.guild, token)
+            name = member.display_name if member else token
+            chatter_list.append(name)
+
+    # Uklanjamo duplikate (ako se pojavi isti chatter više puta)
+    unique_chatters = list(dict.fromkeys(chatter_list))
+
+    # Pravljenje poruke
+    embed = discord.Embed(
+        title=f"🕒 {shift.upper()} CLOCK IN CHECK",
+        description=f"**Poslednji raspored:** {schedule_msg.jump_url}\n**Ukupno chattera:** {len(unique_chatters)}",
+        color=0x00ff88,
+        timestamp=discord.utils.utcnow()
+    )
+
+    lines = []
+    for i, chatter in enumerate(unique_chatters, 1):
+        lines.append(f"`{i:2d}.` **{chatter}**")
+
+    embed.add_field(name="Chatteri za check", value="\n".join(lines), inline=False)
+    embed.set_footer(text="Reaguj sa ✅ ako je clock-in-ovao | ❌ ako fali")
+
+    await management_channel.send(embed=embed)
+
+    await interaction.followup.send(
+        f"✅ Clock In Check za **{shift.upper()}** poslat u management kanal.", 
+        ephemeral=True
+    )
+
 # /newm
 @tree.command(
     name="newm",
