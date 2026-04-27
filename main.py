@@ -1740,6 +1740,22 @@ async def sortteamroles(interaction: discord.Interaction):
         "Roles sorted: NON TEAM top → TEAM A-Z bottom", ephemeral=True
     )
 
+@tree.command(
+    name="sortteamcats",
+    description="Sortira TEAM kategorije A-Z (od vrha ka dnu)",
+    guild=GUILD_OBJ
+)
+@need_manage_roles()
+async def sortteamcats(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+    
+    try:
+        await sort_team_categories(guild)
+        await interaction.followup.send("✅ TEAM kategorije su uspešno sortirane (A-Z).", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Greška pri sortiranju kategorija: {e}", ephemeral=True)
+
 # /newm
 @tree.command(
     name="newm",
