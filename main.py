@@ -691,35 +691,34 @@ async def apply_schedule_logic(guild, text: str):
     return len(desired_map)
 
 def parse_schedule_line(line: str):
-    """
-    Primeri:
-
-    @ch1 model1/model2
-    @ch1 / @ch2 model1/model2
-    @ch1/@ch2 model1/model2
-    """
 
     line = line.strip()
 
-    # uzmi sve chatter mentione
-    chatter_tokens = re.findall(r'(@[\w\.]+|<@!?\d+>)', line)
+    # match svih chatter mentiona na početku linije
+    chatter_match = re.match(
+        r'^((?:\s*@[\w\.]+\s*/?\s*)+)',
+        line
+    )
 
-    if not chatter_tokens:
+    if not chatter_match:
         return [], []
 
-    # ukloni chattere iz stringa
-    roles_part = line
+    chatter_section = chatter_match.group(1)
 
-    for token in chatter_tokens:
-        roles_part = roles_part.replace(token, "")
+    # ostatak su modeli
+    models_section = line[len(chatter_section):].strip()
 
-    # očisti separators
-    roles_part = re.sub(r'^[\s/,\-]+', '', roles_part).strip()
+    # chatteri
+    chatter_tokens = [
+        x.strip()
+        for x in re.split(r"/", chatter_section)
+        if x.strip()
+    ]
 
     # modeli
     model_tokens = [
         x.strip()
-        for x in re.split(r'[\/,]+', roles_part)
+        for x in re.split(r"/", models_section)
         if x.strip()
     ]
 
