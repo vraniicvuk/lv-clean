@@ -600,31 +600,6 @@ Massevi su SCHEDULOVANI za taj dan. Ako se ne pošalje u prvih sat, pišite priv
         print(f"[AUTO SCHEDULE] Greška za {shift}: {e}")
         await channel.send(f"❌ Greška u auto schedule za {shift.upper()}: {e}")
 
-parsed = parse_schedule_text(text)
-
-for chatter_tokens, model_tokens in parsed:
-
-    desired_roles = []
-
-    for model in model_tokens:
-
-        role = role_from_phrase(guild, model)
-
-        if role and can_touch_role(bot_member, role):
-            desired_roles.append(role)
-
-    for chatter_token in chatter_tokens:
-
-        member = member_from_token(guild, chatter_token)
-
-        if not member:
-            continue
-
-        if member.id not in desired_map:
-            desired_map[member.id] = set()
-
-        desired_map[member.id].update(desired_roles)
-
 def parse_schedule_text(text: str):
 
     results = []
@@ -636,7 +611,11 @@ def parse_schedule_text(text: str):
         if not line:
             continue
 
-        parts = [p.strip() for p in line.split("/") if p.strip()]
+        parts = [
+            p.strip()
+            for p in re.split(r"\s*/\s*", line)
+            if p.strip()
+        ]
 
         chatters = []
         models = []
@@ -662,6 +641,126 @@ def parse_schedule_text(text: str):
         results.append((chatters, models))
 
     return results
+
+async def apply_schedule_logic(guild, text: str):
+
+    bot_member = guild.me
+
+    global role_index
+    role_index = {}
+
+    for r in guild.roles:
+        if r.name.lower().startswith("team "):
+            base = normalize_model_name(r.name[5:])
+            role_index.setdefault(base, []).append(r)
+
+    parsed = parse_schedule_text(text)
+
+    desired_map = {}
+    unknown_models = set()
+
+    # =========================
+    # BUILD DESIRED ROLE MAP
+    # =========================
+
+    for idx, (chatter_tokens, model_tokens) in enumerate(parsed, start=1):
+
+        desired_roles = []
+
+        for model in model_tokens:
+
+            role = role_from_phrase(guild, model)
+
+            if role and can_touch_role(bot_member, role):
+                desired_roles.append(role)
+            else:
+                unknown_models.add(model)
+
+        for chatter_token in chatter_tokens:
+
+            member = member_from_token(guild, chatter_token)
+
+            if not member:
+                print(f"[SCHEDULE] member not found: {chatter_token}")
+                continue
+
+            if member.id not in desired_map:
+                desired_map[member.id] = set()
+
+            desired_map[member.id].update(desired_roles)
+
+    removed_total = 0
+    added_total = 0
+
+    print("\nSCHEDULE APPLY START\n")
+
+    # =========================
+    # CLEAN + ASSIGN
+    # =========================
+
+    for member_id, desired_roles in desired_map.items():
+
+        member = guild.get_member(member_id)
+
+        if not member:
+            continue
+
+        removable = [
+            r for r in member.roles
+            if (
+                r.name.upper().startswith("TEAM ")
+                and r.name.upper() not in KEEP_ROLE_NAMES
+                and can_touch_role(bot_member, r)
+            )
+        ]
+
+        removed_count = 0
+        added_count = 0
+
+        # CLEAN
+        if removable:
+
+            await safe_remove_roles(
+                member,
+                removable,
+                reason="schedule clean"
+            )
+
+            removed_count = len(removable)
+            removed_total += removed_count
+
+        # ASSIGN
+        desired_roles = list(desired_roles)
+
+        if desired_roles:
+
+            await safe_add_roles(
+                member,
+                desired_roles,
+                reason="schedule assign"
+            )
+
+            added_count = len(desired_roles)
+            added_total += added_count
+
+        print(
+            f"✅ {member.display_name} "
+            f"(clean {removed_count} / assign {added_count})"
+        )
+
+    print(
+        f"\nSCHEDULE APPLY done "
+        f"(removed={removed_total}, added={added_total})"
+    )
+
+    if unknown_models:
+
+        print("\nUNKNOWN MODELS:")
+
+        for m in sorted(unknown_models):
+            print(f"- {m}")
+
+    return len(desired_map)
 
 # ====== AI/FU HELPERI ======
 def _sanitize_mm_text(s: str) -> str:
