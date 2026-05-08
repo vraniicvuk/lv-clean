@@ -600,94 +600,130 @@ Massevi su SCHEDULOVANI za taj dan. Ako se ne pošalje u prvih sat, pišite priv
         print(f"[AUTO SCHEDULE] Greška za {shift}: {e}")
         await channel.send(f"❌ Greška u auto schedule za {shift.upper()}: {e}")
 
-
 async def apply_schedule_logic(guild, text: str):
-    """Identčna logika kao /schedule apply=true - popravljena za split smene"""
+
     bot_member = guild.me
+
+    # rebuild role index
     global role_index
     role_index = {}
+
     for r in guild.roles:
         if r.name.lower().startswith("team "):
             base = normalize_model_name(r.name[5:])
             role_index.setdefault(base, []).append(r)
 
-    text_norm = (text or "").replace("⁄", "/").replace("／", "/")
-    raw_blocks = []
-    pattern = re.compile(r"(@\S+|\<@!?[\d]+\>)(.*?)(?=(?:@\S+|\<@!?[\d]+\>)|$)", re.S)
-    for m in pattern.finditer(text_norm):
-        raw_blocks.append((m.group(1).strip(), (m.group(2) or "").strip()))
+    lines = [
+        ln.strip()
+        for ln in text.splitlines()
+        if ln.strip()
+    ]
 
-    def parse_roles_list_with_unknowns(roles_text: str):
-        txt = (roles_text or "").replace("\\", "/")
-        segs = [s.strip() for s in re.split(r"[\/,;|]+", txt) if s.strip()]
-        wanted = []
-        unknown = []
-        seen = set()
-        for seg in segs:
-            model = extract_model_name(seg)
-            base = clean_role_phrase(model)
-            if not base:
-                continue
-            r = role_from_phrase(guild, base)
-            if r:
-                if r.id not in seen:
-                    wanted.append(r)
-                    seen.add(r.id)
-            else:
-                unknown.append(base)
-        return wanted, unknown
+    # member_id -> set(roles)
+    desired_map = {}
 
-    def split_assignees_and_roles(first_user: str, tail: str):
-        """NAJROBUSNIJA VERZIJA za tvoj format: @chatter1 / @chatter2 modeli..."""
-        full_line = (first_user + " " + tail).strip()
-        
-        # Hvata SVE chatter mention-e (@username, @.username, <@id>, <@!id>)
-        assignees = re.findall(r'(@[\.\w]+|<\@!?\d+>)', full_line)
-        
-        if not assignees:
-            return [first_user], full_line
+    for line in lines:
 
-        # Pronalazimo poziciju POSLE poslednjeg chatter mention-a
-        last_pos = 0
-        for match in re.finditer(r'(@[\.\w]+|<\@!?\d+>)', full_line):
-            last_pos = match.end()
+        chatter_tokens, model_tokens = parse_schedule_line(line)
 
-        # Sve posle toga su modeli
-        roles_text = full_line[last_pos:].strip()
-        roles_text = roles_text.lstrip(' /:,-').strip()
+        if not chatter_tokens:
+            continue
 
-        return assignees, roles_text
+        desired_roles = []
 
-    for _, (assignees_raw, roles_text) in enumerate(raw_blocks, start=1):
-        desired_roles, _ = parse_roles_list_with_unknowns(roles_text)
-        assignees, _ = split_assignees_and_roles(assignees_raw, roles_text)
+        for model in model_tokens:
+            role = role_from_phrase(guild, model)
 
-        for user_token in assignees:
-            member = member_from_token(guild, user_token)
+            if role and can_touch_role(bot_member, role):
+                desired_roles.append(role)
+
+        for chatter_token in chatter_tokens:
+
+            member = member_from_token(guild, chatter_token)
+
             if not member:
                 continue
 
-            # CLEAN
-            bot_touchable_model_roles = [
-                r
-                for r in member.roles
-                if r.name.upper().startswith("TEAM ")
+            if member.id not in desired_map:
+                desired_map[member.id] = set()
+
+            desired_map[member.id].update(desired_roles)
+
+    # ===== CLEAN + ASSIGN =====
+
+    for member_id, desired_roles in desired_map.items():
+
+        member = guild.get_member(member_id)
+
+        if not member:
+            continue
+
+        # sve TEAM role koje bot sme da dira
+        removable = [
+            r for r in member.roles
+            if (
+                r.name.upper().startswith("TEAM ")
                 and r.name.upper() not in KEEP_ROLE_NAMES
                 and can_touch_role(bot_member, r)
-            ]
-            if bot_touchable_model_roles:
-                await safe_remove_roles(
-                    member, bot_touchable_model_roles, reason="auto schedule"
-                )
+            )
+        ]
 
-            # ASSIGN
-            touchable_assign = [
-                r for r in desired_roles if can_touch_role(bot_member, r)
-            ]
-            if touchable_assign:
-                await safe_add_roles(member, touchable_assign, reason="auto schedule")
+        # remove stare
+        if removable:
+            await safe_remove_roles(
+                member,
+                removable,
+                reason="schedule clean"
+            )
 
-    print("[AUTO APPLY] Raspored primenjen")
+        # add nove
+        desired_roles = list(desired_roles)
+
+        if desired_roles:
+            await safe_add_roles(
+                member,
+                desired_roles,
+                reason="schedule assign"
+            )
+
+    print("[SCHEDULE] DONE")
+
+    return len(desired_map)
+
+def parse_schedule_line(line: str):
+    """
+    Primeri:
+
+    @ch1 model1/model2
+    @ch1 / @ch2 model1/model2
+    @ch1/@ch2 model1/model2
+    """
+
+    line = line.strip()
+
+    # uzmi sve chatter mentione
+    chatter_tokens = re.findall(r'(@[\w\.]+|<@!?\d+>)', line)
+
+    if not chatter_tokens:
+        return [], []
+
+    # ukloni chattere iz stringa
+    roles_part = line
+
+    for token in chatter_tokens:
+        roles_part = roles_part.replace(token, "")
+
+    # očisti separators
+    roles_part = re.sub(r'^[\s/,\-]+', '', roles_part).strip()
+
+    # modeli
+    model_tokens = [
+        x.strip()
+        for x in re.split(r'[\/,]+', roles_part)
+        if x.strip()
+    ]
+
+    return chatter_tokens, model_tokens
 
 
 # ====== AI/FU HELPERI ======
