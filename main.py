@@ -600,130 +600,68 @@ Massevi su SCHEDULOVANI za taj dan. Ako se ne pošalje u prvih sat, pišite priv
         print(f"[AUTO SCHEDULE] Greška za {shift}: {e}")
         await channel.send(f"❌ Greška u auto schedule za {shift.upper()}: {e}")
 
-async def apply_schedule_logic(guild, text: str):
+parsed = parse_schedule_text(text)
 
-    bot_member = guild.me
+for chatter_tokens, model_tokens in parsed:
 
-    # rebuild role index
-    global role_index
-    role_index = {}
+    desired_roles = []
 
-    for r in guild.roles:
-        if r.name.lower().startswith("team "):
-            base = normalize_model_name(r.name[5:])
-            role_index.setdefault(base, []).append(r)
+    for model in model_tokens:
 
-    lines = [
-        ln.strip()
-        for ln in text.splitlines()
-        if ln.strip()
-    ]
+        role = role_from_phrase(guild, model)
 
-    # member_id -> set(roles)
-    desired_map = {}
+        if role and can_touch_role(bot_member, role):
+            desired_roles.append(role)
 
-    for line in lines:
+    for chatter_token in chatter_tokens:
 
-        chatter_tokens, model_tokens = parse_schedule_line(line)
-
-        if not chatter_tokens:
-            continue
-
-        desired_roles = []
-
-        for model in model_tokens:
-            role = role_from_phrase(guild, model)
-
-            if role and can_touch_role(bot_member, role):
-                desired_roles.append(role)
-
-        for chatter_token in chatter_tokens:
-
-            member = member_from_token(guild, chatter_token)
-
-            if not member:
-                continue
-
-            if member.id not in desired_map:
-                desired_map[member.id] = set()
-
-            desired_map[member.id].update(desired_roles)
-
-    # ===== CLEAN + ASSIGN =====
-
-    for member_id, desired_roles in desired_map.items():
-
-        member = guild.get_member(member_id)
+        member = member_from_token(guild, chatter_token)
 
         if not member:
             continue
 
-        # sve TEAM role koje bot sme da dira
-        removable = [
-            r for r in member.roles
+        if member.id not in desired_map:
+            desired_map[member.id] = set()
+
+        desired_map[member.id].update(desired_roles)
+
+def parse_schedule_text(text: str):
+
+    results = []
+
+    for raw_line in text.splitlines():
+
+        line = raw_line.strip()
+
+        if not line:
+            continue
+
+        parts = [p.strip() for p in line.split("/") if p.strip()]
+
+        chatters = []
+        models = []
+
+        model_started = False
+
+        for part in parts:
+
+            # chatter segment
             if (
-                r.name.upper().startswith("TEAM ")
-                and r.name.upper() not in KEEP_ROLE_NAMES
-                and can_touch_role(bot_member, r)
-            )
-        ]
+                not model_started
+                and (
+                    part.startswith("@")
+                    or re.match(r"<@!?\d+>", part)
+                )
+            ):
+                chatters.append(part)
 
-        # remove stare
-        if removable:
-            await safe_remove_roles(
-                member,
-                removable,
-                reason="schedule clean"
-            )
+            else:
+                model_started = True
+                models.append(part)
 
-        # add nove
-        desired_roles = list(desired_roles)
+        results.append((chatters, models))
 
-        if desired_roles:
-            await safe_add_roles(
-                member,
-                desired_roles,
-                reason="schedule assign"
-            )
-
-    print("[SCHEDULE] DONE")
-
-    return len(desired_map)
-
-def parse_schedule_line(line: str):
-
-    line = line.strip()
-
-    # match svih chatter mentiona na početku linije
-    chatter_match = re.match(
-        r'^((?:\s*@[\w\.]+\s*/?\s*)+)',
-        line
-    )
-
-    if not chatter_match:
-        return [], []
-
-    chatter_section = chatter_match.group(1)
-
-    # ostatak su modeli
-    models_section = line[len(chatter_section):].strip()
-
-    # chatteri
-    chatter_tokens = [
-        x.strip()
-        for x in re.split(r"/", chatter_section)
-        if x.strip()
-    ]
-
-    # modeli
-    model_tokens = [
-        x.strip()
-        for x in re.split(r"/", models_section)
-        if x.strip()
-    ]
-
-    return chatter_tokens, model_tokens
-
+    return results
 
 # ====== AI/FU HELPERI ======
 def _sanitize_mm_text(s: str) -> str:
