@@ -1893,7 +1893,7 @@ async def cic(interaction: discord.Interaction, shift: str = None):
 
     # === 3. BLANKO PORUKA ZA COPY (ono što si tražio) ===
     blanko_lista = ", ".join(unique_names)
-    await mgmt_channel.send(f"**Blanko lista za copy:**\n```{blanko_lista}```")
+    await mgmt_channel.send(f"{blanko_lista}")
 
     await interaction.followup.send(
         f"✅ Gotovo! Poslao sam **{len(unique_names)}** chattera u management kanal.\n"
