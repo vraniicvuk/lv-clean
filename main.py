@@ -585,7 +585,7 @@ Ukoliko vam fali role za nekog modela, molim vas da se obratite direktno nekome 
 **Potrebno dostavljati ratios** za sledeće kreatorke na kraju smene dok se ne navrši period pumpe:  
 **Chloe igtvn, Paige, Brenda, Rebeca, Rachel, Elena, mad maddie 2 c, michelle**.
 
-Na svim kreatorkama **sve masseve po ulasku u smenu unsend**, a na svim OFTV modelima **STROGO** zabranjeno slati sexual mms.  
+Na svim kreatorkama **sve masseve po ulasku u smenu unsend**, a na svim OFTV modelima **STROGO** zabranjeno slati sexual mms, to su: milakoi oftv x jsn, jenny eep, eva oftv eep x, Eva lil OFTV. Primeri sexual poruka: https://discord.com/channels/1264855599812968562/1456337665271267462/1486293220886315009  
 Massevi su SCHEDULOVANI na enya, dia kim ra, dia kim ra n, tracy2. Ako se ne pošalje u prvih sat, pišite privatno nekome iz management tima."""
 
         await channel.send(final_message)
