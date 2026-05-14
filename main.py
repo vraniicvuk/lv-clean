@@ -580,13 +580,13 @@ async def run_auto_schedule(shift: str):
 
         final_message = f"""{role_mention}**Role za modele koje imate na rasporedu su vam dodeljene** (dodeljeno za **{chatter_count}** chattera).
 
-Ukoliko vam fali role za nekog modela, molim vas da se obratite direktno nekome iz tima, i nakon provere rola da se clock inujete na Telegram kanalu vaše smene u formatu `ci model1/model2/itd.` kako bi tim znao da ste aktivni.
+Ukoliko vam fali role za nekog modela, molim vas da se obratite direktno nekome iz tima, i nakon provere rola da se clock inujete na Telegram kanalu vaše smene u formatu **!ci model1/model2/itd.** kako bi tim znao da ste aktivni.
 
 **Potrebno dostavljati ratios** za sledeće kreatorke na kraju smene dok se ne navrši period pumpe:  
 **Chloe igtvn, Paige, Brenda, Rebeca, Rachel, Elena, mad maddie 2 c, michelle**.
 
-Na sledećim kreatorkama (**blair tsu, chloe tsu, daisy tsu, emilyonlyf, skylar onlyf, dia ra, dia vip, jade**) — **sve masseve po ulasku u smenu unsend**.  
-Massevi su SCHEDULOVANI za taj dan. Ako se ne pošalje u prvih sat, pišite privatno nekome iz management tima."""
+Na svim kreatorkama **sve masseve po ulasku u smenu unsend**, a na svim OFTV modelima **STROGO** zabranjeno slati sexual mms.  
+Massevi su SCHEDULOVANI na enya, dia kim ra, dia kim ra n, tracy2. Ako se ne pošalje u prvih sat, pišite privatno nekome iz management tima."""
 
         await channel.send(final_message)
 
