@@ -522,42 +522,45 @@ async def sort_team_categories(guild):
         await asyncio.sleep(0.35)
     print("TEAM categories sorted")
 
-
-# ========== AUTO SCHEDULE (15 min pre smene + bolja detekcija) ==========
-# ========== AUTO SCHEDULE (15 min pre smene) ==========
+# ========== AUTO SCHEDULE TASK - 1h20min + 20min pre smene ==========
 @tasks.loop(minutes=1)
 async def auto_schedule_task():
     now = _local_now()
     h, m = now.hour, now.minute
-    triggers = {
-        "grave": (9, 48),  # promeni kasnije na (9, 45)
-        "after": (17, 40),
-        "main": (1, 40),
-    }
-    for shift, (th, tm) in triggers.items():
-        if h == th and m == tm:
-            await run_auto_schedule(shift)
-            break
 
+    # Novi triggeri: 1 sat i 20 min pre + 20 min pre
+    triggers = {
+        "grave": [(8, 40), (9, 40)],   # 10:00 smena → 8:40 i 9:40
+        "after": [(16, 40), (17, 40)], # 18:00 smena → 16:40 i 17:40
+        "main": [(0, 40), (1, 40)],    # 02:00 smena → 00:40 i 01:40
+    }
+
+    for shift, times in triggers.items():
+        for th, tm in times:
+            if h == th and m == tm:
+                print(f"[AUTO SCHEDULE] Pokrećem za {shift.upper()} u {h:02d}:{m:02d}")
+                asyncio.create_task(run_auto_schedule(shift))
+                break
+
+
+# ========== RUN AUTO SCHEDULE + BLANKO LISTA ==========
 async def run_auto_schedule(shift: str):
     guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
     if not guild:
         return
 
     channel = bot.get_channel(SCHEDULE_CHANNEL.get(shift))
-    if not channel:
+    mgmt_channel = bot.get_channel(1498220907775262750)  # tvoj management kanal
+
+    if not channel or not mgmt_channel:
         return
 
     try:
         messages = [msg async for msg in channel.history(limit=50)]
         schedule_msg = None
         for msg in messages:
-            content = msg.content
-            if "@" in content and any(x in content for x in [":", "/", ","]):
-                age = (
-                    _local_now()
-                    - msg.created_at.replace(tzinfo=ZoneInfo("Europe/Belgrade"))
-                ).total_seconds()
+            if "@" in msg.content and any(x in msg.content for x in [":", "/", ","]):
+                age = (_local_now() - msg.created_at.replace(tzinfo=ZoneInfo("Europe/Belgrade"))).total_seconds()
                 if age < 86400:
                     schedule_msg = msg
                     break
@@ -569,19 +572,12 @@ async def run_auto_schedule(shift: str):
         schedule_text = schedule_msg.content.strip()
         print(f"[AUTO SCHEDULE] Pronađen raspored za {shift} → primenjujem...")
 
-        # === Primena rasporeda + vraća tačan broj chattera iz ovog rasporeda ===
         chatter_count = await apply_schedule_logic(guild, schedule_text)
 
-        # Role ping za smenu
-        role_id = {
-            "grave": GRAVE_ROLE_ID,
-            "after": AFTER_ROLE_ID,
-            "main": MAIN_ROLE_ID,
-        }.get(shift)
-
+        # === Glavna poruka u general kanal (kao i ranije) ===
+        role_id = {"grave": GRAVE_ROLE_ID, "after": AFTER_ROLE_ID, "main": MAIN_ROLE_ID}.get(shift)
         role_mention = f"<@&{role_id}> " if role_id else ""
 
-        # === ZAVRŠNA PORUKA (sa tačnim brojačem) ===
         final_message = f"""{role_mention}**Role za modele koje imate na rasporedu su vam dodeljene** (dodeljeno za **{chatter_count}** chattera).
 
 Ukoliko vam fali role za nekog modela, molim vas da se obratite direktno nekome iz tima, i nakon provere rola da se clock inujete na Telegram kanalu vaše smene u formatu `ci model1/model2/itd.` kako bi tim znao da ste aktivni.
@@ -594,7 +590,28 @@ Massevi su SCHEDULOVANI za taj dan. Ako se ne pošalje u prvih sat, pišite priv
 
         await channel.send(final_message)
 
-        print(f"[AUTO SCHEDULE] Uspešno završeno za {shift.upper()} ({chatter_count} chattera)")
+        # === NOVA BLANKO LISTA ZA COPY (u management kanal) ===
+        # Parsiramo chatter-e iz rasporeda
+        text = schedule_text
+        pattern = re.compile(r'(@[\.\w]+|<\@!?\d+>)(.*?)((?=@[\.\w]+|<\@!?\d+>)|$)', re.S)
+        blocks = pattern.findall(text)
+
+        chatter_names = []
+        for first_user, content, _ in blocks:
+            assignees = re.findall(r'(@[\.\w]+|<\@!?\d+>)', first_user + content)
+            for token in assignees:
+                member = member_from_token(guild, token)
+                name = member.display_name if member else token
+                chatter_names.append(name)
+
+        unique_names = list(dict.fromkeys(chatter_names))
+        blanko_lista = ", ".join(unique_names)
+
+        await mgmt_channel.send(
+            f"{blanko_lista}"
+        )
+
+        print(f"[AUTO SCHEDULE] Uspešno završeno za {shift.upper()} ({len(unique_names)} chattera)")
 
     except Exception as e:
         print(f"[AUTO SCHEDULE] Greška za {shift}: {e}")
