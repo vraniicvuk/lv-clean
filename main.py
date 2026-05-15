@@ -1975,14 +1975,19 @@ async def vis(interaction: discord.Interaction, role: discord.Role):
 
     await interaction.followup.send(embed=embed)
 
-# ========== /ticket - Privatni tickete sa uslovnom vidljivošću ==========
+# ========== /ticket - Uslovna vidljivost po shiftu ==========
 TICKET_CATEGORY_ID = 1504735887307837513
 TRANSCRIPT_CATEGORY_ID = 1504739040706953228
 
-SPECIAL_ROLE_ID = 1410962300554313870   # Ova rola vidi sve tickete
+# Shift roles i njihovi supervizori
+SHIFT_SUPERVISOR_MAP = {
+    1410962300554313870: 1504564869569970196,   # Graveyard Shift → Graveyard Supervisor
+    # Ako kasnije imaš i za Afternoon/Main, dodaj ovde:
+    # 1410962344124612710: 1234567890,         # Afternoon Shift → Supervisor
+    # 1410962407454675047: 9876543210,         # Main Shift → Supervisor
+}
 
-SUPPORT_ROLES = [
-    1504564869569970196,
+OTHER_SUPPORT_ROLES = [
     1410962105749995591,
     1410958063824801802
 ]
@@ -1999,31 +2004,30 @@ async def ticket(interaction: discord.Interaction, razlog: str):
     guild = interaction.guild
     category = guild.get_channel(TICKET_CATEGORY_ID)
 
-    if not category:
-        return await interaction.followup.send("❌ Ticket kategorija nije pronađena.", ephemeral=True)
-
     ticket_name = f"ticket-{interaction.user.name}"
 
-    # Osnovni overwrites
     overwrites = {
-        guild.default_role: discord.PermissionOverwrite(view_channel=False),   # svi ostali ne vide
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
         interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_messages=True),
     }
 
-    # Dodajemo support role (uvek vide ticket)
-    for role_id in SUPPORT_ROLES:
+    # Dodajemo ostale support role
+    for role_id in OTHER_SUPPORT_ROLES:
         role = guild.get_role(role_id)
         if role:
             overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_messages=True)
 
-    # Ako korisnik ima SPECIAL_ROLE → svi support vide, inače samo on + support
-    has_special_role = any(role.id == SPECIAL_ROLE_ID for role in interaction.user.roles)
+    # === USLOVNA VIDLJIVOST ZA SUPERVIZORA ===
+    supervisor_to_ping = None
+    for shift_role_id, sup_role_id in SHIFT_SUPERVISOR_MAP.items():
+        if any(r.id == shift_role_id for r in interaction.user.roles):
+            supervisor_to_ping = sup_role_id
+            break
 
-    if has_special_role:
-        # Dodajemo specijalnu rolu da vidi ticket
-        special_role = guild.get_role(SPECIAL_ROLE_ID)
-        if special_role:
-            overwrites[special_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_messages=True)
+    if supervisor_to_ping:
+        sup_role = guild.get_role(supervisor_to_ping)
+        if sup_role:
+            overwrites[sup_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_messages=True)
 
     try:
         ticket_channel = await guild.create_text_channel(
@@ -2033,11 +2037,18 @@ async def ticket(interaction: discord.Interaction, razlog: str):
             reason=f"Ticket by {interaction.user}"
         )
 
-        # Pingovi van embeda
-        support_mentions = " ".join([f"<@&{rid}>" for rid in SUPPORT_ROLES if guild.get_role(rid)])
-        await ticket_channel.send(f"{interaction.user.mention} {support_mentions}")
+        # === Pingovi van embeda ===
+        mentions = [f"<@{interaction.user.id}>"]
+        
+        if supervisor_to_ping:
+            mentions.append(f"<@&{supervisor_to_ping}>")
+        
+        for rid in OTHER_SUPPORT_ROLES:
+            mentions.append(f"<@&{rid}>")
+        
+        await ticket_channel.send(" ".join(mentions))
 
-        # Embed
+        # === Embed ===
         embed = discord.Embed(
             title="🎟️ Novi Ticket",
             description=f"**Korisnik:** {interaction.user.mention}\n**Razlog:** {razlog}",
@@ -2054,7 +2065,7 @@ async def ticket(interaction: discord.Interaction, razlog: str):
         )
 
     except Exception as e:
-        await interaction.followup.send(f"❌ Greška pri otvaranju ticketa: {e}", ephemeral=True)
+        await interaction.followup.send(f"❌ Greška: {e}", ephemeral=True)
 
 # /newm
 @tree.command(
