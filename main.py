@@ -2030,6 +2030,8 @@ async def ticket(interaction: discord.Interaction, razlog: str):
         # Formalna poruka
         support_mentions = " ".join([f"<@&{rid}>" for rid in SUPPORT_ROLES if guild.get_role(rid)])
 
+        await ticket_channel.send(f"{interaction.user.mention} {support_mentions}")
+        
         embed = discord.Embed(
             title="🎟️ Novi Ticket",
             description=(
