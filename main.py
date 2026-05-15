@@ -1918,6 +1918,62 @@ async def cic(interaction: discord.Interaction, shift: str = None):
         ephemeral=True
     )
 
+# ========== /vis - Dodeli vidljivost roli za sve TEAM kategorije ==========
+@tree.command(
+    name="vis",
+    description="Dodeljuje @roli vidljivost na sve TEAM kategorije i kanale u njima",
+    guild=GUILD_OBJ
+)
+@need_manage_channels()
+async def vis(interaction: discord.Interaction, role: discord.Role):
+    await interaction.response.defer(ephemeral=True)
+
+    guild = interaction.guild
+    team_categories = [cat for cat in guild.categories if cat.name.upper().startswith("TEAM ")]
+
+    if not team_categories:
+        return await interaction.followup.send("❌ Nisam pronašao nijednu TEAM kategoriju.", ephemeral=True)
+
+    success = 0
+    errors = []
+
+    await interaction.followup.send(f"🔄 Počinjem dodeljivanje vidljivosti roli **{role.name}** na {len(team_categories)} TEAM kategorija...", ephemeral=True)
+
+    for category in team_categories:
+        try:
+            # 1. Dodeli permisiju na kategoriju
+            await category.set_permissions(role, view_channel=True, reason=f"/vis by {interaction.user}")
+            await asyncio.sleep(1.2)
+
+            # 2. Dodeli permisiju na sve kanale unutar kategorije
+            for channel in category.channels:
+                if isinstance(channel, discord.TextChannel) or isinstance(channel, discord.VoiceChannel):
+                    await channel.set_permissions(role, view_channel=True, reason=f"/vis by {interaction.user}")
+                    await asyncio.sleep(1.0)
+
+            success += 1
+            print(f"[VIS] Uspešno za kategoriju: {category.name}")
+
+        except discord.Forbidden:
+            errors.append(f"❌ Nema permisiju za kategoriju {category.name}")
+        except Exception as e:
+            errors.append(f"❌ Greška kod {category.name}: {e}")
+
+    # Završni izveštaj
+    embed = discord.Embed(
+        title="✅ /vis završeno",
+        color=0x00ff88
+    )
+    embed.add_field(name="Uspešno obrađeno", value=f"{success}/{len(team_categories)} TEAM kategorija", inline=False)
+    
+    if errors:
+        embed.add_field(name="Greške", value="\n".join(errors[:10]), inline=False)  # max 10 grešaka
+    else:
+        embed.add_field(name="Status", value="Sve TEAM kategorije i kanali su uspešno ažurirani.", inline=False)
+
+    embed.set_footer(text=f"Izvršio: {interaction.user}")
+
+    await interaction.followup.send(embed=embed)
 
 # /newm
 @tree.command(
