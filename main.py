@@ -1975,17 +1975,17 @@ async def vis(interaction: discord.Interaction, role: discord.Role):
 
     await interaction.followup.send(embed=embed)
 
-# ========== /ticket - Uslovno pingovanje support rola ==========
+# ========== /ticket - Privatni tickete sa uslovnom vidljivošću ==========
 TICKET_CATEGORY_ID = 1504735887307837513
 TRANSCRIPT_CATEGORY_ID = 1504739040706953228
 
-# Role IDs
-MAIN_SUPPORT_ROLE = 1504564869569970196
-OTHER_SUPPORT_ROLES = [
+SPECIAL_ROLE_ID = 1410962300554313870   # Ova rola vidi sve tickete
+
+SUPPORT_ROLES = [
+    1504564869569970196,
     1410962105749995591,
     1410958063824801802
 ]
-SPECIAL_USER_ROLE = 1410962300554313870   # Ako korisnik ima ovu rolu → pinguj i MAIN_SUPPORT_ROLE
 
 @tree.command(
     name="ticket",
@@ -1999,25 +1999,31 @@ async def ticket(interaction: discord.Interaction, razlog: str):
     guild = interaction.guild
     category = guild.get_channel(TICKET_CATEGORY_ID)
 
+    if not category:
+        return await interaction.followup.send("❌ Ticket kategorija nije pronađena.", ephemeral=True)
+
     ticket_name = f"ticket-{interaction.user.name}"
 
+    # Osnovni overwrites
     overwrites = {
-        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),   # svi ostali ne vide
         interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_messages=True),
     }
 
-    # Određujemo koje role da pingujemo
-    roles_to_ping = OTHER_SUPPORT_ROLES.copy()
-
-    # Provera da li user ima specijalnu rolu
-    if any(role.id == SPECIAL_USER_ROLE for role in interaction.user.roles):
-        roles_to_ping.append(MAIN_SUPPORT_ROLE)
-
-    # Overwrites za sve role koje pingujemo
-    for role_id in roles_to_ping:
+    # Dodajemo support role (uvek vide ticket)
+    for role_id in SUPPORT_ROLES:
         role = guild.get_role(role_id)
         if role:
             overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_messages=True)
+
+    # Ako korisnik ima SPECIAL_ROLE → svi support vide, inače samo on + support
+    has_special_role = any(role.id == SPECIAL_ROLE_ID for role in interaction.user.roles)
+
+    if has_special_role:
+        # Dodajemo specijalnu rolu da vidi ticket
+        special_role = guild.get_role(SPECIAL_ROLE_ID)
+        if special_role:
+            overwrites[special_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_messages=True)
 
     try:
         ticket_channel = await guild.create_text_channel(
@@ -2027,12 +2033,11 @@ async def ticket(interaction: discord.Interaction, razlog: str):
             reason=f"Ticket by {interaction.user}"
         )
 
-        # === PINGOVI VAN EMBEDA ===
-        support_mentions = " ".join([f"<@&{rid}>" for rid in roles_to_ping])
-        
+        # Pingovi van embeda
+        support_mentions = " ".join([f"<@&{rid}>" for rid in SUPPORT_ROLES if guild.get_role(rid)])
         await ticket_channel.send(f"{interaction.user.mention} {support_mentions}")
 
-        # === Embed ===
+        # Embed
         embed = discord.Embed(
             title="🎟️ Novi Ticket",
             description=f"**Korisnik:** {interaction.user.mention}\n**Razlog:** {razlog}",
