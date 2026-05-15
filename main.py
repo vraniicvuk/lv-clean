@@ -1975,6 +1975,102 @@ async def vis(interaction: discord.Interaction, role: discord.Role):
 
     await interaction.followup.send(embed=embed)
 
+# ========== /ticket - Formalni Ticket sistem ==========
+TICKET_CATEGORY_ID = 1504735887307837513
+
+# Role koje se pinguju u ticketu
+SUPPORT_ROLES = [
+    1504564869569970196,
+    1410962105749995591,
+    1410958063824801802
+]
+
+@tree.command(
+    name="ticket",
+    description="Otvori novi ticket",
+    guild=GUILD_OBJ
+)
+@app_commands.describe(razlog="Razlog otvaranja ticketa")
+async def ticket(interaction: discord.Interaction, razlog: str):
+    await interaction.response.defer(ephemeral=True)
+
+    guild = interaction.guild
+    category = guild.get_channel(TICKET_CATEGORY_ID)
+
+    ticket_name = f"ticket-{interaction.user.name}"
+
+    # Overwrites
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        interaction.user: discord.PermissionOverwrite(
+            view_channel=True, 
+            send_messages=True, 
+            read_messages=True
+        ),
+    }
+
+    # Dodajemo support role
+    for role_id in SUPPORT_ROLES:
+        role = guild.get_role(role_id)
+        if role:
+            overwrites[role] = discord.PermissionOverwrite(
+                view_channel=True, 
+                send_messages=True, 
+                read_messages=True
+            )
+
+    try:
+        ticket_channel = await guild.create_text_channel(
+            name=ticket_name,
+            category=category,
+            overwrites=overwrites,
+            reason=f"Ticket by {interaction.user}"
+        )
+
+        # Formalna poruka
+        support_mentions = " ".join([f"<@&{rid}>" for rid in SUPPORT_ROLES if guild.get_role(rid)])
+
+        embed = discord.Embed(
+            title="🎟️ Novi Ticket",
+            description=(
+                f"**Korisnik:** {interaction.user.mention}\n"
+                f"**Razlog:** {razlog}\n\n"
+                f"{support_mentions} — molimo da odgovorite čim vidite ovu poruku."
+            ),
+            color=0x00b0f4,
+            timestamp=discord.utils.utcnow()
+        )
+        embed.set_footer(text="Koristite /close da zatvorite ticket")
+
+        await ticket_channel.send(embed=embed)
+
+        await interaction.followup.send(
+            f"✅ Ticket je uspešno otvoren! → {ticket_channel.mention}",
+            ephemeral=True
+        )
+
+    except Exception as e:
+        await interaction.followup.send(f"❌ Greška pri otvaranju ticketa: {e}", ephemeral=True)
+
+
+# ========== /close ==========
+@tree.command(
+    name="close",
+    description="Zatvori trenutni ticket",
+    guild=GUILD_OBJ
+)
+async def close_ticket(interaction: discord.Interaction):
+    if not interaction.channel.name.startswith("ticket-"):
+        return await interaction.response.send_message("❌ Ova komanda radi samo unutar ticketa.", ephemeral=True)
+
+    await interaction.response.send_message("**Zatvaram ticket za 3 sekunde...**")
+    await asyncio.sleep(3)
+    
+    try:
+        await interaction.channel.delete(reason=f"Ticket closed by {interaction.user}")
+    except Exception as e:
+        await interaction.followup.send(f"❌ Ne mogu da zatvorim: {e}", ephemeral=True)
+
 # /newm
 @tree.command(
     name="newm",
