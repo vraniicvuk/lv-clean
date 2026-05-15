@@ -1975,15 +1975,17 @@ async def vis(interaction: discord.Interaction, role: discord.Role):
 
     await interaction.followup.send(embed=embed)
 
-# ========== TICKET SISTEM - Finalna verzija ==========
-TICKET_CATEGORY_ID = 1504735887307837513      # Kategorija za aktivne tickete
-TRANSCRIPT_CATEGORY_ID = 1504739040706953228  # Kategorija za transcript-e
+# ========== /ticket - Uslovno pingovanje support rola ==========
+TICKET_CATEGORY_ID = 1504735887307837513
+TRANSCRIPT_CATEGORY_ID = 1504739040706953228
 
-SUPPORT_ROLES = [
-    1504564869569970196,
+# Role IDs
+MAIN_SUPPORT_ROLE = 1504564869569970196
+OTHER_SUPPORT_ROLES = [
     1410962105749995591,
     1410958063824801802
 ]
+SPECIAL_USER_ROLE = 1410962300554313870   # Ako korisnik ima ovu rolu → pinguj i MAIN_SUPPORT_ROLE
 
 @tree.command(
     name="ticket",
@@ -2004,7 +2006,15 @@ async def ticket(interaction: discord.Interaction, razlog: str):
         interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_messages=True),
     }
 
-    for role_id in SUPPORT_ROLES:
+    # Određujemo koje role da pingujemo
+    roles_to_ping = OTHER_SUPPORT_ROLES.copy()
+
+    # Provera da li user ima specijalnu rolu
+    if any(role.id == SPECIAL_USER_ROLE for role in interaction.user.roles):
+        roles_to_ping.append(MAIN_SUPPORT_ROLE)
+
+    # Overwrites za sve role koje pingujemo
+    for role_id in roles_to_ping:
         role = guild.get_role(role_id)
         if role:
             overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_messages=True)
@@ -2017,11 +2027,12 @@ async def ticket(interaction: discord.Interaction, razlog: str):
             reason=f"Ticket by {interaction.user}"
         )
 
-        # === PINGOVI VAN EMBEDA (fix) ===
-        support_mentions = " ".join([f"<@&{rid}>" for rid in SUPPORT_ROLES if guild.get_role(rid)])
+        # === PINGOVI VAN EMBEDA ===
+        support_mentions = " ".join([f"<@&{rid}>" for rid in roles_to_ping])
+        
         await ticket_channel.send(f"{interaction.user.mention} {support_mentions}")
 
-        # === Embed poruka ===
+        # === Embed ===
         embed = discord.Embed(
             title="🎟️ Novi Ticket",
             description=f"**Korisnik:** {interaction.user.mention}\n**Razlog:** {razlog}",
@@ -2038,69 +2049,7 @@ async def ticket(interaction: discord.Interaction, razlog: str):
         )
 
     except Exception as e:
-        await interaction.followup.send(f"❌ Greška: {e}", ephemeral=True)
-
-
-# ========== /close - Zatvara + čuva transcript ==========
-@tree.command(
-    name="close",
-    description="Zatvori ticket i sačuva transcript",
-    guild=GUILD_OBJ
-)
-async def close_ticket(interaction: discord.Interaction):
-    if not interaction.channel.name.startswith("ticket-"):
-        return await interaction.response.send_message("❌ Ova komanda radi samo unutar ticketa.", ephemeral=True)
-
-    await interaction.response.send_message("**Zatvaram ticket i čuvam transcript...**")
-
-    transcript_cat = interaction.guild.get_channel(TRANSCRIPT_CATEGORY_ID)
-
-    # Čuvanje transcripta
-    if transcript_cat:
-        try:
-            messages = [msg async for msg in interaction.channel.history(limit=500, oldest_first=True)]
-            transcript_text = f"Transcript ticketa: {interaction.channel.name}\n"
-            transcript_text += f"Vreme zatvaranja: {discord.utils.utcnow()}\n"
-            transcript_text += "="*50 + "\n\n"
-
-            for msg in messages:
-                time_str = msg.created_at.strftime("%d.%m.%Y %H:%M")
-                transcript_text += f"[{time_str}] {msg.author}: {msg.content}\n"
-                if msg.attachments:
-                    transcript_text += f"   Prilozi: {', '.join(a.url for a in msg.attachments)}\n"
-
-            transcript_channel = await transcript_cat.create_text_channel(
-                name=f"transcript-{interaction.channel.name[7:]}"
-            )
-            await transcript_channel.send(f"**Transcript za {interaction.channel.name}**")
-            await transcript_channel.send(f"```{transcript_text}```")
-        except:
-            pass  # ako ne uspe, nećemo da blokira zatvaranje
-
-    await asyncio.sleep(2)
-    try:
-        await interaction.channel.delete(reason=f"Closed by {interaction.user}")
-    except:
-        await interaction.followup.send("Ticket zatvoren, ali transcript nije uspeo da se sačuva.", ephemeral=True)
-
-
-# ========== /delete - Potpuno brisanje bez transcripta ==========
-@tree.command(
-    name="delete",
-    description="Potpuno obriši ticket bez čuvanja transcripta",
-    guild=GUILD_OBJ
-)
-async def delete_ticket(interaction: discord.Interaction):
-    if not interaction.channel.name.startswith("ticket-"):
-        return await interaction.response.send_message("❌ Ova komanda radi samo unutar ticketa.", ephemeral=True)
-
-    await interaction.response.send_message("**Brišem ticket zauvek...**")
-    await asyncio.sleep(2)
-    
-    try:
-        await interaction.channel.delete(reason=f"Deleted by {interaction.user}")
-    except Exception as e:
-        await interaction.followup.send(f"❌ Greška: {e}", ephemeral=True)
+        await interaction.followup.send(f"❌ Greška pri otvaranju ticketa: {e}", ephemeral=True)
 
 # /newm
 @tree.command(
