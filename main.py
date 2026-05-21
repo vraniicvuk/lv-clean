@@ -585,7 +585,7 @@ Ukoliko vam fali role za nekog modela, molim vas da se obratite direktno nekome 
 **Potrebno dostavljati ratios** za sledeće kreatorke na kraju smene dok se ne navrši period pumpe:  
 **Chloe igtvn, Paige, Brenda, Rebeca, Rachel, Elena, mad maddie 2 c, michelle**.
 
-Na svim kreatorkama **sve masseve po ulasku u smenu unsend**, a na svim OFTV modelima **STROGO** zabranjeno slati sexual mms, to su: milakoi oftv x jsn, jenny eep, eva oftv eep x, Eva lil OFTV. Primeri sexual poruka: https://discord.com/channels/1264855599812968562/1456337665271267462/1486293220886315009  
+Na svim kreatorkama **sve masseve po ulasku u smenu unsend**, massovi su zakazani na: tracy unwanted i yor, ukoliko ih nema javite se nekome iz menadzmenta. Na svim OFTV modelima **STROGO** zabranjeno slati sexual mms, to su: milakoi oftv x jsn, jenny eep, eva oftv eep x, Eva lil OFTV. Primeri sexual poruka: https://discord.com/channels/1264855599812968562/1456337665271267462/1486293220886315009  
 Massevi su SCHEDULOVANI na enya, dia kim ra, dia kim ra n, tracy2. Ako se ne pošalje u prvih sat, pišite privatno nekome iz management tima."""
 
         await channel.send(final_message)
@@ -843,7 +843,7 @@ AI_FU_SYSTEM = (
     "- no commas no dashes. only periods and spaces.\n"
     "- tone is dirty flirty girly and playful teasing and immersive.\n"
     "- scenario tone and structure must change every time. never repeat lines.\n"
-    "- fu1 must always be something that works after any answer.\n"
+    "- fu1 must always be something that works after any answer on the mm question.\n"
     "- fu1.5 fu2.5 and fu3.5 are always questions that avoid yes or no answers.\n"
     "- never use this or that questions unless the user asks for them.\n"
     "- never use the phrase either way.\n"
