@@ -585,8 +585,8 @@ Ukoliko vam fali role za nekog modela, molim vas da se obratite direktno nekome 
 **Potrebno dostavljati ratios** za sledeće kreatorke na kraju smene dok se ne navrši period pumpe:  
 **Chloe igtvn, Paige, Brenda, Rebeca, Rachel, Elena, mad maddie 2 c, michelle**.
 
-Na svim kreatorkama **sve masseve po ulasku u smenu unsend**, massovi su zakazani na: tracy unwanted i yor, ukoliko ih nema javite se nekome iz menadzmenta. Na svim OFTV modelima **STROGO** zabranjeno slati sexual mms, to su: milakoi oftv x jsn, jenny eep, eva oftv eep x, Eva lil OFTV. Primeri sexual poruka: https://discord.com/channels/1264855599812968562/1456337665271267462/1486293220886315009  
-Massevi su SCHEDULOVANI na enya, dia kim ra, dia kim ra n, tracy2. Ako se ne pošalje u prvih sat, pišite privatno nekome iz management tima."""
+Na svim kreatorkama **sve masseve po ulasku u smenu unsend**. Na svim OFTV modelima **STROGO** zabranjeno slati sexual mms, to su: milakoi oftv x jsn, jenny eep, eva oftv eep x, Eva lil OFTV. Primeri sexual poruka: https://discord.com/channels/1264855599812968562/1456337665271267462/1486293220886315009  
+Massevi su SCHEDULOVANI na tracy i unwanted. Ako se ne pošalje u prvih sat, pišite privatno nekome iz management tima."""
 
         await channel.send(final_message)
 
@@ -608,7 +608,7 @@ Massevi su SCHEDULOVANI na enya, dia kim ra, dia kim ra n, tracy2. Ako se ne po�
         blanko_lista = ", ".join(unique_names)
 
         await mgmt_channel.send(
-            f"{blanko_lista}"
+            f"!check {blanko_lista}"
         )
 
         print(f"[AUTO SCHEDULE] Uspešno završeno za {shift.upper()} ({len(unique_names)} chattera)")
@@ -1915,7 +1915,7 @@ async def cic(interaction: discord.Interaction, shift: str = None):
 
     # === 3. BLANKO PORUKA ZA COPY (ono što si tražio) ===
     blanko_lista = ", ".join(unique_names)
-    await mgmt_channel.send(f"{blanko_lista}")
+    await mgmt_channel.send(f"!check {blanko_lista}")
 
     await interaction.followup.send(
         f"✅ Gotovo! Poslao sam **{len(unique_names)}** chattera u management kanal.\n"
