@@ -1695,10 +1695,10 @@ class RatioModal(Modal, title="Ratio Report"):
 async def ratio_command(interaction: discord.Interaction):
     await interaction.response.send_modal(RatioModal())
 
-# ========== NOVA /schedule - Format: <@chatter> <@&role> <@&role> ... ==========
+# ========== NOVA /schedule - Popravljena verzija ==========
 @tree.command(
     name="schedule",
-    description="Novi format: <@chatter> <@&role1> <@&role2> ...",
+    description="Format: <@chatter> <@&role1> <@&role2> ... (jedan chatter po redu)",
     guild=GUILD_OBJ,
 )
 @need_manage_roles()
@@ -1708,7 +1708,6 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
     guild = interaction.guild
     bot_member = guild.me
 
-    # Refresh role index
     global role_index
     role_index = {}
     for r in guild.roles:
@@ -1721,35 +1720,34 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
     total_add = 0
     unknowns = []
 
-    # Parsiranje linija
     lines = [line.strip() for line in text.split('\n') if line.strip()]
 
     for idx, line in enumerate(lines, start=1):
-        # Pronalazimo sve mention-e
-        user_mentions = re.findall(r'<@!?(\d+)>', line)
-        role_mentions = re.findall(r'<@&(\d+)>', line)
-
-        if not user_mentions:
-            report.append(f"[{idx}] ❌ Nema chatter mention-a u liniji")
+        # Pronalazimo chatter (prvi <@id>)
+        chatter_match = re.search(r'<@!?(\d+)>', line)
+        if not chatter_match:
+            report.append(f"[{idx}] ❌ Nema chatter mention-a")
             continue
 
-        # Uzimamo prvog user-a kao chatter (ostale ignorišemo u ovoj liniji)
-        chatter_id = user_mentions[0]
+        chatter_id = chatter_match.group(1)
         member = guild.get_member(int(chatter_id))
         if not member:
             report.append(f"[{idx}] ❌ Chatter nije nađen: <@{chatter_id}>")
             continue
 
-        # Pronalazimo role po ID-ju
+        # Pronalazimo sve role mention-e u liniji
+        role_mentions = re.findall(r'<@&(\d+)>', line)
+
         desired_roles = []
         for rid in role_mentions:
             role = guild.get_role(int(rid))
             if role and role.name.upper().startswith("TEAM "):
-                desired_roles.append(role)
+                if role not in desired_roles:
+                    desired_roles.append(role)
             else:
                 unknowns.append(f"<@&{rid}>")
 
-        # CLEAN
+        # CLEAN + ASSIGN
         old_roles = [
             r for r in member.roles
             if r.name.upper().startswith("TEAM ")
@@ -1764,7 +1762,6 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
             report.append(f"[{idx}] PREVIEW {member.display_name} → {roles_str}")
             continue
 
-        # APPLY
         try:
             if old_roles:
                 rem = await safe_remove_roles(member, old_roles, reason=f"schedule by {interaction.user}")
@@ -1777,7 +1774,6 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
         except Exception as e:
             report.append(f"[{idx}] ❌ {member.display_name} — greška: {e}")
 
-    # Finalni ispis
     header = "SCHEDULE PREVIEW\n" if not apply else f"SCHEDULE APPLY done (removed={total_rm}, added={total_add})\n"
     out = header + "\n".join(report)
 
@@ -1786,7 +1782,6 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
 
     for i in range(0, len(out), 1800):
         await interaction.followup.send(f"```\n{out[i:i+1800]}\n```", ephemeral=True)
-
 
 @tree.command(name="sortteamroles", description="Bulk sort TEAM roles", guild=GUILD_OBJ)
 @need_manage_roles()
