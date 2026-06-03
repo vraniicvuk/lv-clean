@@ -1695,10 +1695,10 @@ class RatioModal(Modal, title="Ratio Report"):
 async def ratio_command(interaction: discord.Interaction):
     await interaction.response.send_modal(RatioModal())
 
-# ========== NOVA /schedule - Popravljena verzija ==========
+# ========== NOVA /schedule - Tačna logika po tvom opisu ==========
 @tree.command(
     name="schedule",
-    description="Format: <@chatter> <@&role1> <@&role2> ... (jedan chatter po redu)",
+    description="Format: <@chatter> <@&role1> <@&role2> <@chatter2> <@&role3> ...",
     guild=GUILD_OBJ,
 )
 @need_manage_roles()
@@ -1708,6 +1708,7 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
     guild = interaction.guild
     bot_member = guild.me
 
+    # Refresh role index
     global role_index
     role_index = {}
     for r in guild.roles:
@@ -1720,60 +1721,42 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
     total_add = 0
     unknowns = []
 
-    lines = [line.strip() for line in text.split('\n') if line.strip()]
+    # Pronalazimo sve mention-e redom
+    tokens = re.findall(r'(<@!?(\d+)>|<@&(\d+)>)', text)
 
-    for idx, line in enumerate(lines, start=1):
-        # Pronalazimo chatter (prvi <@id>)
-        chatter_match = re.search(r'<@!?(\d+)>', line)
-        if not chatter_match:
-            report.append(f"[{idx}] ❌ Nema chatter mention-a")
-            continue
+    current_member = None
+    current_roles = []
 
-        chatter_id = chatter_match.group(1)
-        member = guild.get_member(int(chatter_id))
-        if not member:
-            report.append(f"[{idx}] ❌ Chatter nije nađen: <@{chatter_id}>")
-            continue
+    for full, user_id, role_id in tokens:
+        if user_id:  # Ovo je chatter (@id)
+            # Ako je postojao prethodni chatter → obradi ga
+            if current_member and current_roles:
+                await process_chatter(guild, bot_member, current_member, current_roles, 
+                                    report, total_rm, total_add, unknowns, apply, interaction.user)
 
-        # Pronalazimo sve role mention-e u liniji
-        role_mentions = re.findall(r'<@&(\d+)>', line)
-
-        desired_roles = []
-        for rid in role_mentions:
-            role = guild.get_role(int(rid))
-            if role and role.name.upper().startswith("TEAM "):
-                if role not in desired_roles:
-                    desired_roles.append(role)
+            # Novi chatter
+            member = guild.get_member(int(user_id))
+            if member:
+                current_member = member
+                current_roles = []
             else:
-                unknowns.append(f"<@&{rid}>")
+                report.append(f"❌ Chatter nije nađen: <@{user_id}>")
+                current_member = None
 
-        # CLEAN + ASSIGN
-        old_roles = [
-            r for r in member.roles
-            if r.name.upper().startswith("TEAM ")
-            and r.name.upper() not in KEEP_ROLE_NAMES
-            and can_touch_role(bot_member, r)
-        ]
+        elif role_id and current_member:  # Ovo je role (<@&id>)
+            role = guild.get_role(int(role_id))
+            if role and role.name.upper().startswith("TEAM "):
+                if role not in current_roles:
+                    current_roles.append(role)
+            else:
+                unknowns.append(f"<@&{role_id}>")
 
-        touchable_assign = [r for r in desired_roles if can_touch_role(bot_member, r)]
+    # Poslednji chatter
+    if current_member and current_roles:
+        await process_chatter(guild, bot_member, current_member, current_roles, 
+                            report, total_rm, total_add, unknowns, apply, interaction.user)
 
-        if not apply:
-            roles_str = ", ".join(r.name for r in touchable_assign) or "—"
-            report.append(f"[{idx}] PREVIEW {member.display_name} → {roles_str}")
-            continue
-
-        try:
-            if old_roles:
-                rem = await safe_remove_roles(member, old_roles, reason=f"schedule by {interaction.user}")
-                total_rm += len(rem)
-            if touchable_assign:
-                add = await safe_add_roles(member, touchable_assign, reason=f"schedule by {interaction.user}")
-                total_add += len(add)
-
-            report.append(f"[{idx}] ✅ {member.display_name} (clean {len(old_roles)} / assign {len(touchable_assign)})")
-        except Exception as e:
-            report.append(f"[{idx}] ❌ {member.display_name} — greška: {e}")
-
+    # Finalni ispis
     header = "SCHEDULE PREVIEW\n" if not apply else f"SCHEDULE APPLY done (removed={total_rm}, added={total_add})\n"
     out = header + "\n".join(report)
 
@@ -1782,6 +1765,35 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
 
     for i in range(0, len(out), 1800):
         await interaction.followup.send(f"```\n{out[i:i+1800]}\n```", ephemeral=True)
+
+
+async def process_chatter(guild, bot_member, member, desired_roles, report, total_rm, total_add, unknowns, apply, author):
+    # CLEAN
+    old_roles = [
+        r for r in member.roles
+        if r.name.upper().startswith("TEAM ")
+        and r.name.upper() not in KEEP_ROLE_NAMES
+        and can_touch_role(bot_member, r)
+    ]
+
+    touchable_assign = [r for r in desired_roles if can_touch_role(bot_member, r)]
+
+    if not apply:
+        roles_str = ", ".join(r.name for r in touchable_assign) or "—"
+        report.append(f"PREVIEW {member.display_name} → {roles_str}")
+        return
+
+    try:
+        if old_roles:
+            rem = await safe_remove_roles(member, old_roles, reason=f"schedule by {author}")
+            total_rm += len(rem)
+        if touchable_assign:
+            add = await safe_add_roles(member, touchable_assign, reason=f"schedule by {author}")
+            total_add += len(add)
+
+        report.append(f"✅ {member.display_name} (clean {len(old_roles)} / assign {len(touchable_assign)})")
+    except Exception as e:
+        report.append(f"❌ {member.display_name} — greška: {e}")
 
 @tree.command(name="sortteamroles", description="Bulk sort TEAM roles", guild=GUILD_OBJ)
 @need_manage_roles()
