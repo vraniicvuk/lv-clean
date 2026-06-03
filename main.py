@@ -2062,6 +2062,72 @@ async def ticket(interaction: discord.Interaction, razlog: str):
     except Exception as e:
         await interaction.followup.send(f"❌ Greška: {e}", ephemeral=True)
 
+    # ========== /close - Zatvara ticket + čuva transcript ==========
+    @tree.command(
+        name="close",
+        description="Zatvori ticket i sačuva transcript",
+        guild=GUILD_OBJ
+    )
+    async def close_ticket(interaction: discord.Interaction):
+        if not interaction.channel.name.startswith("ticket-"):
+            return await interaction.response.send_message(
+                "❌ Ova komanda radi samo unutar ticketa.", 
+                ephemeral=True
+            )
+    
+        await interaction.response.send_message("**Zatvaram ticket i čuvam transcript...**", ephemeral=False)
+    
+        transcript_cat = interaction.guild.get_channel(1504739040706953228)
+    
+        # Čuvanje transcripta
+        if transcript_cat:
+            try:
+                messages = [msg async for msg in interaction.channel.history(limit=1000, oldest_first=True)]
+                transcript_text = f"**Transcript ticketa:** {interaction.channel.name}\n"
+                transcript_text += f"**Vreme zatvaranja:** {discord.utils.utcnow().strftime('%d.%m.%Y %H:%M')}\n"
+                transcript_text += "="*60 + "\n\n"
+    
+                for msg in messages:
+                    time_str = msg.created_at.strftime("%d.%m.%Y %H:%M")
+                    transcript_text += f"[{time_str}] {msg.author.display_name}: {msg.content}\n"
+                    if msg.attachments:
+                        transcript_text += f"   Prilozi: {', '.join([a.url for a in msg.attachments])}\n"
+    
+                transcript_channel = await transcript_cat.create_text_channel(
+                    name=f"transcript-{interaction.channel.name.replace('ticket-', '')}"
+                )
+                await transcript_channel.send(transcript_text)
+            except Exception as e:
+                print(f"Transcript error: {e}")
+    
+        await asyncio.sleep(2)
+        try:
+            await interaction.channel.delete(reason=f"Closed with transcript by {interaction.user}")
+        except:
+            await interaction.followup.send("Ticket zatvoren, ali transcript nije uspeo da se sačuva.", ephemeral=True)
+    
+    
+    # ========== /delete - Potpuno brisanje bez transcripta ==========
+    @tree.command(
+        name="delete",
+        description="Potpuno obriši ticket bez čuvanja transcripta",
+        guild=GUILD_OBJ
+    )
+    async def delete_ticket(interaction: discord.Interaction):
+        if not interaction.channel.name.startswith("ticket-"):
+            return await interaction.response.send_message(
+                "❌ Ova komanda radi samo unutar ticketa.", 
+                ephemeral=True
+            )
+    
+        await interaction.response.send_message("**Brišem ticket zauvek...**", ephemeral=False)
+        await asyncio.sleep(2)
+        
+        try:
+            await interaction.channel.delete(reason=f"Deleted by {interaction.user}")
+        except Exception as e:
+            await interaction.followup.send(f"❌ Greška pri brisanju: {e}", ephemeral=True)
+
 # /newm
 @tree.command(
     name="newm",
