@@ -2094,6 +2094,18 @@ async def new_model(interaction: discord.Interaction, ime: str):
         new_category = await guild.create_category(
             name=category_name
         )
+        team_categories = [
+            c for c in guild.categories
+            if c.name.startswith("TEAM ")
+        ]
+        
+        team_categories.sort(key=lambda c: c.name.upper())
+        
+        for index, category in enumerate(team_categories):
+            try:
+                await category.edit(position=index)
+            except Exception as e:
+                print(f"Greška pri sortiranju kategorije {category.name}: {e}")
         print("CATEGORY CREATED")
 
         # CHANNELS
@@ -2106,6 +2118,17 @@ async def new_model(interaction: discord.Interaction, ime: str):
             "whales"
         )
         print("WHALES CREATED")
+
+        welcome_message = (
+            "Ovo je kanal u koji se upisuju sve bitne stavke vezane za model, spendere, ostale fanove i slično.\n\n"
+            "Ukoliko ste imali farmu, nju upisujete u kanalu **#whales** koristeći komandu `/farm` uz sve adekvatne podatke.\n\n"
+            "Ako vam je potrebno više informacija od onih koje već imate o modelu, obavezno to napišite u grupnom chatu vaše smene na Telegramu.\n\n"
+            "Što se tiče customa – ako nema dovoljno informacija, a fan je mali spender, možete odokativno napraviti pitch za nešto ekskluzivno za određenu sumu.\n\n"
+            "Ne pitati za custome fanove koji su potrošili 0 ili su tek došli.\n\n"
+            "Za sve lične podatke koji nisu navedeni u postojećim informacijama, dozvoljeno je odokativno improvizovati uz upisivanje u notes šta je izmišljeno."
+        )
+
+        await general.send(welcome_message)
 
         # PERMISSIONS
         await new_category.set_permissions(
