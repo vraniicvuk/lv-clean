@@ -2094,18 +2094,20 @@ async def new_model(interaction: discord.Interaction, ime: str):
         new_category = await guild.create_category(
             name=category_name
         )
-        team_categories = [
-            c for c in guild.categories
-            if c.name.startswith("TEAM ")
-        ]
         
-        team_categories.sort(key=lambda c: c.name.upper())
+        team_categories = sorted(
+            [c for c in guild.categories if c.name.startswith("TEAM ")],
+            key=lambda c: c.name.upper()
+        )
         
-        for index, category in enumerate(team_categories):
-            try:
-                await category.edit(position=index)
-            except Exception as e:
-                print(f"Greška pri sortiranju kategorije {category.name}: {e}")
+        for category in team_categories:
+            if category == new_category:
+                continue
+        
+            if category.name.upper() > new_category.name.upper():
+                await new_category.edit(position=category.position)
+                break
+        
         print("CATEGORY CREATED")
 
         # CHANNELS
