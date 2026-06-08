@@ -1762,12 +1762,10 @@ class RatioModal(Modal, title="Ratio Report"):
 async def ratio_command(interaction: discord.Interaction):
     await interaction.response.send_modal(RatioModal())
 
-# ========== NOVA /schedule - Tačna logika po tvom opisu ==========
-
-# ========== NOVA /schedule - Popravljeno parsiranje <@&roleID> ==========
+# ========== /schedule - DIREKTNO PO <@&ROLE ID> ==========
 @tree.command(
     name="schedule",
-    description="Format: <@chatter> <@&role1> <@&role2> <@chatter2> ...",
+    description="Format: <@chatter> <@&roleID1> <@&roleID2> <@chatter2> ...",
     guild=GUILD_OBJ,
 )
 @need_manage_roles()
@@ -1777,20 +1775,12 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
     guild = interaction.guild
     bot_member = guild.me
 
-    # Refresh role index
-    global role_index
-    role_index = {}
-    for r in guild.roles:
-        if r.name.upper().startswith("TEAM "):
-            base = normalize_model_name(r.name[5:])
-            role_index.setdefault(base, []).append(r)
-
     report = []
     total_rm = 0
     total_add = 0
     unknowns = []
 
-    # Parsiranje tokena
+    # Pronalazimo sve mention-e
     tokens = re.findall(r'(<@!?(\d+)>|<@&(\d+)>)', text)
 
     current_member = None
@@ -1813,11 +1803,8 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
         elif role_id and current_member:  # Role <@&ID>
             role = guild.get_role(int(role_id))
             if role:
-                if role.name.upper().startswith("TEAM "):
-                    if role not in current_roles:
-                        current_roles.append(role)
-                else:
-                    unknowns.append(role.name)
+                if role not in current_roles:
+                    current_roles.append(role)
             else:
                 unknowns.append(f"<@&{role_id}>")
 
@@ -1826,12 +1813,11 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
         await process_chatter(guild, bot_member, current_member, current_roles, 
                             report, total_rm, total_add, unknowns, apply, interaction.user)
 
-    # Finalni ispis
     header = "SCHEDULE PREVIEW\n" if not apply else f"SCHEDULE APPLY done (removed={total_rm}, added={total_add})\n"
     out = header + "\n".join(report)
 
     if unknowns:
-        out += "\n\nUNKNOWN ROLES:\n- " + "\n- ".join(sorted(set(unknowns)))
+        out += "\n\nUNKNOWN ROLES (ID not found):\n- " + "\n- ".join(sorted(set(unknowns)))
 
     for i in range(0, len(out), 1800):
         await interaction.followup.send(f"```\n{out[i:i+1800]}\n```", ephemeral=True)
