@@ -493,20 +493,24 @@ async def _before_mm_summary_report():
 
 async def sort_team_roles(guild):
     bot_member = guild.me
-    non_team = [r for r in guild.roles if not r.name.upper().startswith("TEAM ")]
+    non_team = [r for r in guild.roles if not r.name.startswith(">")]
     team = [
-        r
-        for r in guild.roles
-        if r.name.upper().startswith("TEAM ") and r < bot_member.top_role
+        r for r in guild.roles 
+        if r.name.startswith(">") and r < bot_member.top_role
     ]
     team_sorted = sorted(team, key=lambda r: r.name.lower())
-    start_pos = max(r.position for r in non_team)
+
+    start_pos = max((r.position for r in non_team), default=0)
     pos = start_pos + 1
+
     for role in team_sorted:
-        await role.edit(position=pos)
-        pos += 1
-        await asyncio.sleep(0.35)
-    print("TEAM roles sorted")
+        try:
+            await role.edit(position=pos)
+            pos += 1
+            await asyncio.sleep(0.4)
+        except:
+            pass
+    print("Roles sorted by > prefix")
 
 
 async def sort_team_categories(guild):
@@ -541,7 +545,6 @@ async def auto_schedule_task():
                 print(f"[AUTO SCHEDULE] Pokrećem za {shift.upper()} u {h:02d}:{m:02d}")
                 asyncio.create_task(run_auto_schedule(shift))
                 break
-
 
 # ========== RUN AUTO SCHEDULE + BLANKO LISTA ==========
 async def run_auto_schedule(shift: str):
@@ -1292,6 +1295,70 @@ async def clean(interaction: discord.Interaction, user: discord.Member):
             msg.append(f"- {r.name}: {' / '.join(why_blocked(bot_member, r))}")
     await interaction.followup.send("```\n" + "\n".join(msg) + "\n```", ephemeral=True)
 
+# ========== /migrateprefix - Zamena TEAM → > prefix ==========
+@tree.command(
+    name="migrateprefix",
+    description="Jednokratno: menja sve TEAM role u > prefix",
+    guild=GUILD_OBJ
+)
+@need_manage_roles()
+async def migrate_prefix(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    guild = interaction.guild
+    bot_member = guild.me
+
+    # Pronalazimo sve TEAM role
+    team_roles = [
+        r for r in guild.roles 
+        if r.name.upper().startswith("TEAM ") 
+        and r < bot_member.top_role 
+        and not r.managed
+    ]
+
+    if not team_roles:
+        return await interaction.followup.send("❌ Nisam pronašao nijednu TEAM rolu.", ephemeral=True)
+
+    await interaction.followup.send(
+        f"🔄 Počinjem migraciju **{len(team_roles)}** rola...\n"
+        "Ovo može potrajati. Ne zatvaraj Discord.",
+        ephemeral=True
+    )
+
+    success = 0
+    errors = []
+
+    for role in team_roles:
+        try:
+            old_name = role.name
+            new_name = ">" + old_name[5:].strip()  # TEAM XXX → >XXX
+
+            if new_name == old_name:
+                continue
+
+            await role.edit(name=new_name, reason=f"Migrate prefix by {interaction.user}")
+            success += 1
+            print(f"✅ {old_name} → {new_name}")
+            await asyncio.sleep(1.2)  # da ne bi rate limit
+
+        except discord.Forbidden:
+            errors.append(f"❌ Nema permisiju za: {role.name}")
+        except Exception as e:
+            errors.append(f"❌ Greška kod {role.name}: {e}")
+
+    # Završni izveštaj
+    embed = discord.Embed(
+        title="✅ Migracija prefixa završena",
+        color=0x00ff88
+    )
+    embed.add_field(name="Uspešno promenjeno", value=f"{success}/{len(team_roles)} rola", inline=False)
+
+    if errors:
+        embed.add_field(name="Greške", value="\n".join(errors[:15]), inline=False)  # max 15 grešaka
+
+    embed.set_footer(text=f"Izvršio: {interaction.user}")
+
+    await interaction.followup.send(embed=embed)
 
 @tree.command(
     name="a", description="batch assign: @u1 @r1 @r2 ; @u2 @r3 ...", guild=GUILD_OBJ
@@ -2142,7 +2209,7 @@ async def new_model(interaction: discord.Interaction, ime: str):
     guild = interaction.guild
 
     model_name = ime.strip().upper()
-    role_name = f"TEAM {model_name}"
+    role_name = f"> {model_name}"
     category_name = f"TEAM {model_name}"
 
     try:
