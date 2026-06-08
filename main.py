@@ -1763,9 +1763,11 @@ async def ratio_command(interaction: discord.Interaction):
     await interaction.response.send_modal(RatioModal())
 
 # ========== NOVA /schedule - Tačna logika po tvom opisu ==========
+
+# ========== NOVA /schedule - Popravljeno parsiranje <@&roleID> ==========
 @tree.command(
     name="schedule",
-    description="Format: <@chatter> <@&role1> <@&role2> <@chatter2> <@&role3> ...",
+    description="Format: <@chatter> <@&role1> <@&role2> <@chatter2> ...",
     guild=GUILD_OBJ,
 )
 @need_manage_roles()
@@ -1788,20 +1790,18 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
     total_add = 0
     unknowns = []
 
-    # Pronalazimo sve mention-e redom
+    # Parsiranje tokena
     tokens = re.findall(r'(<@!?(\d+)>|<@&(\d+)>)', text)
 
     current_member = None
     current_roles = []
 
     for full, user_id, role_id in tokens:
-        if user_id:  # Ovo je chatter (@id)
-            # Ako je postojao prethodni chatter → obradi ga
+        if user_id:  # Chatter
             if current_member and current_roles:
                 await process_chatter(guild, bot_member, current_member, current_roles, 
                                     report, total_rm, total_add, unknowns, apply, interaction.user)
 
-            # Novi chatter
             member = guild.get_member(int(user_id))
             if member:
                 current_member = member
@@ -1810,11 +1810,14 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
                 report.append(f"❌ Chatter nije nađen: <@{user_id}>")
                 current_member = None
 
-        elif role_id and current_member:  # Ovo je role (<@&id>)
+        elif role_id and current_member:  # Role <@&ID>
             role = guild.get_role(int(role_id))
-            if role and role.name.upper().startswith("TEAM "):
-                if role not in current_roles:
-                    current_roles.append(role)
+            if role:
+                if role.name.upper().startswith("TEAM "):
+                    if role not in current_roles:
+                        current_roles.append(role)
+                else:
+                    unknowns.append(role.name)
             else:
                 unknowns.append(f"<@&{role_id}>")
 
@@ -1835,7 +1838,6 @@ async def schedule(interaction: discord.Interaction, text: str, apply: bool = Fa
 
 
 async def process_chatter(guild, bot_member, member, desired_roles, report, total_rm, total_add, unknowns, apply, author):
-    # CLEAN
     old_roles = [
         r for r in member.roles
         if r.name.upper().startswith("TEAM ")
