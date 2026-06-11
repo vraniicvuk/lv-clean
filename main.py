@@ -546,14 +546,93 @@ async def auto_schedule_task():
                 asyncio.create_task(run_auto_schedule(shift))
                 break
 
-# ========== RUN AUTO SCHEDULE + BLANKO LISTA ==========
+# ========== UPDATED apply_schedule_logic + run_auto_schedule (ista logika kao /schedule) ==========
+async def apply_schedule_logic(guild, text: str):
+    bot_member = guild.me
+
+    global role_index
+    role_index = {}
+    for r in guild.roles:
+        if r.name.upper().startswith("TEAM "):
+            base = normalize_model_name(r.name[5:])
+            role_index.setdefault(base, []).append(r)
+
+    report_lines = []
+    total_rm = 0
+    total_add = 0
+    unknowns = []
+
+    tokens = re.findall(r'(<@!?(\d+)>|<@&(\d+)>)', text)
+
+    current_member = None
+    current_roles = []
+
+    for full, user_id, role_id in tokens:
+        if user_id:  # Novi chatter
+            if current_member and current_roles:
+                await process_chatter(guild, bot_member, current_member, current_roles, 
+                                    report_lines, total_rm, total_add, unknowns)
+
+            member = guild.get_member(int(user_id))
+            if member:
+                current_member = member
+                current_roles = []
+            else:
+                report_lines.append(f"❌ Chatter nije nađen: <@{user_id}>")
+                current_member = None
+
+        elif role_id and current_member:  # Role
+            role = guild.get_role(int(role_id))
+            if role:
+                if role not in current_roles:
+                    current_roles.append(role)
+            else:
+                unknowns.append(f"<@&{role_id}>")
+
+    if current_member and current_roles:
+        await process_chatter(guild, bot_member, current_member, current_roles, 
+                            report_lines, total_rm, total_add, unknowns)
+
+    print(f"SCHEDULE APPLY done (removed={total_rm}, added={total_add})")
+    if unknowns:
+        print("UNKNOWN ROLES:")
+        for u in sorted(set(unknowns)):
+            print(f"- {u}")
+
+    return len([m for m in guild.members if any(r.name.upper().startswith("TEAM ") for r in m.roles)])  # approximate count
+
+
+async def process_chatter(guild, bot_member, member, desired_roles, report_lines, total_rm, total_add, unknowns):
+    old_roles = [
+        r for r in member.roles
+        if r.name.upper().startswith("TEAM ")
+        and r.name.upper() not in KEEP_ROLE_NAMES
+        and can_touch_role(bot_member, r)
+    ]
+
+    touchable_assign = [r for r in desired_roles if can_touch_role(bot_member, r)]
+
+    try:
+        if old_roles:
+            rem = await safe_remove_roles(member, old_roles, reason="auto schedule clean")
+            total_rm += len(rem)
+        if touchable_assign:
+            add = await safe_add_roles(member, touchable_assign, reason="auto schedule assign")
+            total_add += len(add)
+
+        report_lines.append(f"✅ {member.display_name} (clean {len(old_roles)} / assign {len(touchable_assign)})")
+    except Exception as e:
+        report_lines.append(f"❌ {member.display_name} — greška: {e}")
+
+
+# ========== RUN AUTO SCHEDULE ==========
 async def run_auto_schedule(shift: str):
     guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
     if not guild:
         return
 
     channel = bot.get_channel(SCHEDULE_CHANNEL.get(shift))
-    mgmt_channel = bot.get_channel(1498220907775262750)  # tvoj management kanal
+    mgmt_channel = bot.get_channel(1498220907775262750)
 
     if not channel or not mgmt_channel:
         return
@@ -575,30 +654,25 @@ async def run_auto_schedule(shift: str):
         schedule_text = schedule_msg.content.strip()
         print(f"[AUTO SCHEDULE] Pronađen raspored za {shift} → primenjujem...")
 
+        # === TEST ISPIS U MANAGEMENT KANAL ===
+        await mgmt_channel.send(f"🔧 **TEST AUTO SCHEDULE** za **{shift.upper()}** pokrenut u {discord.utils.utcnow().strftime('%H:%M:%S')}")
+
         chatter_count = await apply_schedule_logic(guild, schedule_text)
 
-        # === Glavna poruka u general kanal (kao i ranije) ===
+        # Glavna poruka u general kanal
         role_id = {"grave": GRAVE_ROLE_ID, "after": AFTER_ROLE_ID, "main": MAIN_ROLE_ID}.get(shift)
         role_mention = f"<@&{role_id}> " if role_id else ""
 
         final_message = f"""{role_mention}**Role za modele koje imate na rasporedu su vam dodeljene** (dodeljeno za **{chatter_count}** chattera).
 
-Ukoliko vam fali role za nekog modela, molim vas da se obratite direktno nekome iz tima, i nakon provere rola da se clock inujete na Telegram kanalu vaše smene u formatu **!ci model1/model2/itd.** kako bi tim znao da ste aktivni.
-
-**Potrebno dostavljati ratios** za sledeće kreatorke na kraju smene dok se ne navrši period pumpe:  
-**Chloe igtvn, Paige, Brenda, Rebeca, Rachel, Elena, mad maddie 2 c, michelle**.
-
-Na svim kreatorkama **sve masseve po ulasku u smenu unsend**. Na svim OFTV modelima **STROGO** zabranjeno slati sexual mms, to su: milakoi oftv x jsn, jenny eep, eva oftv eep x, Eva lil OFTV. Primeri sexual poruka: https://discord.com/channels/1264855599812968562/1456337665271267462/1486293220886315009  
-Massevi su SCHEDULOVANI na tracy i unwanted. Ako se ne pošalje u prvih sat, pišite privatno nekome iz management tima."""
+Ukoliko vam fali role za nekog modela, molim vas da se obratite direktno nekome iz tima..."""
 
         await channel.send(final_message)
 
-        # === NOVA BLANKO LISTA ZA COPY (u management kanal) ===
-        # Parsiramo chatter-e iz rasporeda
+        # Blanko lista
         text = schedule_text
         pattern = re.compile(r'(@[\.\w]+|<\@!?\d+>)(.*?)((?=@[\.\w]+|<\@!?\d+>)|$)', re.S)
         blocks = pattern.findall(text)
-
         chatter_names = []
         for first_user, content, _ in blocks:
             assignees = re.findall(r'(@[\.\w]+|<\@!?\d+>)', first_user + content)
@@ -610,177 +684,16 @@ Massevi su SCHEDULOVANI na tracy i unwanted. Ako se ne pošalje u prvih sat, pi�
         unique_names = list(dict.fromkeys(chatter_names))
         blanko_lista = ", ".join(unique_names)
 
-        await mgmt_channel.send(
-            f"!check {blanko_lista}"
-        )
+        await mgmt_channel.send(f"!check {blanko_lista}")
+
+        # Dodatni test info
+        await mgmt_channel.send(f"✅ Auto Schedule završen za **{shift.upper()}** | Chattera: **{len(unique_names)}**")
 
         print(f"[AUTO SCHEDULE] Uspešno završeno za {shift.upper()} ({len(unique_names)} chattera)")
 
     except Exception as e:
         print(f"[AUTO SCHEDULE] Greška za {shift}: {e}")
         await channel.send(f"❌ Greška u auto schedule za {shift.upper()}: {e}")
-
-def parse_schedule_text(text: str):
-
-    results = []
-
-    for raw_line in text.splitlines():
-
-        line = raw_line.strip()
-
-        if not line:
-            continue
-
-        parts = [
-            p.strip()
-            for p in re.split(r"\s*/\s*", line)
-            if p.strip()
-        ]
-
-        chatters = []
-        models = []
-
-        model_started = False
-
-        for part in parts:
-
-            # chatter segment
-            if (
-                not model_started
-                and (
-                    part.startswith("@")
-                    or re.match(r"<@!?\d+>", part)
-                )
-            ):
-                chatters.append(part)
-
-            else:
-                model_started = True
-                models.append(part)
-
-        results.append((chatters, models))
-
-    return results
-
-async def apply_schedule_logic(guild, text: str):
-
-    bot_member = guild.me
-
-    global role_index
-    role_index = {}
-
-    for r in guild.roles:
-        if r.name.lower().startswith("team "):
-            base = normalize_model_name(r.name[5:])
-            role_index.setdefault(base, []).append(r)
-
-    parsed = parse_schedule_text(text)
-
-    desired_map = {}
-    unknown_models = set()
-
-    # =========================
-    # BUILD DESIRED ROLE MAP
-    # =========================
-
-    for idx, (chatter_tokens, model_tokens) in enumerate(parsed, start=1):
-
-        desired_roles = []
-
-        for model in model_tokens:
-
-            role = role_from_phrase(guild, model)
-
-            if role and can_touch_role(bot_member, role):
-                desired_roles.append(role)
-            else:
-                unknown_models.add(model)
-
-        for chatter_token in chatter_tokens:
-
-            member = member_from_token(guild, chatter_token)
-
-            if not member:
-                print(f"[SCHEDULE] member not found: {chatter_token}")
-                continue
-
-            if member.id not in desired_map:
-                desired_map[member.id] = set()
-
-            desired_map[member.id].update(desired_roles)
-
-    removed_total = 0
-    added_total = 0
-
-    print("\nSCHEDULE APPLY START\n")
-
-    # =========================
-    # CLEAN + ASSIGN
-    # =========================
-
-    for member_id, desired_roles in desired_map.items():
-
-        member = guild.get_member(member_id)
-
-        if not member:
-            continue
-
-        removable = [
-            r for r in member.roles
-            if (
-                r.name.upper().startswith("TEAM ")
-                and r.name.upper() not in KEEP_ROLE_NAMES
-                and can_touch_role(bot_member, r)
-            )
-        ]
-
-        removed_count = 0
-        added_count = 0
-
-        # CLEAN
-        if removable:
-
-            await safe_remove_roles(
-                member,
-                removable,
-                reason="schedule clean"
-            )
-
-            removed_count = len(removable)
-            removed_total += removed_count
-
-        # ASSIGN
-        desired_roles = list(desired_roles)
-
-        if desired_roles:
-
-            await safe_add_roles(
-                member,
-                desired_roles,
-                reason="schedule assign"
-            )
-
-            added_count = len(desired_roles)
-            added_total += added_count
-
-        print(
-            f"✅ {member.display_name} "
-            f"(clean {removed_count} / assign {added_count})"
-        )
-
-    print(
-        f"\nSCHEDULE APPLY done "
-        f"(removed={removed_total}, added={added_total})"
-    )
-
-    if unknown_models:
-
-        print("\nUNKNOWN MODELS:")
-
-        for m in sorted(unknown_models):
-            print(f"- {m}")
-
-    return len(desired_map)
 
 # ====== AI/FU HELPERI ======
 def _sanitize_mm_text(s: str) -> str:
