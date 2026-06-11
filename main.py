@@ -546,7 +546,7 @@ async def auto_schedule_task():
                 asyncio.create_task(run_auto_schedule(shift))
                 break
 
-# ========== UPDATED apply_schedule_logic + run_auto_schedule (ista logika kao /schedule) ==========
+# ========== apply_schedule_logic - IDENTIČNA LOGIKA KAO /schedule ==========
 async def apply_schedule_logic(guild, text: str):
     bot_member = guild.me
 
@@ -557,7 +557,6 @@ async def apply_schedule_logic(guild, text: str):
             base = normalize_model_name(r.name[5:])
             role_index.setdefault(base, []).append(r)
 
-    report_lines = []
     total_rm = 0
     total_add = 0
     unknowns = []
@@ -570,18 +569,17 @@ async def apply_schedule_logic(guild, text: str):
     for full, user_id, role_id in tokens:
         if user_id:  # Novi chatter
             if current_member and current_roles:
-                await process_chatter(guild, bot_member, current_member, current_roles, 
-                                    report_lines, total_rm, total_add, unknowns)
+                await process_chatter_auto(guild, bot_member, current_member, current_roles, total_rm, total_add)
 
             member = guild.get_member(int(user_id))
             if member:
                 current_member = member
                 current_roles = []
             else:
-                report_lines.append(f"❌ Chatter nije nađen: <@{user_id}>")
+                print(f"❌ Chatter nije nađen: <@{user_id}>")
                 current_member = None
 
-        elif role_id and current_member:  # Role
+        elif role_id and current_member:  # Role <@&ID>
             role = guild.get_role(int(role_id))
             if role:
                 if role not in current_roles:
@@ -589,9 +587,9 @@ async def apply_schedule_logic(guild, text: str):
             else:
                 unknowns.append(f"<@&{role_id}>")
 
+    # Poslednji chatter
     if current_member and current_roles:
-        await process_chatter(guild, bot_member, current_member, current_roles, 
-                            report_lines, total_rm, total_add, unknowns)
+        await process_chatter_auto(guild, bot_member, current_member, current_roles, total_rm, total_add)
 
     print(f"SCHEDULE APPLY done (removed={total_rm}, added={total_add})")
     if unknowns:
@@ -602,7 +600,8 @@ async def apply_schedule_logic(guild, text: str):
     return len([m for m in guild.members if any(r.name.upper().startswith("TEAM ") for r in m.roles)])  # approximate count
 
 
-async def process_chatter(guild, bot_member, member, desired_roles, report_lines, total_rm, total_add, unknowns):
+async def process_chatter_auto(guild, bot_member, member, desired_roles, total_rm, total_add):
+    # AGRESIVNI CLEAN - briše sve TEAM role osim KEEP
     old_roles = [
         r for r in member.roles
         if r.name.upper().startswith("TEAM ")
@@ -620,80 +619,9 @@ async def process_chatter(guild, bot_member, member, desired_roles, report_lines
             add = await safe_add_roles(member, touchable_assign, reason="auto schedule assign")
             total_add += len(add)
 
-        report_lines.append(f"✅ {member.display_name} (clean {len(old_roles)} / assign {len(touchable_assign)})")
+        print(f"✅ {member.display_name} (clean {len(old_roles)} / assign {len(touchable_assign)})")
     except Exception as e:
-        report_lines.append(f"❌ {member.display_name} — greška: {e}")
-
-
-# ========== RUN AUTO SCHEDULE ==========
-async def run_auto_schedule(shift: str):
-    guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
-    if not guild:
-        return
-
-    channel = bot.get_channel(SCHEDULE_CHANNEL.get(shift))
-    mgmt_channel = bot.get_channel(1498220907775262750)
-
-    if not channel or not mgmt_channel:
-        return
-
-    try:
-        messages = [msg async for msg in channel.history(limit=50)]
-        schedule_msg = None
-        for msg in messages:
-            if "@" in msg.content and any(x in msg.content for x in [":", "/", ","]):
-                age = (_local_now() - msg.created_at.replace(tzinfo=ZoneInfo("Europe/Belgrade"))).total_seconds()
-                if age < 86400:
-                    schedule_msg = msg
-                    break
-
-        if not schedule_msg:
-            await channel.send(f"⚠️ Auto Schedule za **{shift.upper()}**: Nije pronađen validan raspored.")
-            return
-
-        schedule_text = schedule_msg.content.strip()
-        print(f"[AUTO SCHEDULE] Pronađen raspored za {shift} → primenjujem...")
-
-        # === TEST ISPIS U MANAGEMENT KANAL ===
-        await mgmt_channel.send(f"🔧 **TEST AUTO SCHEDULE** za **{shift.upper()}** pokrenut u {discord.utils.utcnow().strftime('%H:%M:%S')}")
-
-        chatter_count = await apply_schedule_logic(guild, schedule_text)
-
-        # Glavna poruka u general kanal
-        role_id = {"grave": GRAVE_ROLE_ID, "after": AFTER_ROLE_ID, "main": MAIN_ROLE_ID}.get(shift)
-        role_mention = f"<@&{role_id}> " if role_id else ""
-
-        final_message = f"""{role_mention}**Role za modele koje imate na rasporedu su vam dodeljene** (dodeljeno za **{chatter_count}** chattera).
-
-Ukoliko vam fali role za nekog modela, molim vas da se obratite direktno nekome iz tima..."""
-
-        await channel.send(final_message)
-
-        # Blanko lista
-        text = schedule_text
-        pattern = re.compile(r'(@[\.\w]+|<\@!?\d+>)(.*?)((?=@[\.\w]+|<\@!?\d+>)|$)', re.S)
-        blocks = pattern.findall(text)
-        chatter_names = []
-        for first_user, content, _ in blocks:
-            assignees = re.findall(r'(@[\.\w]+|<\@!?\d+>)', first_user + content)
-            for token in assignees:
-                member = member_from_token(guild, token)
-                name = member.display_name if member else token
-                chatter_names.append(name)
-
-        unique_names = list(dict.fromkeys(chatter_names))
-        blanko_lista = ", ".join(unique_names)
-
-        await mgmt_channel.send(f"!check {blanko_lista}")
-
-        # Dodatni test info
-        await mgmt_channel.send(f"✅ Auto Schedule završen za **{shift.upper()}** | Chattera: **{len(unique_names)}**")
-
-        print(f"[AUTO SCHEDULE] Uspešno završeno za {shift.upper()} ({len(unique_names)} chattera)")
-
-    except Exception as e:
-        print(f"[AUTO SCHEDULE] Greška za {shift}: {e}")
-        await channel.send(f"❌ Greška u auto schedule za {shift.upper()}: {e}")
+        print(f"❌ {member.display_name} — greška: {e}")
 
 # ====== AI/FU HELPERI ======
 def _sanitize_mm_text(s: str) -> str:
