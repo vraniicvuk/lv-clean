@@ -633,6 +633,10 @@ async def apply_schedule_logic(guild, text: str):
     for full, user_id, role_id in tokens:
         if user_id:  # Novi chatter
             if current_member and current_roles:
+                print(
+                    f"PROCESSING {current_member.display_name} "
+                    f"WITH {len(current_roles)} ROLES"
+                )
                 await process_chatter_auto(guild, bot_member, current_member, current_roles, total_rm, total_add)
 
             member = guild.get_member(int(user_id))
@@ -652,6 +656,10 @@ async def apply_schedule_logic(guild, text: str):
                 unknowns.append(f"<@&{role_id}>")
 
     if current_member and current_roles:
+        print(
+            f"PROCESSING {current_member.display_name} "
+            f"WITH {len(current_roles)} ROLES"
+        )
         await process_chatter_auto(guild, bot_member, current_member, current_roles, total_rm, total_add)
 
     print(f"SCHEDULE APPLY done (removed={total_rm}, added={total_add})")
@@ -664,14 +672,18 @@ async def apply_schedule_logic(guild, text: str):
 
 
 async def process_chatter_auto(guild, bot_member, member, desired_roles, total_rm, total_add):
+    print(f"MEMBER: {member.display_name}")
+    print(f"DESIRED ROLES: {[r.name for r in desired_roles]}")
     old_roles = [
         r for r in member.roles
         if r.name.upper().startswith("TEAM ")
         and r.name.upper() not in KEEP_ROLE_NAMES
         and can_touch_role(bot_member, r)
     ]
-
+    
     touchable_assign = [r for r in desired_roles if can_touch_role(bot_member, r)]
+
+    print(f"TOUCHABLE ROLES: {[r.name for r in touchable_assign]}")
 
     try:
         if old_roles:
