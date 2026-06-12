@@ -546,7 +546,7 @@ async def auto_schedule_task():
                 break
 
 
-# ========== RUN AUTO SCHEDULE (koristi istu logiku kao /schedule) ==========
+# ========== RUN AUTO SCHEDULE ==========
 async def run_auto_schedule(shift: str):
     guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
     if not guild:
@@ -575,7 +575,6 @@ async def run_auto_schedule(shift: str):
         schedule_text = schedule_msg.content.strip()
         print(f"[AUTO SCHEDULE] Pronađen raspored za {shift} → primenjujem...")
 
-        # Koristimo istu logiku kao /schedule
         chatter_count = await apply_schedule_logic(guild, schedule_text)
 
         role_id = {"grave": GRAVE_ROLE_ID, "after": AFTER_ROLE_ID, "main": MAIN_ROLE_ID}.get(shift)
@@ -604,11 +603,87 @@ Ukoliko vam fali role za nekog modela, molim vas da se obratite direktno nekome 
 
         await mgmt_channel.send(f"!check {blanko_lista}")
 
-        print(f"[AUTO SCHEDULE] Uspešno završeno za {shift.upper()}")
+        print(f"[AUTO SCHEDULE] Uspešno završeno za {shift.upper()} ({len(unique_names)} chattera)")
 
     except Exception as e:
         print(f"[AUTO SCHEDULE] Greška za {shift}: {e}")
         await channel.send(f"❌ Greška u auto schedule za {shift.upper()}: {e}")
+
+
+# ========== IDENTIČNA LOGIKA KAO /schedule ==========
+async def apply_schedule_logic(guild, text: str):
+    bot_member = guild.me
+
+    global role_index
+    role_index = {}
+    for r in guild.roles:
+        if r.name.upper().startswith("TEAM "):
+            base = normalize_model_name(r.name[5:])
+            role_index.setdefault(base, []).append(r)
+
+    total_rm = 0
+    total_add = 0
+    unknowns = []
+
+    tokens = re.findall(r'(<@!?(\d+)>|<@&(\d+)>)', text)
+
+    current_member = None
+    current_roles = []
+
+    for full, user_id, role_id in tokens:
+        if user_id:  # Novi chatter
+            if current_member and current_roles:
+                await process_chatter_auto(guild, bot_member, current_member, current_roles, total_rm, total_add)
+
+            member = guild.get_member(int(user_id))
+            if member:
+                current_member = member
+                current_roles = []
+            else:
+                print(f"❌ Chatter nije nađen: <@{user_id}>")
+                current_member = None
+
+        elif role_id and current_member:  # Role <@&ID>
+            role = guild.get_role(int(role_id))
+            if role:
+                if role not in current_roles:
+                    current_roles.append(role)
+            else:
+                unknowns.append(f"<@&{role_id}>")
+
+    if current_member and current_roles:
+        await process_chatter_auto(guild, bot_member, current_member, current_roles, total_rm, total_add)
+
+    print(f"SCHEDULE APPLY done (removed={total_rm}, added={total_add})")
+    if unknowns:
+        print("UNKNOWN ROLES:")
+        for u in sorted(set(unknowns)):
+            print(f"- {u}")
+
+    return len([m for m in guild.members if any(r.name.upper().startswith("TEAM ") for r in m.roles)])
+
+
+async def process_chatter_auto(guild, bot_member, member, desired_roles, total_rm, total_add):
+    old_roles = [
+        r for r in member.roles
+        if r.name.upper().startswith("TEAM ")
+        and r.name.upper() not in KEEP_ROLE_NAMES
+        and can_touch_role(bot_member, r)
+    ]
+
+    touchable_assign = [r for r in desired_roles if can_touch_role(bot_member, r)]
+
+    try:
+        if old_roles:
+            rem = await safe_remove_roles(member, old_roles, reason="auto schedule clean")
+            total_rm += len(rem)
+        if touchable_assign:
+            add = await safe_add_roles(member, touchable_assign, reason="auto schedule assign")
+            total_add += len(add)
+
+        print(f"✅ {member.display_name} (clean {len(old_roles)} / assign {len(touchable_assign)})")
+    except Exception as e:
+        print(f"❌ {member.display_name} — greška: {e}")
 
 
 # ========== IDENTIČNA LOGIKA KAO /schedule ==========
