@@ -1160,6 +1160,66 @@ async def assign(interaction: discord.Interaction, user: discord.Member, roles: 
     except Exception as e:
         await interaction.followup.send(f"fail: {e}", ephemeral=True)
 
+# ========== /dcat - BRISANJE KANALA + KATEGORIJE ==========
+@tree.command(
+    name="dcat",
+    description="Briše trenutni kanal + celu kategoriju u kojoj se nalazi (OPREZNO!)",
+    guild=GUILD_OBJ
+)
+@need_manage_channels()  # ili @need_admin() ako imaš tu dekorator
+async def dcat(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    channel = interaction.channel
+    if not channel:
+        await interaction.followup.send("❌ Nije moguće dohvatiti kanal.", ephemeral=True)
+        return
+
+    category = channel.category
+    if not category:
+        await interaction.followup.send("❌ Ovaj kanal nije u kategoriji.", ephemeral=True)
+        return
+
+    channel_name = channel.name
+    category_name = category.name
+    channel_count = len(category.channels)
+
+    try:
+        # Prvo šaljemo potvrdu
+        await interaction.followup.send(
+            f"🗑 **Brišem kanal** `{channel_name}`\n"
+            f"📁 **I kategoriju** `{category_name}` (ima {channel_count} kanala)\n\n"
+            f"**Ovo se ne može vratiti!** Potvrdi sa `da` ako si siguran.",
+            ephemeral=True
+        )
+
+        # Čekamo potvrdu od korisnika (30 sekundi)
+        def check(msg):
+            return msg.author == interaction.user and msg.channel == interaction.channel and msg.content.lower() in ["da", "yes", "ok"]
+
+        try:
+            msg = await bot.wait_for('message', check=check, timeout=30.0)
+        except asyncio.TimeoutError:
+            await interaction.followup.send("⏰ Vreme je isteklo. Ništa nije obrisano.", ephemeral=True)
+            return
+
+        # Brisanje
+        await channel.delete(reason=f"dcat by {interaction.user}")
+        await asyncio.sleep(1)  # malo pauze
+
+        await category.delete(reason=f"dcat by {interaction.user}")
+
+        await interaction.followup.send(
+            f"✅ **Uspešno obrisano!**\n"
+            f"Kanal: `{channel_name}`\n"
+            f"Kategorija: `{category_name}`",
+            ephemeral=True
+        )
+
+    except discord.Forbidden:
+        await interaction.followup.send("❌ Nemam dozvolu da brišem kanale/kategorije.", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Greška: {e}", ephemeral=True)
 
 @tree.command(description="skini konkretne role sa usera", guild=GUILD_OBJ)
 @need_manage_roles()
