@@ -142,177 +142,177 @@ async def generate_fus_offline(mm_line: str) -> list[str]:
     return lines[:4]
 
 
-# ============ MASS REMINDERI + !mm LOGIKA ============
-GRAVE_GENERAL_CHANNEL_ID = 1364850505234518067  # #graveyard
-AFTER_GENERAL_CHANNEL_ID = 1364850574205648967  # #afternoon
-MAIN_GENERAL_CHANNEL_ID = 1364850795215982634  # #main
-GRAVE_ROLE_ID = 1410962300554313870  # @graveyard
-AFTER_ROLE_ID = 1410962344124612710  # @afternoon
-MAIN_ROLE_ID = 1410962407454675047  # @main
-# Kanal u koji se šalje raspored za svaku smenu
-SCHEDULE_CHANNEL = {
-    "grave": 1364850505234518067,  # graveyard
-    "after": 1364850574205648967,  # afternoon
-    "main": 1364850795215982634,  # main
-}
-SUPERVISOR_IDS = [
-    886983698321391667,  # ti
-    923657835164889119,  # drugi supervizor
-]
-# koliko cekamo posle DRUGOG generala
-SHIFT_FOLLOW_DELAY_MIN = {
-    "grave": 30,
-    "after": 30,
-    "main": 60,
-}
-# vreme PRVOG generala po smeni
-SHIFT_FIRST_TIME = {
-    "grave": time(10, 0),
-    "after": time(18, 0),
-    "main": time(2, 0),
-}
-# cuvamo kad je zaista poslat prvi general (UTC)
-shift_first_sent_at = {
-    "grave": None,
-    "after": None,
-    "main": None,
-}
-# poslednji !mm po kanalu
-mm_last_time: dict[int, datetime] = {}  # channel_id -> datetime
-# raspored svih general poruka (sa opomenama i penalima)
-SCHEDULE = [
-    # ---------- GRAVE ----------
-    {
-        "time": time(10, 0),
-        "channel_id": GRAVE_GENERAL_CHANNEL_ID,
-        "text": f"<@&{GRAVE_ROLE_ID}> molim da mass bude poslat najkasnije do 11:30.\nU slučaju neispunjavanja obaveze, sledi opomena. Ukoliko se prekršaj ponovi, ide penal od 50$.",
-        "shift": "grave",
-        "kind": "first",
-    },
-    {
-        "time": time(11, 0),
-        "channel_id": GRAVE_GENERAL_CHANNEL_ID,
-        "text": f"<@&{GRAVE_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.\nNeispunjavanje obaveze rezultira opomenom, a ponavljanje prekršaja penalom od 50$.",
-        "shift": "grave",
-        "kind": "second",
-    },
-    {
-        "time": time(11, 30),
-        "channel_id": GRAVE_GENERAL_CHANNEL_ID,
-        "text": f"<@&{GRAVE_ROLE_ID}> molim da proverite da li nekom modelu nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.\nUkoliko mass i dalje nije poslat, sledi opomena, a pri ponavljanju prekršaja penal od 50$.",
-        "shift": None,
-        "kind": None,
-    },
-    {
-        "time": time(14, 0),
-        "channel_id": GRAVE_GENERAL_CHANNEL_ID,
-        "text": f"<@&{GRAVE_ROLE_ID}> ukoliko drugi mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.\nNeispunjavanje obaveze rezultira opomenom, a ponavljanje prekršaja penalom od 50$.",
-        "shift": None,
-        "kind": None,
-    },
-    {
-        "time": time(14, 30),
-        "channel_id": GRAVE_GENERAL_CHANNEL_ID,
-        "text": f"<@&{GRAVE_ROLE_ID}> molim da proverite da li nekom modelu nedostaje drugi mass; ukoliko nedostaje, pošaljite ga odmah.\nUkoliko mass i dalje nije poslat, sledi opomena, a pri ponavljanju prekršaja penal od 50$.",
-        "shift": None,
-        "kind": None,
-    },
-    # ---------- AFTERNOON ----------
-    {
-        "time": time(18, 0),
-        "channel_id": AFTER_GENERAL_CHANNEL_ID,
-        "text": f"<@&{AFTER_ROLE_ID}> molim da mass bude poslat najkasnije do 19:30.\nU slučaju neispunjavanja obaveze, sledi opomena. Ukoliko se prekršaj ponovi, ide penal od 50$.",
-        "shift": "after",
-        "kind": "first",
-    },
-    {
-        "time": time(19, 0),
-        "channel_id": AFTER_GENERAL_CHANNEL_ID,
-        "text": f"<@&{AFTER_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.\nNeispunjavanje obaveze rezultira opomenom, a ponavljanje prekršaja penalom od 50$.",
-        "shift": "after",
-        "kind": "second",
-    },
-    {
-        "time": time(19, 30),
-        "channel_id": AFTER_GENERAL_CHANNEL_ID,
-        "text": f"<@&{AFTER_ROLE_ID}> molim da proverite da li nekom modelu nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.\nUkoliko mass i dalje nije poslat, sledi opomena, a pri ponavljanju prekršaja penal od 50$.",
-        "shift": None,
-        "kind": None,
-    },
-    {
-        "time": time(22, 0),
-        "channel_id": AFTER_GENERAL_CHANNEL_ID,
-        "text": f"<@&{AFTER_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.\nNeispunjavanje obaveze rezultira opomenom, a ponavljanje prekršaja penalom od 50$.",
-        "shift": "after",
-        "kind": "second",
-    },
-    {
-        "time": time(22, 30),
-        "channel_id": AFTER_GENERAL_CHANNEL_ID,
-        "text": f"<@&{AFTER_ROLE_ID}> molim da proverite da li nekom modelu i dalje nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.\nUkoliko mass i dalje nije poslat, sledi opomena, a pri ponavljanju prekršaja penal od 50$.",
-        "shift": None,
-        "kind": None,
-    },
-    # ---------- MAIN ----------
-    {
-        "time": time(2, 0),
-        "channel_id": MAIN_GENERAL_CHANNEL_ID,
-        "text": f"<@&{MAIN_ROLE_ID}> molim da mass bude poslat najkasnije do 4:00.\nU slučaju neispunjavanja obaveze, sledi opomena. Ukoliko se prekršaj ponovi, ide penal od 50$.",
-        "shift": "main",
-        "kind": "first",
-    },
-    {
-        "time": time(3, 0),
-        "channel_id": MAIN_GENERAL_CHANNEL_ID,
-        "text": f"<@&{MAIN_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih sat vremena.\nNeispunjavanje obaveze rezultira opomenom, a ponavljanje prekršaja penalom od 50$.",
-        "shift": "main",
-        "kind": "second",
-    },
-    {
-        "time": time(4, 0),
-        "channel_id": MAIN_GENERAL_CHANNEL_ID,
-        "text": f"<@&{MAIN_ROLE_ID}> molim da proverite da li nekom modelu nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.\nUkoliko mass i dalje nije poslat, sledi opomena, a pri ponavljanju prekršaja penal od 50$.",
-        "shift": None,
-        "kind": None,
-    },
-]
+# # ============ MASS REMINDERI + !mm LOGIKA ============
+# GRAVE_GENERAL_CHANNEL_ID = 1364850505234518067  # #graveyard
+# AFTER_GENERAL_CHANNEL_ID = 1364850574205648967  # #afternoon
+# MAIN_GENERAL_CHANNEL_ID = 1364850795215982634  # #main
+# GRAVE_ROLE_ID = 1410962300554313870  # @graveyard
+# AFTER_ROLE_ID = 1410962344124612710  # @afternoon
+# MAIN_ROLE_ID = 1410962407454675047  # @main
+# # Kanal u koji se šalje raspored za svaku smenu
+# SCHEDULE_CHANNEL = {
+#     "grave": 1364850505234518067,  # graveyard
+#     "after": 1364850574205648967,  # afternoon
+#     "main": 1364850795215982634,  # main
+# }
+# SUPERVISOR_IDS = [
+#     886983698321391667,  # ti
+#     923657835164889119,  # drugi supervizor
+# ]
+# # koliko cekamo posle DRUGOG generala
+# SHIFT_FOLLOW_DELAY_MIN = {
+#     "grave": 30,
+#     "after": 30,
+#     "main": 60,
+# }
+# # vreme PRVOG generala po smeni
+# SHIFT_FIRST_TIME = {
+#     "grave": time(10, 0),
+#     "after": time(18, 0),
+#     "main": time(2, 0),
+# }
+# # cuvamo kad je zaista poslat prvi general (UTC)
+# shift_first_sent_at = {
+#     "grave": None,
+#     "after": None,
+#     "main": None,
+# }
+# # poslednji !mm po kanalu
+# mm_last_time: dict[int, datetime] = {}  # channel_id -> datetime
+# # raspored svih general poruka (sa opomenama i penalima)
+# SCHEDULE = [
+#     # ---------- GRAVE ----------
+#     {
+#         "time": time(10, 0),
+#         "channel_id": GRAVE_GENERAL_CHANNEL_ID,
+#         "text": f"<@&{GRAVE_ROLE_ID}> molim da mass bude poslat najkasnije do 11:30.\nU slučaju neispunjavanja obaveze, sledi opomena. Ukoliko se prekršaj ponovi, ide penal od 50$.",
+#         "shift": "grave",
+#         "kind": "first",
+#     },
+#     {
+#         "time": time(11, 0),
+#         "channel_id": GRAVE_GENERAL_CHANNEL_ID,
+#         "text": f"<@&{GRAVE_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.\nNeispunjavanje obaveze rezultira opomenom, a ponavljanje prekršaja penalom od 50$.",
+#         "shift": "grave",
+#         "kind": "second",
+#     },
+#     {
+#         "time": time(11, 30),
+#         "channel_id": GRAVE_GENERAL_CHANNEL_ID,
+#         "text": f"<@&{GRAVE_ROLE_ID}> molim da proverite da li nekom modelu nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.\nUkoliko mass i dalje nije poslat, sledi opomena, a pri ponavljanju prekršaja penal od 50$.",
+#         "shift": None,
+#         "kind": None,
+#     },
+#     {
+#         "time": time(14, 0),
+#         "channel_id": GRAVE_GENERAL_CHANNEL_ID,
+#         "text": f"<@&{GRAVE_ROLE_ID}> ukoliko drugi mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.\nNeispunjavanje obaveze rezultira opomenom, a ponavljanje prekršaja penalom od 50$.",
+#         "shift": None,
+#         "kind": None,
+#     },
+#     {
+#         "time": time(14, 30),
+#         "channel_id": GRAVE_GENERAL_CHANNEL_ID,
+#         "text": f"<@&{GRAVE_ROLE_ID}> molim da proverite da li nekom modelu nedostaje drugi mass; ukoliko nedostaje, pošaljite ga odmah.\nUkoliko mass i dalje nije poslat, sledi opomena, a pri ponavljanju prekršaja penal od 50$.",
+#         "shift": None,
+#         "kind": None,
+#     },
+#     # ---------- AFTERNOON ----------
+#     {
+#         "time": time(18, 0),
+#         "channel_id": AFTER_GENERAL_CHANNEL_ID,
+#         "text": f"<@&{AFTER_ROLE_ID}> molim da mass bude poslat najkasnije do 19:30.\nU slučaju neispunjavanja obaveze, sledi opomena. Ukoliko se prekršaj ponovi, ide penal od 50$.",
+#         "shift": "after",
+#         "kind": "first",
+#     },
+#     {
+#         "time": time(19, 0),
+#         "channel_id": AFTER_GENERAL_CHANNEL_ID,
+#         "text": f"<@&{AFTER_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.\nNeispunjavanje obaveze rezultira opomenom, a ponavljanje prekršaja penalom od 50$.",
+#         "shift": "after",
+#         "kind": "second",
+#     },
+#     {
+#         "time": time(19, 30),
+#         "channel_id": AFTER_GENERAL_CHANNEL_ID,
+#         "text": f"<@&{AFTER_ROLE_ID}> molim da proverite da li nekom modelu nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.\nUkoliko mass i dalje nije poslat, sledi opomena, a pri ponavljanju prekršaja penal od 50$.",
+#         "shift": None,
+#         "kind": None,
+#     },
+#     {
+#         "time": time(22, 0),
+#         "channel_id": AFTER_GENERAL_CHANNEL_ID,
+#         "text": f"<@&{AFTER_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.\nNeispunjavanje obaveze rezultira opomenom, a ponavljanje prekršaja penalom od 50$.",
+#         "shift": "after",
+#         "kind": "second",
+#     },
+#     {
+#         "time": time(22, 30),
+#         "channel_id": AFTER_GENERAL_CHANNEL_ID,
+#         "text": f"<@&{AFTER_ROLE_ID}> molim da proverite da li nekom modelu i dalje nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.\nUkoliko mass i dalje nije poslat, sledi opomena, a pri ponavljanju prekršaja penal od 50$.",
+#         "shift": None,
+#         "kind": None,
+#     },
+#     # ---------- MAIN ----------
+#     {
+#         "time": time(2, 0),
+#         "channel_id": MAIN_GENERAL_CHANNEL_ID,
+#         "text": f"<@&{MAIN_ROLE_ID}> molim da mass bude poslat najkasnije do 4:00.\nU slučaju neispunjavanja obaveze, sledi opomena. Ukoliko se prekršaj ponovi, ide penal od 50$.",
+#         "shift": "main",
+#         "kind": "first",
+#     },
+#     {
+#         "time": time(3, 0),
+#         "channel_id": MAIN_GENERAL_CHANNEL_ID,
+#         "text": f"<@&{MAIN_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih sat vremena.\nNeispunjavanje obaveze rezultira opomenom, a ponavljanje prekršaja penalom od 50$.",
+#         "shift": "main",
+#         "kind": "second",
+#     },
+#     {
+#         "time": time(4, 0),
+#         "channel_id": MAIN_GENERAL_CHANNEL_ID,
+#         "text": f"<@&{MAIN_ROLE_ID}> molim da proverite da li nekom modelu nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.\nUkoliko mass i dalje nije poslat, sledi opomena, a pri ponavljanju prekršaja penal od 50$.",
+#         "shift": None,
+#         "kind": None,
+#     },
+# ]
 
 
-def is_mm_approval_channel(channel: discord.abc.GuildChannel) -> bool:
-    from discord import TextChannel
+# def is_mm_approval_channel(channel: discord.abc.GuildChannel) -> bool:
+#     from discord import TextChannel
 
-    return (
-        isinstance(channel, TextChannel)
-        and MM_APPROVAL_NAME_SNIPPET in channel.name.lower()
-    )
+#     return (
+#         isinstance(channel, TextChannel)
+#         and MM_APPROVAL_NAME_SNIPPET in channel.name.lower()
+#     )
 
 
-async def send_shift_followups(shift_name: str):
-    delay = SHIFT_FOLLOW_DELAY_MIN[shift_name]
-    await asyncio.sleep(delay * 60)
-    first_sent = shift_first_sent_at.get(shift_name)
-    if not first_sent:
-        return
-    guild_id_int = int(GUILD_ID) if GUILD_ID else None
-    if not guild_id_int:
-        return
-    guild = bot.get_guild(guild_id_int)
-    if not guild:
-        return
-    role_id = {
-        "grave": GRAVE_ROLE_ID,
-        "after": AFTER_ROLE_ID,
-        "main": MAIN_ROLE_ID,
-    }[shift_name]
-    for ch in guild.text_channels:
-        if not is_mm_approval_channel(ch):
-            continue
-        last_mm = mm_last_time.get(ch.id)
-        # nikad nije bilo !mm ili je bilo pre prvog generala → fali mass
-        if (last_mm is None) or (last_mm < first_sent):
-            await ch.send(
-                f"<@&{role_id}> fali mass, proverite da li je poslat i pošaljite ga ovde."
-            )
+# async def send_shift_followups(shift_name: str):
+#     delay = SHIFT_FOLLOW_DELAY_MIN[shift_name]
+#     await asyncio.sleep(delay * 60)
+#     first_sent = shift_first_sent_at.get(shift_name)
+#     if not first_sent:
+#         return
+#     guild_id_int = int(GUILD_ID) if GUILD_ID else None
+#     if not guild_id_int:
+#         return
+#     guild = bot.get_guild(guild_id_int)
+#     if not guild:
+#         return
+#     role_id = {
+#         "grave": GRAVE_ROLE_ID,
+#         "after": AFTER_ROLE_ID,
+#         "main": MAIN_ROLE_ID,
+#     }[shift_name]
+#     for ch in guild.text_channels:
+#         if not is_mm_approval_channel(ch):
+#             continue
+#         last_mm = mm_last_time.get(ch.id)
+#         # nikad nije bilo !mm ili je bilo pre prvog generala → fali mass
+#         if (last_mm is None) or (last_mm < first_sent):
+#             await ch.send(
+#                 f"<@&{role_id}> fali mass, proverite da li je poslat i pošaljite ga ovde."
+#             )
 
 
 # ==== MM WINDOW SCANNER (prozor reminderi; ping NA KRAJU prozora) ====
