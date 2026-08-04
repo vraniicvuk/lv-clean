@@ -1160,6 +1160,38 @@ async def assign(interaction: discord.Interaction, user: discord.Member, roles: 
     except Exception as e:
         await interaction.followup.send(f"fail: {e}", ephemeral=True)
 
+# ========== /d - Brisanje trenutnog kanala (bez potvrde) ==========
+@tree.command(
+    name="d",
+    description="Briše trenutni kanal u kojem se komanda koristi",
+    guild=GUILD_OBJ
+)
+@need_manage_channels()
+async def delete_channel(interaction: discord.Interaction):
+    channel = interaction.channel
+
+    if not isinstance(channel, discord.TextChannel):
+        await interaction.response.send_message("❌ Ova komanda radi samo u tekstualnim kanalima.", ephemeral=True)
+        return
+
+    channel_name = channel.name
+
+    try:
+        # Prvo odgovori, pa onda obriši
+        await interaction.response.send_message(
+            f"🗑 Brišem kanal `{channel_name}`...",
+            ephemeral=True
+        )
+        await asyncio.sleep(0.8)  # malo vremena da se poruka pošalje
+        await channel.delete(reason=f"/d by {interaction.user}")
+    except discord.Forbidden:
+        await interaction.followup.send("❌ Nemam dozvolu da obrišem ovaj kanal.", ephemeral=True)
+    except Exception as e:
+        try:
+            await interaction.followup.send(f"❌ Greška: {e}", ephemeral=True)
+        except:
+            pass
+
 # ========== /dcat - BRISANJE KANALA + KATEGORIJE ==========
 @tree.command(
     name="dcat",
