@@ -1708,6 +1708,24 @@ AS_CHANNELS = {
     "9": 1520415630296092682,
     "10": 1520415659089985566,
 }
+COVER_CATEGORY_ID = 1520385768214888530
+
+
+def cover_channel_name(name):
+    return "cover-team-" + re.sub(r"\s+", "-", (name or "").strip().lower())
+
+
+async def find_cover_channel(guild, name):
+    target = cover_channel_name(name)
+    cat = guild.get_channel(COVER_CATEGORY_ID)
+    if cat is not None:
+        for ch in cat.channels:
+            if isinstance(ch, discord.TextChannel) and ch.name.lower() == target:
+                return ch
+    for ch in guild.text_channels:
+        if ch.name.lower() == target:
+            return ch
+    return None
 
 
 def extract_chatters(chatter_str):
@@ -1721,17 +1739,26 @@ def extract_chatters(chatter_str):
 
 def parse_schedule(text):
     lines = [ln.rstrip() for ln in (text or "").splitlines()]
-    header_re = re.compile(r"^\s*(COVER\s+TEAM|TEAM\s*\d+)\s*\(", re.IGNORECASE)
-    teams = []
+    token_re = re.compile(r"(COVER\s+TEAM|TEAM\s*\d+)\s*\(\s*([^)]*?)\s*\)", re.IGNORECASE)
+    blocks = []
     current = None
     for ln in lines:
-        if header_re.match(ln):
+        m = token_re.search(ln)
+        is_header = bool(m) and (ln[: m.start()].strip() == "")
+        if is_header:
             if current is not None:
-                teams.append(current)
-            m = re.search(r"\(\s*([^)]*?)\s*\)", ln)
-            chatter = m.group(1).strip() if m else ""
-            label = header_re.match(ln).group(1).strip()
-            current = {"label": label, "chatter": chatter, "models": [], "header": ln.strip()}
+                blocks.append(current)
+            targets = []
+            for raw_label, raw_name in token_re.findall(ln):
+                label = raw_label.strip()
+                name = raw_name.strip()
+                if label.upper().startswith("COVER"):
+                    targets.append({"kind": "cover", "num": None, "name": name, "chatter": name})
+                else:
+                    nm = re.search(r"\d+", label)
+                    num = nm.group(0) if nm else None
+                    targets.append({"kind": "team", "num": num, "name": None, "chatter": name})
+            current = {"header": ln.strip(), "targets": targets, "models": []}
         else:
             if current is not None:
                 for p in re.split(r"/", ln):
@@ -1739,8 +1766,8 @@ def parse_schedule(text):
                     if p:
                         current["models"].append(p)
     if current is not None:
-        teams.append(current)
-    return teams
+        blocks.append(current)
+    return blocks
 
 
 def parse_schedule_meta(text):
@@ -1792,8 +1819,8 @@ class AsModal(Modal, title="Auto Schedule"):
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        teams = parse_schedule(self.schedule.value)
-        if not teams:
+        blocks = parse_schedule(self.schedule.value)
+        if not blocks:
             return await interaction.followup.send(
                 "❌ Nisam pronašao nijedan TEAM u tekstu.", ephemeral=True
             )
@@ -1801,36 +1828,43 @@ class AsModal(Modal, title="Auto Schedule"):
         meta = parse_schedule_meta(self.schedule.value)
         date_str = meta.get("date") if meta else None
         shift = meta.get("shift") if meta else None
+        guild = interaction.guild
 
         channel = interaction.channel
         sent = []
         skipped = []
-        for team in teams:
-            label = team["label"]
-            models = team["models"]
+        for block in blocks:
+            models = block["models"]
             if not models:
-                skipped.append(f"{label} (off)")
+                skipped.append(f"{block['header']} (off)")
                 continue
-            m = re.match(r"TEAM\s*(\d+)", label, re.IGNORECASE)
-            num = m.group(1) if m else None
-            if num is not None and num in AS_CHANNELS:
-                tgt = bot.get_channel(AS_CHANNELS[num])
-                if not tgt:
-                    skipped.append(f"{label} (kanal nije nađen)")
-                    continue
+            for target in block["targets"]:
+                if target["kind"] == "team":
+                    num = target["num"]
+                    if not (num and num in AS_CHANNELS):
+                        skipped.append(f"{block['header']} (nepoznat tim {num})")
+                        continue
+                    tgt = bot.get_channel(AS_CHANNELS[num])
+                    desc = f"TEAM {num}"
+                else:
+                    tgt = await find_cover_channel(guild, target["name"])
+                    desc = f"COVER {target['name']}"
+                    if not tgt:
+                        skipped.append(f"{block['header']} (cover kanal nije nađen: {cover_channel_name(target['name'])})")
+                        continue
+
                 info = {"models": models, "date": date_str, "shift": shift}
                 try:
                     await tgt.send(format_channel_schedule(info))
-                    sent.append(f"TEAM {num}")
+                    sent.append(desc)
                 except Exception as e:
-                    skipped.append(f"{label} (greška)")
+                    skipped.append(f"{block['header']} → {desc} (greška)")
                     print("[AS] auto send fail:", e)
-            else:
-                skipped.append(f"{label} (cover)")
 
         chatters = []
-        for team in teams:
-            chatters.extend(extract_chatters(team["chatter"]))
+        for block in blocks:
+            for target in block["targets"]:
+                chatters.extend(extract_chatters(target["chatter"]))
         seen = set()
         uniq = []
         for c in chatters:
@@ -1840,7 +1874,7 @@ class AsModal(Modal, title="Auto Schedule"):
                 uniq.append(c)
         await channel.send("!check " + ", ".join(uniq) if uniq else "!check")
 
-        summary = f"✅ Poslao {len(sent)} timova"
+        summary = f"✅ Poslao {len(sent)} poruka"
         if sent:
             summary += ": " + ", ".join(sent)
         if skipped:
