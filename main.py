@@ -77,6 +77,9 @@ off_days = []
 
 
 def _db():
+    parent = os.path.dirname(OFF_DAYS_DB)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     conn = sqlite3.connect(OFF_DAYS_DB)
     conn.row_factory = sqlite3.Row
     return conn
