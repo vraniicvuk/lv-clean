@@ -27,7 +27,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 # bridge (telegram -> discord)
 BRIDGE_TOKEN = os.getenv("BRIDGE_TOKEN", "")
-BRIDGE_PORT = int(os.getenv("BRIDGE_PORT", "8080"))
+BRIDGE_PORT = int(os.getenv("PORT", os.getenv("BRIDGE_PORT", "8080")))
 AS_CHECK_CHANNEL_ID = os.getenv("AS_CHECK_CHANNEL_ID", "")
 # build client only after env is loaded
 client = OpenAI(api_key=OPENAI_API_KEY) if (USE_AI_FU and OPENAI_API_KEY) else None
@@ -2292,12 +2292,18 @@ async def _before_off_reminder():
 
 
 # ---------- BRIDGE (telegram -> discord) ----------
+async def handle_health(request):
+    return web.Response(text="ok")
+
+
 async def handle_bridge_as(request):
+    if not BRIDGE_TOKEN:
+        return web.json_response({"ok": False, "error": "bridge disabled"}, status=403)
     try:
         data = await request.json()
     except Exception:
         return web.json_response({"ok": False, "error": "invalid json"}, status=400)
-    if BRIDGE_TOKEN and data.get("token") != BRIDGE_TOKEN:
+    if data.get("token") != BRIDGE_TOKEN:
         return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
     text = (data.get("text") or "").strip()
     if not text:
@@ -2316,10 +2322,8 @@ async def handle_bridge_as(request):
 
 
 async def start_bridge_server():
-    if not BRIDGE_TOKEN:
-        print("[BRIDGE] BRIDGE_TOKEN nije setovan — bridge ne radi.")
-        return
     app = web.Application()
+    app.router.add_get("/", handle_health)
     app.router.add_post("/as", handle_bridge_as)
     runner = web.AppRunner(app)
     await runner.setup()
@@ -2342,8 +2346,7 @@ async def on_ready():
         if not off_day_reminder_loop.is_running():
             off_day_reminder_loop.start()
             print("✅ Off day reminder task pokrenut")
-        if BRIDGE_TOKEN:
-            asyncio.create_task(start_bridge_server())
+        asyncio.create_task(start_bridge_server())
     except Exception as e:
         print("sync fail:", e)
 
