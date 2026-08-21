@@ -3,6 +3,7 @@
 import os
 import re
 import json
+import sqlite3
 import asyncio
 import random
 import discord
@@ -46,7 +47,8 @@ tree = bot.tree
 GUILD_OBJ = discord.Object(id=int(GUILD_ID)) if GUILD_ID else None
 # ==== OFF DAYS ====
 OFF_DAY_CHANNEL_ID = 1539560126061478049
-OFF_DAYS_FILE = "off_days.json"
+OFF_DAYS_FILE = "off_days.json"   # legacy (migrira se jednom u bazu)
+OFF_DAYS_DB = os.getenv("OFF_DAYS_DB", "off_days.db")
 
 SHIFT_ROLES = {
     "afternoon": 1410962344124612710,
@@ -63,36 +65,147 @@ SCHEDULE_CHANNEL = {
 
 SR_WEEKDAYS = ["ponedeljak", "utorak", "sreda", "četvrtak", "petak", "subota", "nedelja"]
 
-# podsetnik za off dan (kome se šalje + kada po smeni)
+# kome se taguje podsetnik za off dan
 REMINDER_TARGET_USER_ID = 923657835164889119
-OFF_REMINDER_SCHEDULE = {
-    "graveyard": {"day_offset": -1, "hour": 22, "minute": 0},
-    "afternoon": {"day_offset": 0, "hour": 10, "minute": 0},
-    "main": {"day_offset": -1, "hour": 22, "minute": 0},
-}
 
 off_days = []
 
 
-def load_off_days():
-    global off_days
+def _db():
+    conn = sqlite3.connect(OFF_DAYS_DB)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    conn = _db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS off_days (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            username TEXT,
+            date TEXT NOT NULL,
+            shift TEXT,
+            message_id INTEGER,
+            confirmed INTEGER DEFAULT 0,
+            group_id TEXT,
+            UNIQUE(user_id, date)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS state (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def migrate_from_json():
+    if not os.path.exists(OFF_DAYS_FILE):
+        return
     try:
         with open(OFF_DAYS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-        off_days = data if isinstance(data, list) else []
-    except FileNotFoundError:
-        off_days = []
+        if not isinstance(data, list):
+            data = []
     except Exception as e:
-        print("[OFF] ne mogu da ucitam off_days.json:", e)
-        off_days = []
+        print("[DB] čitanje off_days.json nije uspelo:", e)
+        return
+    conn = _db()
+    inserted = 0
+    for e in data:
+        if not e.get("date"):
+            continue
+        try:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO off_days (user_id, username, date, shift, message_id, confirmed, group_id) VALUES (?,?,?,?,?,?,?)",
+                (
+                    e.get("user_id"),
+                    e.get("username"),
+                    e.get("date"),
+                    e.get("shift"),
+                    e.get("message_id"),
+                    1 if e.get("confirmed") else 0,
+                    None,
+                ),
+            )
+            if cur.rowcount:
+                inserted += 1
+        except Exception:
+            continue
+    conn.commit()
+    conn.close()
+    try:
+        os.rename(OFF_DAYS_FILE, OFF_DAYS_FILE + ".migrated")
+    except Exception:
+        pass
+    if inserted:
+        print(f"[DB] migrirano {inserted} off dana iz off_days.json u bazu")
+
+
+def load_off_days():
+    global off_days
+    init_db()
+    migrate_from_json()
+    conn = _db()
+    rows = conn.execute(
+        "SELECT user_id, username, date, shift, message_id, confirmed, group_id FROM off_days ORDER BY date"
+    ).fetchall()
+    conn.close()
+    off_days = [
+        {
+            "user_id": r["user_id"],
+            "username": r["username"],
+            "date": r["date"],
+            "shift": r["shift"],
+            "message_id": r["message_id"],
+            "confirmed": bool(r["confirmed"]),
+            "group_id": r["group_id"],
+        }
+        for r in rows
+    ]
 
 
 def save_off_days():
-    try:
-        with open(OFF_DAYS_FILE, "w", encoding="utf-8") as f:
-            json.dump(off_days, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print("[OFF] ne mogu da sacuvam off_days.json:", e)
+    conn = _db()
+    conn.execute("DELETE FROM off_days")
+    for e in off_days:
+        conn.execute(
+            "INSERT INTO off_days (user_id, username, date, shift, message_id, confirmed, group_id) VALUES (?,?,?,?,?,?,?)",
+            (
+                e.get("user_id"),
+                e.get("username"),
+                e.get("date"),
+                e.get("shift"),
+                e.get("message_id"),
+                1 if e.get("confirmed") else 0,
+                e.get("group_id"),
+            ),
+        )
+    conn.commit()
+    conn.close()
+
+
+def get_state(key):
+    conn = _db()
+    row = conn.execute("SELECT value FROM state WHERE key = ?", (key,)).fetchone()
+    conn.close()
+    return row["value"] if row else None
+
+
+def set_state(key, value):
+    conn = _db()
+    conn.execute(
+        "INSERT OR REPLACE INTO state (key, value) VALUES (?, ?)", (key, value)
+    )
+    conn.commit()
+    conn.close()
 
 
 def get_user_shift(member):
@@ -113,6 +226,12 @@ def taken_dates_for_shift(shift):
             except Exception:
                 pass
     return out
+
+
+def build_date_range():
+    today = _local_now().date()
+    start = today + timedelta(days=2)  # prvi dostupan dan = prekosutra
+    return [start + timedelta(days=i) for i in range(60)]  # narednih 60 dana
 
 
 load_off_days()
@@ -831,7 +950,11 @@ class FarmModal(Modal, title="Farm unos"):
         self.add_item(self.more_details)
 
     async def on_submit(self, interaction: discord.Interaction):
+        farm_roles = " ".join(
+            f"<@&{rid}>" for rid in [1410958063824801802, 1410962105749995591, 1474070997274464379]
+        )
         lines = [
+            f"{farm_roles}",
             f"**Novi farm unos** (by {self.opener.mention}):",
             f"- Iznos: `{self.amount.value.strip()}`",
             f"- Model: `{self.model_name.value.strip()}`",
@@ -1570,14 +1693,10 @@ async def on_message(message: discord.Message):
 
 
 # ========== OFF DAYS ==========
-class OffDaySelect(discord.ui.Select):
-    def __init__(self, shift, taken):
-        self.shift = shift
-        self.taken = taken
-        today = _local_now().date()
+class DayPickSelect(discord.ui.Select):
+    def __init__(self, dates, taken):
         options = []
-        for i in range(1, 26):
-            d = today + timedelta(days=i)
+        for d in dates:
             options.append(
                 discord.SelectOption(
                     label=d.strftime("%d.%m.%Y"),
@@ -1586,7 +1705,7 @@ class OffDaySelect(discord.ui.Select):
                 )
             )
         super().__init__(
-            placeholder="🗓 Izaberi datum za off day",
+            placeholder="🗓 Izaberi datum",
             min_values=1,
             max_values=1,
             options=options,
@@ -1594,82 +1713,193 @@ class OffDaySelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         d = datetime.strptime(self.values[0], "%Y-%m-%d").date()
-        if d in self.taken:
-            await interaction.response.send_message(
-                "❌ Taj datum je već zauzet u tvojoj smeni — izaberi drugi.",
-                ephemeral=True,
-            )
-            return
+        await self.view.handle_date(interaction, d)
 
-        entry = {
+
+class OffDayPickerView(discord.ui.View):
+    def __init__(self, taken, all_dates, on_pick):
+        super().__init__(timeout=600)
+        self.taken = taken
+        self.all_dates = all_dates
+        self.on_pick = on_pick
+        self.page = 0
+        self._render()
+
+    @property
+    def total_pages(self):
+        return (len(self.all_dates) + 24) // 25
+
+    def _page_dates(self):
+        return self.all_dates[self.page * 25:(self.page + 1) * 25]
+
+    def _render(self):
+        self.clear_items()
+        self.add_item(DayPickSelect(self._page_dates(), self.taken))
+        prev_btn = discord.ui.Button(
+            style=discord.ButtonStyle.secondary, emoji="◀", row=1, disabled=(self.page == 0)
+        )
+        prev_btn.callback = self._prev
+        next_btn = discord.ui.Button(
+            style=discord.ButtonStyle.secondary, emoji="▶", row=1,
+            disabled=(self.page >= self.total_pages - 1),
+        )
+        next_btn.callback = self._next
+        self.add_item(prev_btn)
+        self.add_item(next_btn)
+
+    async def _prev(self, interaction: discord.Interaction):
+        self.page -= 1
+        self._render()
+        await interaction.response.edit_message(view=self)
+
+    async def _next(self, interaction: discord.Interaction):
+        self.page += 1
+        self._render()
+        await interaction.response.edit_message(view=self)
+
+    async def handle_date(self, interaction: discord.Interaction, d):
+        await self.on_pick(interaction, d)
+
+
+async def book_off_days(interaction, start_date, end_date, shift):
+    days = []
+    d = start_date
+    while d <= end_date:
+        days.append(d)
+        d += timedelta(days=1)
+
+    taken = taken_dates_for_shift(shift)
+    conflict = sorted(x for x in days if x in taken)
+    if conflict:
+        msg = ", ".join(x.strftime("%d.%m.%Y") for x in conflict)
+        await interaction.response.send_message(
+            f"❌ Ne može — već zauzeti dan(i) u tvojoj smeni: {msg}", ephemeral=True
+        )
+        return
+
+    group_id = f"{interaction.user.id}-{int(datetime.now().timestamp())}"
+    for day in days:
+        off_days.append({
             "user_id": interaction.user.id,
             "username": interaction.user.display_name,
-            "date": d.isoformat(),
-            "shift": self.shift,
+            "date": day.isoformat(),
+            "shift": shift,
             "message_id": None,
             "confirmed": False,
-            "reminder_sent": False,
-        }
-        off_days.append(entry)
-        save_off_days()
+            "group_id": group_id,
+        })
+    save_off_days()
 
-        channel = bot.get_channel(OFF_DAY_CHANNEL_ID)
-        if channel:
-            try:
-                content = (
-                    f"📅 **OFF DAY**\n"
-                    f"**Datum:** {d.strftime('%d.%m.%Y')} ({SR_WEEKDAYS[d.weekday()]})\n"
-                    f"**Chatter:** {interaction.user.mention} ({interaction.user.display_name})\n"
-                    f"**Smena:** {self.shift}"
-                )
-                await channel.send(content)
-            except Exception as e:
-                print("[OFF] slanje u management kanal nije uspelo:", e)
-
-        await interaction.response.send_message(
-            f"📅 **{interaction.user.mention} je rezervisao/la off day**\n"
-            f"**Datum:** {d.strftime('%d.%m.%Y')} ({SR_WEEKDAYS[d.weekday()]})\n"
-            f"**Smena:** {self.shift}\n"
-            f"Potvrdi klikom na ✅ da si video/la, ili klikni ❌ da obrišeš."
+    if len(days) == 1:
+        date_str = f"{days[0].strftime('%d.%m.%Y')} ({SR_WEEKDAYS[days[0].weekday()]})"
+    else:
+        date_str = (
+            f"{days[0].strftime('%d.%m.%Y')} → {days[-1].strftime('%d.%m.%Y')} ({len(days)} dana)"
         )
-        msg = await interaction.original_response()
-        entry["message_id"] = msg.id
-        save_off_days()
+
+    channel = bot.get_channel(OFF_DAY_CHANNEL_ID)
+    if channel:
         try:
-            await msg.add_reaction("✅")
-            await msg.add_reaction("❌")
+            await channel.send(
+                f"📅 **OFF DAY**\n"
+                f"**Datum:** {date_str}\n"
+                f"**Chatter:** {interaction.user.mention} ({interaction.user.display_name})\n"
+                f"**Smena:** {shift}"
+            )
         except Exception as e:
-            print("[OFF] dodavanje reakcija nije uspelo:", e)
+            print("[OFF] slanje u management kanal nije uspelo:", e)
+
+    await interaction.response.send_message(
+        f"📅 **{interaction.user.mention} je rezervisao/la off day**\n"
+        f"**Datum:** {date_str}\n"
+        f"**Smena:** {shift}\n"
+        f"Potvrdi klikom na ✅ da si video/la, ili klikni ❌ da obrišeš."
+    )
+    msg = await interaction.original_response()
+    for e in off_days:
+        if e.get("group_id") == group_id:
+            e["message_id"] = msg.id
+    save_off_days()
+    try:
+        await msg.add_reaction("✅")
+        await msg.add_reaction("❌")
+    except Exception as e:
+        print("[OFF] dodavanje reakcija nije uspelo:", e)
+
+
+async def _require_shift(interaction):
+    shift = get_user_shift(interaction.user)
+    if shift is None:
+        await interaction.response.send_message(
+            "❌ Moraš imati tačno jednu smensku rolu (graveyard / afternoon / main).",
+            ephemeral=True,
+        )
+        return None
+    if shift == "multiple":
+        await interaction.response.send_message(
+            "❌ Imaš više smenskih rola — javi se managementu.",
+            ephemeral=True,
+        )
+        return None
+    return shift
 
 
 @tree.command(name="off", description="Rezerviši slobodan dan (off day)", guild=GUILD_OBJ)
 async def off(interaction: discord.Interaction):
-    member = interaction.user
-    shift = get_user_shift(member)
-    if shift is None:
-        return await interaction.response.send_message(
-            "❌ Moraš imati tačno jednu smensku rolu (graveyard / afternoon / main).",
-            ephemeral=True,
-        )
-    if shift == "multiple":
-        return await interaction.response.send_message(
-            "❌ Imaš više smenskih rola — javi se managementu.",
-            ephemeral=True,
-        )
-
+    shift = await _require_shift(interaction)
+    if not shift:
+        return
     taken = taken_dates_for_shift(shift)
-    view = discord.ui.View(timeout=300)
-    view.add_item(OffDaySelect(shift, taken))
+    dates = build_date_range()
 
+    async def on_pick(i, d):
+        await book_off_days(i, d, d, shift)
+
+    view = OffDayPickerView(taken, dates, on_pick)
     note = ""
     if taken:
         taken_lines = "\n".join(
             f"- ~~{x.strftime('%d.%m.%Y')}~~" for x in sorted(taken)
         )
         note = f"\n\n**Već zauzeti dani ({shift} smena):**\n{taken_lines}"
-
     await interaction.response.send_message(
-        f"🗓 **Off day** — izaberi datum (narednih 25 dana):{note}",
+        f"🗓 **Off day** — izaberi datum (narednih 60 dana):{note}",
+        view=view,
+        ephemeral=True,
+    )
+
+
+@tree.command(name="multioff", description="Rezerviši više uzastopnih dana (putovanje, svadba...)", guild=GUILD_OBJ)
+async def multioff(interaction: discord.Interaction):
+    shift = await _require_shift(interaction)
+    if not shift:
+        return
+    taken = taken_dates_for_shift(shift)
+    dates = build_date_range()
+
+    async def on_start(i, d):
+        if d in taken:
+            await i.response.send_message(
+                "❌ Taj datum je već zauzet u tvojoj smeni — izaberi drugi.", ephemeral=True
+            )
+            return
+        end_dates = [x for x in dates if x > d]
+        if not end_dates:
+            await i.response.send_message("❌ Nema dostupnih datuma posle tog dana.", ephemeral=True)
+            return
+
+        async def on_end(i2, d2):
+            await book_off_days(i2, d, d2, shift)
+
+        view2 = OffDayPickerView(taken, end_dates, on_end)
+        await i.response.edit_message(
+            content=f"🗓 **Multi off** — početak: **{d.strftime('%d.%m.%Y')}**. Sada izaberi **poslednji dan**:",
+            view=view2,
+        )
+
+    view = OffDayPickerView(taken, dates, on_start)
+    await interaction.response.send_message(
+        "🗓 **Multi off** — izaberi **prvi dan** (narednih 60 dana):",
         view=view,
         ephemeral=True,
     )
@@ -1721,18 +1951,17 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     if member.bot:
         return
 
-    entry = next(
-        (e for e in off_days if e.get("message_id") == payload.message_id), None
-    )
-    if not entry:
+    entries = [e for e in off_days if e.get("message_id") == payload.message_id]
+    if not entries:
         return
 
     emoji = str(payload.emoji)
     channel = bot.get_channel(payload.channel_id)
 
     if emoji == "✅":
-        if member.id == entry.get("user_id") and not entry.get("confirmed"):
-            entry["confirmed"] = True
+        if member.id == entries[0].get("user_id") and not entries[0].get("confirmed"):
+            for e in entries:
+                e["confirmed"] = True
             save_off_days()
             if channel:
                 try:
@@ -1744,15 +1973,14 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
                     print("[OFF] edit confirm fail:", e)
 
     elif emoji == "❌":
-        can_delete = (member.id == entry.get("user_id")) or member.guild_permissions.manage_roles
+        can_delete = (member.id == entries[0].get("user_id")) or member.guild_permissions.manage_roles
         if can_delete:
-            date_str = entry.get("date")
             off_days[:] = [e for e in off_days if e.get("message_id") != payload.message_id]
             save_off_days()
             if channel:
                 try:
                     msg = await channel.fetch_message(payload.message_id)
-                    await msg.edit(content=f"❌ Off day **{date_str}** je obrisan.")
+                    await msg.edit(content="❌ Off day je obrisan.")
                     await msg.clear_reactions()
                 except Exception as e:
                     print("[OFF] edit delete fail:", e)
@@ -1760,47 +1988,34 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
 
 @tasks.loop(minutes=1)
 async def off_day_reminder_loop():
+    now = _local_now()
+    if now.hour != 10:
+        return
+    today_iso = now.date().isoformat()
+    if get_state("last_off_reminder_date") == today_iso:
+        return
     channel = bot.get_channel(OFF_DAY_CHANNEL_ID)
     if not channel:
         return
-    now = _local_now()
-    for entry in list(off_days):
-        if entry.get("reminder_sent"):
-            continue
-        cfg = OFF_REMINDER_SCHEDULE.get(entry.get("shift"))
-        if not cfg:
-            entry["reminder_sent"] = True
-            save_off_days()
-            continue
+
+    tomorrow = now.date() + timedelta(days=1)
+    tomorrow_iso = tomorrow.isoformat()
+    entries = [e for e in off_days if e.get("date") == tomorrow_iso]
+    if entries:
+        lines = []
+        for e in sorted(entries, key=lambda x: str(x.get("username", ""))):
+            lines.append(f"• <@{e.get('user_id')}> — {e.get('shift')}")
+        date_str = tomorrow.strftime("%d.%m.%Y")
         try:
-            off_date = datetime.strptime(entry["date"], "%Y-%m-%d").date()
-        except Exception:
-            continue
-        if now.date() > off_date:
-            entry["reminder_sent"] = True
-            save_off_days()
-            continue
-        reminder_day = off_date + timedelta(days=cfg["day_offset"])
-        reminder_dt = now.replace(
-            year=reminder_day.year,
-            month=reminder_day.month,
-            day=reminder_day.day,
-            hour=cfg["hour"],
-            minute=cfg["minute"],
-            second=0,
-            microsecond=0,
-        )
-        if now >= reminder_dt:
-            rel = "sutra" if cfg["day_offset"] < 0 else "danas"
-            date_str = off_date.strftime("%d.%m.%Y")
-            try:
-                await channel.send(
-                    f"🔔 Podsetnik: <@{entry.get('user_id')}> je uzeo day off {rel} ({date_str}). <@{REMINDER_TARGET_USER_ID}>"
-                )
-                entry["reminder_sent"] = True
-                save_off_days()
-            except Exception as e:
-                print("[OFF] reminder send fail:", e)
+            await channel.send(
+                f"🔔 **Podsetnik — off dani za sutra** ({date_str}):\n"
+                + "\n".join(lines)
+                + f"\n\n<@{REMINDER_TARGET_USER_ID}>"
+            )
+        except Exception as e:
+            print("[OFF] reminder send fail:", e)
+            return
+    set_state("last_off_reminder_date", today_iso)
 
 
 @off_day_reminder_loop.before_loop

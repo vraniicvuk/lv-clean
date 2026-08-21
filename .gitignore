@@ -2,3 +2,5 @@
 __pycache__/
 *.pyc
 off_days.json
+off_days.json.migrated
+*.db
