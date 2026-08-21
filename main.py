@@ -1,19 +1,18 @@
-# main.py — FINAL
-# /schedule auto-clean TEAM rola (uz KEEP), pa dodela novih
-# + PRIJAVA: unknown modeli (skipped/unknown)
-# + !mm detekcija (stopira remindere) + AI/FU auto-predlozi u mm-approval kanalima
+# main.py — lv-clean
+# Role/channel management + ticket sistem + farm/ratio/qc + !mm AI/FU + off days
 import os
 import re
+import json
 import unicodedata
 import asyncio
 import random
 import discord
 from discord import app_commands
-from discord.ext import commands, tasks
+from discord.ext import commands
 from discord.ui import Modal, TextInput
 from discord import TextStyle
 from dotenv import load_dotenv
-from datetime import datetime, time, timedelta
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from openai import OpenAI
 from difflib import SequenceMatcher
@@ -78,10 +77,71 @@ INTENTS.message_content = True  # za !mm detekciju
 bot = commands.Bot(command_prefix="!", intents=INTENTS)
 tree = bot.tree
 GUILD_OBJ = discord.Object(id=int(GUILD_ID)) if GUILD_ID else None
-# kanali i snippet za mm-approval
-MM_APPROVAL_NAME_SNIPPET = "mm-approval"
-# summary kanal (tvoj)
-MM_SUMMARY_CHANNEL_ID = 1433577356437491774
+# ==== OFF DAYS ====
+OFF_DAY_CHANNEL_ID = 1539560126061478049
+OFF_DAYS_FILE = "off_days.json"
+
+SHIFT_ROLES = {
+    "afternoon": 1410962344124612710,
+    "graveyard": 1410962300554313870,
+    "main": 1410962407454675047,
+}
+
+# raspored kanala po smeni (koristi /cic)
+SCHEDULE_CHANNEL = {
+    "grave": 1364850505234518067,
+    "after": 1364850574205648967,
+    "main": 1364850795215982634,
+}
+
+SR_WEEKDAYS = ["ponedeljak", "utorak", "sreda", "četvrtak", "petak", "subota", "nedelja"]
+
+off_days = []
+
+
+def load_off_days():
+    global off_days
+    try:
+        with open(OFF_DAYS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        off_days = data if isinstance(data, list) else []
+    except FileNotFoundError:
+        off_days = []
+    except Exception as e:
+        print("[OFF] ne mogu da ucitam off_days.json:", e)
+        off_days = []
+
+
+def save_off_days():
+    try:
+        with open(OFF_DAYS_FILE, "w", encoding="utf-8") as f:
+            json.dump(off_days, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print("[OFF] ne mogu da sacuvam off_days.json:", e)
+
+
+def get_user_shift(member):
+    found = [name for name, rid in SHIFT_ROLES.items() if any(r.id == rid for r in member.roles)]
+    if len(found) == 1:
+        return found[0]
+    if len(found) == 0:
+        return None
+    return "multiple"
+
+
+def taken_dates_for_shift(shift):
+    out = set()
+    for e in off_days:
+        if e.get("shift") == shift:
+            try:
+                out.add(datetime.strptime(e["date"], "%Y-%m-%d").date())
+            except Exception:
+                pass
+    return out
+
+
+load_off_days()
+
 # ==== anti-spam za AI pozive ====
 AI_BLOCKED_UNTIL = None
 
@@ -142,199 +202,7 @@ async def generate_fus_offline(mm_line: str) -> list[str]:
     return lines[:4]
 
 
-# # ============ MASS REMINDERI + !mm LOGIKA ============
-# GRAVE_GENERAL_CHANNEL_ID = 1364850505234518067  # #graveyard
-# AFTER_GENERAL_CHANNEL_ID = 1364850574205648967  # #afternoon
-# MAIN_GENERAL_CHANNEL_ID = 1364850795215982634  # #main
-# GRAVE_ROLE_ID = 1410962300554313870  # @graveyard
-# AFTER_ROLE_ID = 1410962344124612710  # @afternoon
-# MAIN_ROLE_ID = 1410962407454675047  # @main
-# # Kanal u koji se šalje raspored za svaku smenu
-# SCHEDULE_CHANNEL = {
-#     "grave": 1364850505234518067,  # graveyard
-#     "after": 1364850574205648967,  # afternoon
-#     "main": 1364850795215982634,  # main
-# }
-# SUPERVISOR_IDS = [
-#     886983698321391667,  # ti
-#     923657835164889119,  # drugi supervizor
-# ]
-# # koliko cekamo posle DRUGOG generala
-# SHIFT_FOLLOW_DELAY_MIN = {
-#     "grave": 30,
-#     "after": 30,
-#     "main": 60,
-# }
-# # vreme PRVOG generala po smeni
-# SHIFT_FIRST_TIME = {
-#     "grave": time(10, 0),
-#     "after": time(18, 0),
-#     "main": time(2, 0),
-# }
-# # cuvamo kad je zaista poslat prvi general (UTC)
-# shift_first_sent_at = {
-#     "grave": None,
-#     "after": None,
-#     "main": None,
-# }
-# # poslednji !mm po kanalu
-# mm_last_time: dict[int, datetime] = {}  # channel_id -> datetime
-# # raspored svih general poruka (sa opomenama i penalima)
-# SCHEDULE = [
-#     # ---------- GRAVE ----------
-#     {
-#         "time": time(10, 0),
-#         "channel_id": GRAVE_GENERAL_CHANNEL_ID,
-#         "text": f"<@&{GRAVE_ROLE_ID}> molim da mass bude poslat najkasnije do 11:30.\nU slučaju neispunjavanja obaveze, sledi opomena. Ukoliko se prekršaj ponovi, ide penal od 50$.",
-#         "shift": "grave",
-#         "kind": "first",
-#     },
-#     {
-#         "time": time(11, 0),
-#         "channel_id": GRAVE_GENERAL_CHANNEL_ID,
-#         "text": f"<@&{GRAVE_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.\nNeispunjavanje obaveze rezultira opomenom, a ponavljanje prekršaja penalom od 50$.",
-#         "shift": "grave",
-#         "kind": "second",
-#     },
-#     {
-#         "time": time(11, 30),
-#         "channel_id": GRAVE_GENERAL_CHANNEL_ID,
-#         "text": f"<@&{GRAVE_ROLE_ID}> molim da proverite da li nekom modelu nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.\nUkoliko mass i dalje nije poslat, sledi opomena, a pri ponavljanju prekršaja penal od 50$.",
-#         "shift": None,
-#         "kind": None,
-#     },
-#     {
-#         "time": time(14, 0),
-#         "channel_id": GRAVE_GENERAL_CHANNEL_ID,
-#         "text": f"<@&{GRAVE_ROLE_ID}> ukoliko drugi mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.\nNeispunjavanje obaveze rezultira opomenom, a ponavljanje prekršaja penalom od 50$.",
-#         "shift": None,
-#         "kind": None,
-#     },
-#     {
-#         "time": time(14, 30),
-#         "channel_id": GRAVE_GENERAL_CHANNEL_ID,
-#         "text": f"<@&{GRAVE_ROLE_ID}> molim da proverite da li nekom modelu nedostaje drugi mass; ukoliko nedostaje, pošaljite ga odmah.\nUkoliko mass i dalje nije poslat, sledi opomena, a pri ponavljanju prekršaja penal od 50$.",
-#         "shift": None,
-#         "kind": None,
-#     },
-#     # ---------- AFTERNOON ----------
-#     {
-#         "time": time(18, 0),
-#         "channel_id": AFTER_GENERAL_CHANNEL_ID,
-#         "text": f"<@&{AFTER_ROLE_ID}> molim da mass bude poslat najkasnije do 19:30.\nU slučaju neispunjavanja obaveze, sledi opomena. Ukoliko se prekršaj ponovi, ide penal od 50$.",
-#         "shift": "after",
-#         "kind": "first",
-#     },
-#     {
-#         "time": time(19, 0),
-#         "channel_id": AFTER_GENERAL_CHANNEL_ID,
-#         "text": f"<@&{AFTER_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.\nNeispunjavanje obaveze rezultira opomenom, a ponavljanje prekršaja penalom od 50$.",
-#         "shift": "after",
-#         "kind": "second",
-#     },
-#     {
-#         "time": time(19, 30),
-#         "channel_id": AFTER_GENERAL_CHANNEL_ID,
-#         "text": f"<@&{AFTER_ROLE_ID}> molim da proverite da li nekom modelu nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.\nUkoliko mass i dalje nije poslat, sledi opomena, a pri ponavljanju prekršaja penal od 50$.",
-#         "shift": None,
-#         "kind": None,
-#     },
-#     {
-#         "time": time(22, 0),
-#         "channel_id": AFTER_GENERAL_CHANNEL_ID,
-#         "text": f"<@&{AFTER_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih 30 minuta.\nNeispunjavanje obaveze rezultira opomenom, a ponavljanje prekršaja penalom od 50$.",
-#         "shift": "after",
-#         "kind": "second",
-#     },
-#     {
-#         "time": time(22, 30),
-#         "channel_id": AFTER_GENERAL_CHANNEL_ID,
-#         "text": f"<@&{AFTER_ROLE_ID}> molim da proverite da li nekom modelu i dalje nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.\nUkoliko mass i dalje nije poslat, sledi opomena, a pri ponavljanju prekršaja penal od 50$.",
-#         "shift": None,
-#         "kind": None,
-#     },
-#     # ---------- MAIN ----------
-#     {
-#         "time": time(2, 0),
-#         "channel_id": MAIN_GENERAL_CHANNEL_ID,
-#         "text": f"<@&{MAIN_ROLE_ID}> molim da mass bude poslat najkasnije do 4:00.\nU slučaju neispunjavanja obaveze, sledi opomena. Ukoliko se prekršaj ponovi, ide penal od 50$.",
-#         "shift": "main",
-#         "kind": "first",
-#     },
-#     {
-#         "time": time(3, 0),
-#         "channel_id": MAIN_GENERAL_CHANNEL_ID,
-#         "text": f"<@&{MAIN_ROLE_ID}> ukoliko mass još nije poslat, molim da ga pošaljete u narednih sat vremena.\nNeispunjavanje obaveze rezultira opomenom, a ponavljanje prekršaja penalom od 50$.",
-#         "shift": "main",
-#         "kind": "second",
-#     },
-#     {
-#         "time": time(4, 0),
-#         "channel_id": MAIN_GENERAL_CHANNEL_ID,
-#         "text": f"<@&{MAIN_ROLE_ID}> molim da proverite da li nekom modelu nedostaje mass; ukoliko nedostaje, pošaljite ga odmah.\nUkoliko mass i dalje nije poslat, sledi opomena, a pri ponavljanju prekršaja penal od 50$.",
-#         "shift": None,
-#         "kind": None,
-#     },
-# ]
 
-
-# def is_mm_approval_channel(channel: discord.abc.GuildChannel) -> bool:
-#     from discord import TextChannel
-
-#     return (
-#         isinstance(channel, TextChannel)
-#         and MM_APPROVAL_NAME_SNIPPET in channel.name.lower()
-#     )
-
-
-# async def send_shift_followups(shift_name: str):
-#     delay = SHIFT_FOLLOW_DELAY_MIN[shift_name]
-#     await asyncio.sleep(delay * 60)
-#     first_sent = shift_first_sent_at.get(shift_name)
-#     if not first_sent:
-#         return
-#     guild_id_int = int(GUILD_ID) if GUILD_ID else None
-#     if not guild_id_int:
-#         return
-#     guild = bot.get_guild(guild_id_int)
-#     if not guild:
-#         return
-#     role_id = {
-#         "grave": GRAVE_ROLE_ID,
-#         "after": AFTER_ROLE_ID,
-#         "main": MAIN_ROLE_ID,
-#     }[shift_name]
-#     for ch in guild.text_channels:
-#         if not is_mm_approval_channel(ch):
-#             continue
-#         last_mm = mm_last_time.get(ch.id)
-#         # nikad nije bilo !mm ili je bilo pre prvog generala → fali mass
-#         if (last_mm is None) or (last_mm < first_sent):
-#             await ch.send(
-#                 f"<@&{role_id}> fali mass, proverite da li je poslat i pošaljite ga ovde."
-#             )
-
-
-# ==== MM WINDOW SCANNER (prozor reminderi; ping NA KRAJU prozora) ====
-MM_WINDOW_ROLE_BY_SHIFT = {
-    "graveyard": 1410962300554313870,  # @graveyard
-    "afternoon": 1410962344124612710,  # @afternoon
-    "main": 1410962407454675047,  # @main
-}
-# label, start_h, start_m, end_h, end_m, shift
-# po tvom zahtevu: start = reminder_start - 30min, ping na END ako nema !mm u prozoru
-MM_WINDOWS = [
-    # GRAVEYARD: prvi prozor 09:30–11:30 (za prvi mass), drugi 13:30–16:00 (za drugi mass)
-    ("grave-1", 9, 30, 11, 30, "graveyard"),
-    ("grave-2", 13, 30, 16, 0, "graveyard"),
-    # AFTERNOON: prvi prozor 17:30–19:30, drugi prozor 20:30–23:00
-    ("after-1", 17, 30, 19, 30, "afternoon"),
-    ("after-2", 20, 30, 23, 0, "afternoon"),
-    # MAIN: jedan prozor 01:30–04:00 (reminderi ostaju 02:00/03:00/04:00)
-    ("main-1", 1, 30, 4, 0, "main"),
-]
-# markeri da ne pingujemo više puta po prozoru (key = (channel_id, label, YYYY-MM-DD))
-mm_scanner_bumped = set()
 
 
 def _local_now():
@@ -342,175 +210,11 @@ def _local_now():
     return datetime.now(ZoneInfo("Europe/Belgrade"))
 
 
-def _window_today(start_h, start_m, end_h, end_m):
-    now = _local_now()  # datetime, ne .time()
-    start = now.replace(hour=start_h, minute=start_m, second=0, microsecond=0)
-    end = now.replace(hour=end_h, minute=end_m, second=0, microsecond=0)
-    if end <= start:
-        end += timedelta(days=1)
-    return start, end
 
 
-@tasks.loop(minutes=1)
-async def mm_window_scanner():
-    """Skener: proverava na KRAJU svakog prozora da li je bilo !mm od 'start' do 'end'.
-    Ako nije, pinguje odgovarajuću shift rolu u svim mm-approval kanalima.
-    """
-    guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
-    if not guild:
-        return
-    now = _local_now()  # datetime
-    for label, sh, sm, eh, em, shift in MM_WINDOWS:
-        start, end = _window_today(sh, sm, eh, em)
-        # pingujemo tek kad izađemo iz prozora (>= end) i još nismo bumpovali taj prozor danas
-        if now >= end:
-            for ch in guild.text_channels:
-                if not is_mm_approval_channel(ch):
-                    continue
-                key = (ch.id, label, start.date().isoformat())
-                if key in mm_scanner_bumped:
-                    continue  # već odrađeno za ovaj kanal i ovaj prozor
-                last_mm = mm_last_time.get(ch.id)
-                # ako nije bilo !mm u prozoru → ping
-                if (last_mm is None) or (last_mm < start):
-                    try:
-                        role_id = MM_WINDOW_ROLE_BY_SHIFT[shift]
-                        await ch.send(
-                            f"<@&{role_id}> fali mass za {shift} ({label.replace('-', ' ')}) — pošaljite ga ovde."
-                        )
-                    except Exception as e:
-                        print("[MM_SCAN] send fail:", e)
-                mm_scanner_bumped.add(key)
-    # očisti stare markere malo posle ponoći lokalno
-    if now.hour == 0 and now.minute in (3, 4, 5):
-        mm_scanner_bumped.clear()
-        print("[MM_SCAN] cleared bump cache")
 
 
-@mm_window_scanner.before_loop
-async def _before_mm_window_scanner():
-    await bot.wait_until_ready()
 
-
-# ====== MASS REMINDERI (glavni loop) ======
-@tasks.loop(minutes=1)
-async def mass_reminder_loop():
-    """Šalje general mass reminder poruke po SCHEDULE
-    i setuje shift_first_sent_at za 'first' poruke."""
-    now_local = _local_now()
-    h, m = now_local.hour, now_local.minute
-    guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
-    if not guild:
-        return
-    for entry in SCHEDULE:
-        t: time = entry["time"]
-        if h == t.hour and m == t.minute:
-            channel_id = entry["channel_id"]
-            text = entry["text"]
-            shift = entry.get("shift")
-            kind = entry.get("kind")
-            ch = bot.get_channel(channel_id)
-            if not ch:
-                try:
-                    ch = await guild.fetch_channel(channel_id)
-                except Exception as e:
-                    print("[MASS_LOOP] ne mogu da nadjem kanal", channel_id, e)
-                    continue
-            try:
-                await ch.send(text)
-            except Exception as e:
-                print("[MASS_LOOP] send fail:", e)
-                continue
-            # ako je prvi general za smenu → zapamti vreme i pokreni followup checker
-            if shift and kind == "first":
-                # radimo u lokalnom vremenu, da bude u istom sistemu kao mm_window_scanner
-                shift_first_sent_at[shift] = now_local
-                try:
-                    asyncio.create_task(send_shift_followups(shift))
-                except Exception as e:
-                    print("[MASS_LOOP] followup task fail:", e)
-
-
-@mass_reminder_loop.before_loop
-async def _before_mass_reminder_loop():
-    await bot.wait_until_ready()
-
-@tasks.loop(minutes=1)
-async def qc_reminder_task():
-    now = _local_now()
-    if now.hour == 2 and now.minute == 0:
-        channel = bot.get_channel(1493996105380266114)
-        if channel:
-            await channel.send(f"<@&1474070997274464379> **Deadline za slanje QC je prošao.**\nMolim te ukoliko nisi do sada, popuni formu za daily QC pomoću komande `/qc`.")
-        # Čuvamo podatke za /qcurrent
-        month_key = (now.year, now.month, interaction.user.id)
-        qc_history[month_key].append({
-            'date': now.day,
-            'count': len(chatters),
-            'timestamp': now
-        })
-
-@qc_reminder_task.before_loop
-async def before_qc_reminder():
-    await bot.wait_until_ready()
-
-# ---------- SUMMARY REPORT (def before on_ready) ----------
-mm_sent_log = []  # (user_id, timestamp_local, shift_name)
-
-
-@tasks.loop(minutes=1)
-async def mm_summary_report():
-    ch = bot.get_channel(MM_SUMMARY_CHANNEL_ID)
-    if not ch:
-        return
-    now_local = _local_now()
-    h, m = now_local.hour, now_local.minute
-
-    def _report_for(shift: str) -> str:
-        end = _local_now()
-        start = end - timedelta(hours=8)
-        users = [u for u, t, s in mm_sent_log if s == shift and start <= t <= end]
-        if not users:
-            return f"nema !mm komandi za {shift} smenu."
-        counts: dict[int, int] = {}
-        for uid in users:
-            counts[uid] = counts.get(uid, 0) + 1
-        lines = [f"<@{u}> – {c}x" for u, c in counts.items()]
-        return f"rezime {shift} smene:\n" + "\n".join(lines)
-
-    if h == 18 and m == 0:
-        await ch.send(_report_for("graveyard"))
-    if h == 10 and m == 0:
-        await ch.send(_report_for("main"))
-    if h == 2 and m == 0:
-        await ch.send(_report_for("afternoon"))
-
-
-@mm_summary_report.before_loop
-async def _before_mm_summary_report():
-    await bot.wait_until_ready()
-
-
-async def sort_team_roles(guild):
-    bot_member = guild.me
-    non_team = [r for r in guild.roles if not r.name.startswith(">")]
-    team = [
-        r for r in guild.roles 
-        if r.name.startswith(">") and r < bot_member.top_role
-    ]
-    team_sorted = sorted(team, key=lambda r: r.name.lower())
-
-    start_pos = max((r.position for r in non_team), default=0)
-    pos = start_pos + 1
-
-    for role in team_sorted:
-        try:
-            await role.edit(position=pos)
-            pos += 1
-            await asyncio.sleep(0.4)
-        except:
-            pass
-    print("Roles sorted by > prefix")
 
 
 async def sort_team_categories(guild):
@@ -526,176 +230,7 @@ async def sort_team_categories(guild):
         await asyncio.sleep(0.35)
     print("TEAM categories sorted")
 
-# ========== AUTO SCHEDULE TASK ==========
-@tasks.loop(minutes=1)
-async def auto_schedule_task():
-    now = _local_now()
-    h, m = now.hour, now.minute
 
-    triggers = {
-        "grave": [(8, 40), (9, 40)],
-        "after": [(16, 40), (17, 40)],
-        "main": [(0, 40), (1, 40)],
-    }
-
-    for shift, times in triggers.items():
-        for th, tm in times:
-            if h == th and m == tm:
-                print(f"[AUTO SCHEDULE] Pokrećem za {shift.upper()} u {h:02d}:{m:02d}")
-                asyncio.create_task(run_auto_schedule(shift))
-                break
-
-
-# ========== RUN AUTO SCHEDULE ==========
-async def run_auto_schedule(shift: str):
-    guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
-    if not guild:
-        return
-
-    channel = bot.get_channel(SCHEDULE_CHANNEL.get(shift))
-    mgmt_channel = bot.get_channel(1498220907775262750)
-
-    if not channel or not mgmt_channel:
-        return
-
-    try:
-        messages = [msg async for msg in channel.history(limit=50)]
-        schedule_msg = None
-        for msg in messages:
-            if "@" in msg.content and any(x in msg.content for x in [":", "/", ","]):
-                age = (_local_now() - msg.created_at.replace(tzinfo=ZoneInfo("Europe/Belgrade"))).total_seconds()
-                if age < 86400:
-                    schedule_msg = msg
-                    break
-
-        if not schedule_msg:
-            await channel.send(f"⚠️ Auto Schedule za **{shift.upper()}**: Nije pronađen validan raspored.")
-            return
-
-        schedule_text = schedule_msg.content.strip()
-        print(f"[AUTO SCHEDULE] Pronađen raspored za {shift} → primenjujem...")
-
-        chatter_count = await apply_schedule_logic(guild, schedule_text)
-
-        role_id = {"grave": GRAVE_ROLE_ID, "after": AFTER_ROLE_ID, "main": MAIN_ROLE_ID}.get(shift)
-        role_mention = f"<@&{role_id}> " if role_id else ""
-
-        final_message = f"""{role_mention}**Role za modele koje imate na rasporedu su vam dodeljene** (dodeljeno za **{chatter_count}** chattera).
-
-Ukoliko vam fali role za nekog modela, molim vas da se obratite direktno nekome iz tima..."""
-
-        await channel.send(final_message)
-
-        # Blanko lista
-        text = schedule_text
-        pattern = re.compile(r'(@[\.\w]+|<\@!?\d+>)(.*?)((?=@[\.\w]+|<\@!?\d+>)|$)', re.S)
-        blocks = pattern.findall(text)
-        chatter_names = []
-        for first_user, content, _ in blocks:
-            assignees = re.findall(r'(@[\.\w]+|<\@!?\d+>)', first_user + content)
-            for token in assignees:
-                member = member_from_token(guild, token)
-                name = member.display_name if member else token
-                chatter_names.append(name)
-
-        unique_names = list(dict.fromkeys(chatter_names))
-        blanko_lista = ", ".join(unique_names)
-
-        await mgmt_channel.send(f"!check {blanko_lista}")
-
-        print(f"[AUTO SCHEDULE] Uspešno završeno za {shift.upper()} ({len(unique_names)} chattera)")
-
-    except Exception as e:
-        print(f"[AUTO SCHEDULE] Greška za {shift}: {e}")
-        await channel.send(f"❌ Greška u auto schedule za {shift.upper()}: {e}")
-
-
-# ========== IDENTIČNA LOGIKA KAO /schedule ==========
-async def apply_schedule_logic(guild, text: str):
-    bot_member = guild.me
-
-    global role_index
-    role_index = {}
-    for r in guild.roles:
-        if r.name.upper().startswith("TEAM "):
-            base = normalize_model_name(r.name[5:])
-            role_index.setdefault(base, []).append(r)
-
-    total_rm = 0
-    total_add = 0
-    unknowns = []
-
-    tokens = re.findall(r'(<@!?(\d+)>|<@&(\d+)>)', text)
-
-    current_member = None
-    current_roles = []
-
-    for full, user_id, role_id in tokens:
-        if user_id:  # Novi chatter
-            if current_member and current_roles:
-                print(
-                    f"PROCESSING {current_member.display_name} "
-                    f"WITH {len(current_roles)} ROLES"
-                )
-                await process_chatter_auto(guild, bot_member, current_member, current_roles, total_rm, total_add)
-
-            member = guild.get_member(int(user_id))
-            if member:
-                current_member = member
-                current_roles = []
-            else:
-                print(f"❌ Chatter nije nađen: <@{user_id}>")
-                current_member = None
-
-        elif role_id and current_member:  # Role <@&ID>
-            role = guild.get_role(int(role_id))
-            if role:
-                if role not in current_roles:
-                    current_roles.append(role)
-            else:
-                unknowns.append(f"<@&{role_id}>")
-
-    if current_member and current_roles:
-        print(
-            f"PROCESSING {current_member.display_name} "
-            f"WITH {len(current_roles)} ROLES"
-        )
-        await process_chatter_auto(guild, bot_member, current_member, current_roles, total_rm, total_add)
-
-    print(f"SCHEDULE APPLY done (removed={total_rm}, added={total_add})")
-    if unknowns:
-        print("UNKNOWN ROLES:")
-        for u in sorted(set(unknowns)):
-            print(f"- {u}")
-
-    return len([m for m in guild.members if any(r.name.upper().startswith("TEAM ") for r in m.roles)])
-
-
-async def process_chatter_auto(guild, bot_member, member, desired_roles, total_rm, total_add):
-    print(f"MEMBER: {member.display_name}")
-    print(f"DESIRED ROLES: {[r.name for r in desired_roles]}")
-    old_roles = [
-        r for r in member.roles
-        if r.name.upper().startswith("TEAM ")
-        and r.name.upper() not in KEEP_ROLE_NAMES
-        and can_touch_role(bot_member, r)
-    ]
-    
-    touchable_assign = [r for r in desired_roles if can_touch_role(bot_member, r)]
-
-    print(f"TOUCHABLE ROLES: {[r.name for r in touchable_assign]}")
-
-    try:
-        if old_roles:
-            rem = await safe_remove_roles(member, old_roles, reason="auto schedule clean")
-            total_rm += len(rem)
-        if touchable_assign:
-            add = await safe_add_roles(member, touchable_assign, reason="auto schedule assign")
-            total_add += len(add)
-
-        print(f"✅ {member.display_name} (clean {len(old_roles)} / assign {len(touchable_assign)})")
-    except Exception as e:
-        print(f"❌ {member.display_name} — greška: {e}")
 
 # ====== AI/FU HELPERI ======
 def _sanitize_mm_text(s: str) -> str:
@@ -1067,27 +602,6 @@ def need_manage_channels():
     return app_commands.check(predicate)
 
 
-# ---------- /assign /deassign /clean /a /cleanmulti ----------
-def need_manage_roles():
-    def predicate(interaction: discord.Interaction):
-        gp = interaction.user.guild_permissions
-        if gp.manage_roles or gp.administrator:
-            return True
-        raise app_commands.CheckFailure("treba ti Manage Roles.")
-
-    return app_commands.check(predicate)
-
-
-def need_manage_channels():
-    async def predicate(interaction: discord.Interaction):
-        if not interaction.user.guild_permissions.manage_channels:
-            await interaction.response.send_message(
-                "Nemaš Manage Channels permisiju.", ephemeral=True
-            )
-            return False
-        return True
-
-    return app_commands.check(predicate)
 
 
 async def safe_add_roles(
@@ -1537,15 +1051,6 @@ class FarmModal(Modal, title="Farm unos"):
 async def farm(interaction: discord.Interaction):
     await interaction.response.send_modal(FarmModal(opener=interaction.user))
 
-from collections import defaultdict
-import calendar
-
-# Globalni counter za QC po korisniku po mesecu
-qc_counter = defaultdict(int)   # (user_id, year, month) -> broj QC-a
-
-def get_current_month_key():
-    now = datetime.now()
-    return (now.year, now.month)
 
 # ========== QC - JEDNOSTAVNA VERZIJA SA ČUVANJEM PODATAKA ==========
 @tree.command(name="qc", description="Pošalji Daily QC listu chattera", guild=GUILD_OBJ)
@@ -1609,17 +1114,6 @@ async def qc(interaction: discord.Interaction):
         await interaction.followup.send(f"❌ Greška: {e}", ephemeral=True)
 
 
-# Automatski reset countera 1. u mesecu
-@tasks.loop(hours=1)
-async def monthly_qc_reset():
-    now = datetime.now()
-    if now.day == 1 and now.hour == 0:
-        qc_counter.clear()
-        print("✅ QC counter resetovan - novi mesec")
-
-@monthly_qc_reset.before_loop
-async def before_monthly_reset():
-    await bot.wait_until_ready()
 
 @tree.command(name="qcurrent", description="Pregled QC reporta za trenutni mesec", guild=GUILD_OBJ)
 @need_manage_roles()
@@ -1769,93 +1263,6 @@ class RatioModal(Modal, title="Ratio Report"):
 async def ratio_command(interaction: discord.Interaction):
     await interaction.response.send_modal(RatioModal())
 
-# ========== /schedule - DIREKTNO PO <@&ROLE ID> ==========
-@tree.command(
-    name="schedule",
-    description="Format: <@chatter> <@&roleID1> <@&roleID2> <@chatter2> ...",
-    guild=GUILD_OBJ,
-)
-@need_manage_roles()
-async def schedule(interaction: discord.Interaction, text: str, apply: bool = False):
-    await interaction.response.defer(ephemeral=True, thinking=True)
-
-    guild = interaction.guild
-    bot_member = guild.me
-
-    report = []
-    total_rm = 0
-    total_add = 0
-    unknowns = []
-
-    # Pronalazimo sve mention-e
-    tokens = re.findall(r'(<@!?(\d+)>|<@&(\d+)>)', text)
-
-    current_member = None
-    current_roles = []
-
-    for full, user_id, role_id in tokens:
-        if user_id:  # Chatter
-            if current_member and current_roles:
-                await process_chatter(guild, bot_member, current_member, current_roles, 
-                                    report, total_rm, total_add, unknowns, apply, interaction.user)
-
-            member = guild.get_member(int(user_id))
-            if member:
-                current_member = member
-                current_roles = []
-            else:
-                report.append(f"❌ Chatter nije nađen: <@{user_id}>")
-                current_member = None
-
-        elif role_id and current_member:  # Role <@&ID>
-            role = guild.get_role(int(role_id))
-            if role:
-                if role not in current_roles:
-                    current_roles.append(role)
-            else:
-                unknowns.append(f"<@&{role_id}>")
-
-    # Poslednji chatter
-    if current_member and current_roles:
-        await process_chatter(guild, bot_member, current_member, current_roles, 
-                            report, total_rm, total_add, unknowns, apply, interaction.user)
-
-    header = "SCHEDULE PREVIEW\n" if not apply else f"SCHEDULE APPLY done (removed={total_rm}, added={total_add})\n"
-    out = header + "\n".join(report)
-
-    if unknowns:
-        out += "\n\nUNKNOWN ROLES (ID not found):\n- " + "\n- ".join(sorted(set(unknowns)))
-
-    for i in range(0, len(out), 1800):
-        await interaction.followup.send(f"```\n{out[i:i+1800]}\n```", ephemeral=True)
-
-
-async def process_chatter(guild, bot_member, member, desired_roles, report, total_rm, total_add, unknowns, apply, author):
-    old_roles = [
-        r for r in member.roles
-        if r.name.upper().startswith("TEAM ")
-        and r.name.upper() not in KEEP_ROLE_NAMES
-        and can_touch_role(bot_member, r)
-    ]
-
-    touchable_assign = [r for r in desired_roles if can_touch_role(bot_member, r)]
-
-    if not apply:
-        roles_str = ", ".join(r.name for r in touchable_assign) or "—"
-        report.append(f"PREVIEW {member.display_name} → {roles_str}")
-        return
-
-    try:
-        if old_roles:
-            rem = await safe_remove_roles(member, old_roles, reason=f"schedule by {author}")
-            total_rm += len(rem)
-        if touchable_assign:
-            add = await safe_add_roles(member, touchable_assign, reason=f"schedule by {author}")
-            total_add += len(add)
-
-        report.append(f"✅ {member.display_name} (clean {len(old_roles)} / assign {len(touchable_assign)})")
-    except Exception as e:
-        report.append(f"❌ {member.display_name} — greška: {e}")
 
 @tree.command(name="sortteamroles", description="Bulk sort TEAM roles", guild=GUILD_OBJ)
 @need_manage_roles()
@@ -2126,71 +1533,71 @@ async def ticket(interaction: discord.Interaction, razlog: str):
     except Exception as e:
         await interaction.followup.send(f"❌ Greška: {e}", ephemeral=True)
 
-    # ========== /close - Zatvara ticket + čuva transcript ==========
-    @tree.command(
-        name="close",
-        description="Zatvori ticket i sačuva transcript",
-        guild=GUILD_OBJ
-    )
-    async def close_ticket(interaction: discord.Interaction):
-        if not interaction.channel.name.startswith("ticket-"):
-            return await interaction.response.send_message(
-                "❌ Ova komanda radi samo unutar ticketa.", 
-                ephemeral=True
-            )
-    
-        await interaction.response.send_message("**Zatvaram ticket i čuvam transcript...**", ephemeral=False)
-    
-        transcript_cat = interaction.guild.get_channel(1504739040706953228)
-    
-        # Čuvanje transcripta
-        if transcript_cat:
-            try:
-                messages = [msg async for msg in interaction.channel.history(limit=1000, oldest_first=True)]
-                transcript_text = f"**Transcript ticketa:** {interaction.channel.name}\n"
-                transcript_text += f"**Vreme zatvaranja:** {discord.utils.utcnow().strftime('%d.%m.%Y %H:%M')}\n"
-                transcript_text += "="*60 + "\n\n"
-    
-                for msg in messages:
-                    time_str = msg.created_at.strftime("%d.%m.%Y %H:%M")
-                    transcript_text += f"[{time_str}] {msg.author.display_name}: {msg.content}\n"
-                    if msg.attachments:
-                        transcript_text += f"   Prilozi: {', '.join([a.url for a in msg.attachments])}\n"
-    
-                transcript_channel = await transcript_cat.create_text_channel(
-                    name=f"transcript-{interaction.channel.name.replace('ticket-', '')}"
-                )
-                await transcript_channel.send(transcript_text)
-            except Exception as e:
-                print(f"Transcript error: {e}")
-    
-        await asyncio.sleep(2)
+# ========== /close - Zatvara ticket + čuva transcript ==========
+@tree.command(
+    name="close",
+    description="Zatvori ticket i sačuva transcript",
+    guild=GUILD_OBJ
+)
+async def close_ticket(interaction: discord.Interaction):
+    if not interaction.channel.name.startswith("ticket-"):
+        return await interaction.response.send_message(
+            "❌ Ova komanda radi samo unutar ticketa.", 
+            ephemeral=True
+        )
+
+    await interaction.response.send_message("**Zatvaram ticket i čuvam transcript...**", ephemeral=False)
+
+    transcript_cat = interaction.guild.get_channel(1504739040706953228)
+
+    # Čuvanje transcripta
+    if transcript_cat:
         try:
-            await interaction.channel.delete(reason=f"Closed with transcript by {interaction.user}")
-        except:
-            await interaction.followup.send("Ticket zatvoren, ali transcript nije uspeo da se sačuva.", ephemeral=True)
-    
-    
-    # ========== /delete - Potpuno brisanje bez transcripta ==========
-    @tree.command(
-        name="delete",
-        description="Potpuno obriši ticket bez čuvanja transcripta",
-        guild=GUILD_OBJ
-    )
-    async def delete_ticket(interaction: discord.Interaction):
-        if not interaction.channel.name.startswith("ticket-"):
-            return await interaction.response.send_message(
-                "❌ Ova komanda radi samo unutar ticketa.", 
-                ephemeral=True
+            messages = [msg async for msg in interaction.channel.history(limit=1000, oldest_first=True)]
+            transcript_text = f"**Transcript ticketa:** {interaction.channel.name}\n"
+            transcript_text += f"**Vreme zatvaranja:** {discord.utils.utcnow().strftime('%d.%m.%Y %H:%M')}\n"
+            transcript_text += "="*60 + "\n\n"
+
+            for msg in messages:
+                time_str = msg.created_at.strftime("%d.%m.%Y %H:%M")
+                transcript_text += f"[{time_str}] {msg.author.display_name}: {msg.content}\n"
+                if msg.attachments:
+                    transcript_text += f"   Prilozi: {', '.join([a.url for a in msg.attachments])}\n"
+
+            transcript_channel = await transcript_cat.create_text_channel(
+                name=f"transcript-{interaction.channel.name.replace('ticket-', '')}"
             )
-    
-        await interaction.response.send_message("**Brišem ticket zauvek...**", ephemeral=False)
-        await asyncio.sleep(2)
-        
-        try:
-            await interaction.channel.delete(reason=f"Deleted by {interaction.user}")
+            await transcript_channel.send(transcript_text)
         except Exception as e:
-            await interaction.followup.send(f"❌ Greška pri brisanju: {e}", ephemeral=True)
+            print(f"Transcript error: {e}")
+
+    await asyncio.sleep(2)
+    try:
+        await interaction.channel.delete(reason=f"Closed with transcript by {interaction.user}")
+    except:
+        await interaction.followup.send("Ticket zatvoren, ali transcript nije uspeo da se sačuva.", ephemeral=True)
+
+
+# ========== /delete - Potpuno brisanje bez transcripta ==========
+@tree.command(
+    name="delete",
+    description="Potpuno obriši ticket bez čuvanja transcripta",
+    guild=GUILD_OBJ
+)
+async def delete_ticket(interaction: discord.Interaction):
+    if not interaction.channel.name.startswith("ticket-"):
+        return await interaction.response.send_message(
+            "❌ Ova komanda radi samo unutar ticketa.", 
+            ephemeral=True
+        )
+
+    await interaction.response.send_message("**Brišem ticket zauvek...**", ephemeral=False)
+    await asyncio.sleep(2)
+    
+    try:
+        await interaction.channel.delete(reason=f"Deleted by {interaction.user}")
+    except Exception as e:
+        await interaction.followup.send(f"❌ Greška pri brisanju: {e}", ephemeral=True)
 
 # /newm
 @tree.command(
@@ -2293,27 +1700,6 @@ async def new_model(interaction: discord.Interaction, ime: str):
         )
 
 
-# ========== TESTAUTO - Ručno testiranje auto schedule ==========
-@tree.command(
-    name="testauto", description="Ručno pokreće auto schedule za test", guild=GUILD_OBJ
-)
-@need_manage_roles()
-async def test_auto_schedule(interaction: discord.Interaction, shift: str):
-    await interaction.response.defer(ephemeral=True)
-
-    if shift not in ["grave", "after", "main"]:
-        return await interaction.followup.send(
-            "❌ Dozvoljene vrednosti: `grave`, `after`, `main`", ephemeral=True
-        )
-    await interaction.followup.send(
-        f"🔄 Pokrećem Auto Schedule test za **{shift.upper()}** smenu...", ephemeral=True
-    )
-    # Pokrećemo u pozadini da ne blokira interakciju
-    asyncio.create_task(run_auto_schedule(shift))
-    await interaction.followup.send(
-        "✅ Test je pokrenut u pozadini. Proveri odgovarajući general kanal (graveyard / afternoon / main).",
-        ephemeral=True,
-    )
 
 
 # ---------- /resync ----------
@@ -2354,16 +1740,6 @@ def _mm_text_from_message(content: str) -> str:
     return raw
 
 
-def _detect_shift_now():
-    now = _local_now().time()
-    h = now.hour
-    if 10 <= h < 18:
-        return "graveyard"
-    if h >= 18 or h < 2:
-        return "afternoon"
-    return "main"
-
-
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
@@ -2371,9 +1747,6 @@ async def on_message(message: discord.Message):
     content_raw = message.content or ""
     content = content_raw.strip().lower()
     if content.startswith("!mm"):
-        now_local = _local_now()
-        mm_last_time[message.channel.id] = now_local
-        mm_sent_log.append((message.author.id, now_local, _detect_shift_now()))
         mentions = " ".join(
             f"<@{uid}>" for uid in [886983698321391667, 1301678435776598107]
         )
@@ -2390,6 +1763,190 @@ async def on_message(message: discord.Message):
     await bot.process_commands(message)
 
 
+# ========== OFF DAYS ==========
+class OffDaySelect(discord.ui.Select):
+    def __init__(self, shift, taken):
+        self.shift = shift
+        self.taken = taken
+        today = _local_now().date()
+        options = []
+        for i in range(1, 26):
+            d = today + timedelta(days=i)
+            options.append(
+                discord.SelectOption(
+                    label=d.strftime("%d.%m.%Y"),
+                    value=d.isoformat(),
+                    description="zauzeto" if d in taken else SR_WEEKDAYS[d.weekday()],
+                )
+            )
+        super().__init__(
+            placeholder="🗓 Izaberi datum za off day",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        d = datetime.strptime(self.values[0], "%Y-%m-%d").date()
+        if d in self.taken:
+            await interaction.response.send_message(
+                "❌ Taj datum je već zauzet u tvojoj smeni — izaberi drugi.",
+                ephemeral=True,
+            )
+            return
+
+        entry = {
+            "user_id": interaction.user.id,
+            "username": interaction.user.display_name,
+            "date": d.isoformat(),
+            "shift": self.shift,
+            "message_id": None,
+            "confirmed": False,
+        }
+        off_days.append(entry)
+        save_off_days()
+
+        channel = bot.get_channel(OFF_DAY_CHANNEL_ID)
+        if channel:
+            try:
+                content = (
+                    f"📅 **OFF DAY**\n"
+                    f"**Datum:** {d.strftime('%d.%m.%Y')} ({SR_WEEKDAYS[d.weekday()]})\n"
+                    f"**Chatter:** {interaction.user.mention} ({interaction.user.display_name})\n"
+                    f"**Smena:** {self.shift}\n"
+                    f"Potvrdi klikom na ✅ da si video/la, ili klikni ❌ da obrišeš."
+                )
+                msg = await channel.send(content)
+                await msg.add_reaction("✅")
+                await msg.add_reaction("❌")
+                entry["message_id"] = msg.id
+                save_off_days()
+            except Exception as e:
+                print("[OFF] slanje u kanal nije uspelo:", e)
+
+        await interaction.response.send_message(
+            f"✅ Off day upisan za **{d.strftime('%d.%m.%Y')}** ({SR_WEEKDAYS[d.weekday()]}).\n"
+            f"Potvrdi u <#{OFF_DAY_CHANNEL_ID}> klikom na ✅ (ili obriši klikom na ❌).",
+            ephemeral=True,
+        )
+
+
+@tree.command(name="off", description="Rezerviši slobodan dan (off day)", guild=GUILD_OBJ)
+async def off(interaction: discord.Interaction):
+    member = interaction.user
+    shift = get_user_shift(member)
+    if shift is None:
+        return await interaction.response.send_message(
+            "❌ Moraš imati tačno jednu smensku rolu (graveyard / afternoon / main).",
+            ephemeral=True,
+        )
+    if shift == "multiple":
+        return await interaction.response.send_message(
+            "❌ Imaš više smenskih rola — javi se managementu.",
+            ephemeral=True,
+        )
+
+    taken = taken_dates_for_shift(shift)
+    view = discord.ui.View(timeout=300)
+    view.add_item(OffDaySelect(shift, taken))
+
+    note = ""
+    if taken:
+        taken_lines = "\n".join(
+            f"- ~~{x.strftime('%d.%m.%Y')}~~" for x in sorted(taken)
+        )
+        note = f"\n\n**Već zauzeti dani ({shift} smena):**\n{taken_lines}"
+
+    await interaction.response.send_message(
+        f"🗓 **Off day** — izaberi datum (narednih 25 dana):{note}",
+        view=view,
+        ephemeral=True,
+    )
+
+
+@tree.command(name="loff", description="Pregled svih off dana po datumima", guild=GUILD_OBJ)
+async def loff(interaction: discord.Interaction):
+    await interaction.response.defer()
+    if not off_days:
+        return await interaction.followup.send("Nema nijednog off dana.")
+
+    by_date = defaultdict(list)
+    for e in off_days:
+        by_date[e.get("date")].append(e)
+
+    lines = []
+    for date_iso in sorted(k for k in by_date.keys() if k):
+        try:
+            d = datetime.strptime(date_iso, "%Y-%m-%d").date()
+            wd = SR_WEEKDAYS[d.weekday()]
+        except Exception:
+            continue
+        names = []
+        for e in sorted(by_date[date_iso], key=lambda x: str(x.get("username", ""))):
+            mark = "✅" if e.get("confirmed") else "⏳"
+            names.append(f"{mark} {e.get('username', e.get('user_id'))} ({e.get('shift')})")
+        lines.append(f"**{d.strftime('%d.%m.%Y')}** ({wd})\n" + "\n".join(names))
+
+    embed = discord.Embed(
+        title="📅 Off dani",
+        description="\n\n".join(lines),
+        color=0x00b0f4,
+    )
+    embed.set_footer(text=f"Ukupno: {len(off_days)} off dana")
+    await interaction.followup.send(embed=embed)
+
+
+@bot.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+    guild = bot.get_guild(payload.guild_id) if payload.guild_id else None
+    if not guild:
+        return
+    member = payload.member
+    if member is None:
+        try:
+            member = await guild.fetch_member(payload.user_id)
+        except Exception:
+            return
+    if member.bot:
+        return
+
+    entry = next(
+        (e for e in off_days if e.get("message_id") == payload.message_id), None
+    )
+    if not entry:
+        return
+
+    emoji = str(payload.emoji)
+    channel = bot.get_channel(payload.channel_id)
+
+    if emoji == "✅":
+        if member.id == entry.get("user_id") and not entry.get("confirmed"):
+            entry["confirmed"] = True
+            save_off_days()
+            if channel:
+                try:
+                    msg = await channel.fetch_message(payload.message_id)
+                    await msg.edit(
+                        content=f"{msg.content}\n\n✅ Potvrđeno od strane {member.mention}"
+                    )
+                except Exception as e:
+                    print("[OFF] edit confirm fail:", e)
+
+    elif emoji == "❌":
+        can_delete = (member.id == entry.get("user_id")) or member.guild_permissions.manage_roles
+        if can_delete:
+            date_str = entry.get("date")
+            off_days[:] = [e for e in off_days if e.get("message_id") != payload.message_id]
+            save_off_days()
+            if channel:
+                try:
+                    msg = await channel.fetch_message(payload.message_id)
+                    await msg.edit(content=f"❌ Off day **{date_str}** je obrisan.")
+                    await msg.clear_reactions()
+                except Exception as e:
+                    print("[OFF] edit delete fail:", e)
+
+
 # ---------- on_ready ----------
 @bot.event
 async def on_ready():
@@ -2401,18 +1958,6 @@ async def on_ready():
             cmds = await tree.sync()
             print(f"synced {len(cmds)} globalnih slash komandi")
         print(f"✅ logged in as {bot.user}")
-        if not mass_reminder_loop.is_running():
-            mass_reminder_loop.start()
-        if not mm_window_scanner.is_running():
-            mm_window_scanner.start()
-        if not mm_summary_report.is_running():
-            mm_summary_report.start()
-        if not auto_schedule_task.is_running():
-            auto_schedule_task.start()
-            print("✅ Auto Schedule task je pokrenut")
-        if not qc_reminder_task.is_running():
-            qc_reminder_task.start()
-            print("✅ QC reminder task pokrenut (2:00 AM)")
     except Exception as e:
         print("sync fail:", e)
 
