@@ -1692,6 +1692,102 @@ async def on_message(message: discord.Message):
     await bot.process_commands(message)
 
 
+# ========== AUTO SCHEDULE (/as) ==========
+AS_CHANNELS = {
+    "1": 1517504193735426148,
+    "2": 1520415486725193768,
+    "3": 1520415502458028032,
+    "4": 1520415519679840417,
+    "5": 1520415544304472134,
+    "6": 1520415560519782482,
+    "7": 1520415584171331604,
+    "8": 1520415611522515055,
+    "9": 1520415630296092682,
+    "10": 1520415659089985566,
+}
+AS_NUMBER_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+AS_BLANKO_EMOJI = "📋"
+AS_EMOJI_TO_CHANNEL = {AS_NUMBER_EMOJIS[i]: AS_CHANNELS[str(i + 1)] for i in range(10)}
+
+as_schedule_messages = {}  # message_id -> {"models": [...], "source_channel_id": int}
+
+
+def extract_chatters(chatter_str):
+    out = []
+    for p in re.split(r"[/,]", chatter_str or ""):
+        p = p.strip()
+        if p and p.lower() != "off":
+            out.append(p)
+    return out
+
+
+def parse_schedule(text):
+    lines = [ln.rstrip() for ln in (text or "").splitlines()]
+    header_re = re.compile(r"^\s*(COVER\s+TEAM|TEAM\s*\d+)\s*\(", re.IGNORECASE)
+    teams = []
+    current = None
+    for ln in lines:
+        if header_re.match(ln):
+            if current is not None:
+                teams.append(current)
+            m = re.search(r"\(\s*([^)]*?)\s*\)", ln)
+            chatter = m.group(1).strip() if m else ""
+            label = header_re.match(ln).group(1).strip()
+            current = {"label": label, "chatter": chatter, "models": [], "header": ln.strip()}
+        else:
+            if current is not None:
+                for p in re.split(r"/", ln):
+                    p = p.strip()
+                    if p:
+                        current["models"].append(p)
+    if current is not None:
+        teams.append(current)
+    return teams
+
+
+@tree.command(name="as", description="Auto schedule: podeli raspored po timovima i rutiraj", guild=GUILD_OBJ)
+@app_commands.describe(text="Zalepi ceo raspored ovde")
+async def as_cmd(interaction: discord.Interaction, text: str):
+    await interaction.response.defer(ephemeral=True)
+    teams = parse_schedule(text)
+    if not teams:
+        return await interaction.followup.send(
+            "❌ Nisam pronašao nijedan TEAM u tekstu.", ephemeral=True
+        )
+
+    channel = interaction.channel
+    for team in teams:
+        models = team["models"]
+        content = f"**{team['header']}**"
+        if models:
+            content += "\n\n" + " / ".join(models)
+        msg = await channel.send(content)
+        if models:
+            for emoji in AS_NUMBER_EMOJIS:
+                await msg.add_reaction(emoji)
+            await msg.add_reaction(AS_BLANKO_EMOJI)
+            as_schedule_messages[msg.id] = {
+                "models": models,
+                "source_channel_id": channel.id,
+            }
+
+    chatters = []
+    for team in teams:
+        chatters.extend(extract_chatters(team["chatter"]))
+    seen = set()
+    uniq = []
+    for c in chatters:
+        k = c.lower()
+        if k not in seen:
+            seen.add(k)
+            uniq.append(c)
+    await channel.send("!check " + ", ".join(uniq) if uniq else "!check")
+
+    await interaction.followup.send(
+        f"✅ Poslao {len(teams)} timova i !check liniju.", ephemeral=True
+    )
+
+
 # ========== OFF DAYS ==========
 class DayPickSelect(discord.ui.Select):
     def __init__(self, dates, taken):
@@ -1949,6 +2045,27 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
         except Exception:
             return
     if member.bot:
+        return
+
+    # /as schedule routing
+    if payload.message_id in as_schedule_messages:
+        info = as_schedule_messages[payload.message_id]
+        emoji = str(payload.emoji)
+        models_text = " / ".join(info["models"])
+        if emoji == AS_BLANKO_EMOJI:
+            src = bot.get_channel(info["source_channel_id"])
+            if src:
+                try:
+                    await src.send(models_text)
+                except Exception as e:
+                    print("[AS] blanko fail:", e)
+        elif emoji in AS_EMOJI_TO_CHANNEL:
+            tgt = bot.get_channel(AS_EMOJI_TO_CHANNEL[emoji])
+            if tgt:
+                try:
+                    await tgt.send(models_text)
+                except Exception as e:
+                    print("[AS] send fail:", e)
         return
 
     entries = [e for e in off_days if e.get("message_id") == payload.message_id]
