@@ -1758,49 +1758,64 @@ async def _add_as_reactions(messages):
             print("[AS] reaction add fail:", e)
 
 
-@tree.command(name="as", description="Auto schedule: podeli raspored po timovima i rutiraj", guild=GUILD_OBJ)
-@app_commands.describe(text="Zalepi ceo raspored ovde")
-async def as_cmd(interaction: discord.Interaction, text: str):
-    await interaction.response.defer(ephemeral=True)
-    teams = parse_schedule(text)
-    if not teams:
-        return await interaction.followup.send(
-            "❌ Nisam pronašao nijedan TEAM u tekstu.", ephemeral=True
+class AsModal(Modal, title="Auto Schedule"):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.schedule = TextInput(
+            label="Zalepi raspored",
+            style=TextStyle.paragraph,
+            placeholder="Zalepi ceo raspored ovde...",
+            required=True,
+            max_length=4000,
+        )
+        self.add_item(self.schedule)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        teams = parse_schedule(self.schedule.value)
+        if not teams:
+            return await interaction.followup.send(
+                "❌ Nisam pronašao nijedan TEAM u tekstu.", ephemeral=True
+            )
+
+        channel = interaction.channel
+        react_messages = []
+        for team in teams:
+            models = team["models"]
+            content = f"**{team['header']}**"
+            if models:
+                content += "\n\n" + " / ".join(models)
+            msg = await channel.send(content)
+            if models:
+                as_schedule_messages[msg.id] = {
+                    "models": models,
+                    "source_channel_id": channel.id,
+                }
+                react_messages.append(msg)
+
+        chatters = []
+        for team in teams:
+            chatters.extend(extract_chatters(team["chatter"]))
+        seen = set()
+        uniq = []
+        for c in chatters:
+            k = c.lower()
+            if k not in seen:
+                seen.add(k)
+                uniq.append(c)
+        await channel.send("!check " + ", ".join(uniq) if uniq else "!check")
+
+        await interaction.followup.send(
+            f"✅ Poslao {len(teams)} timova i !check liniju.", ephemeral=True
         )
 
-    channel = interaction.channel
-    react_messages = []
-    for team in teams:
-        models = team["models"]
-        content = f"**{team['header']}**"
-        if models:
-            content += "\n\n" + " / ".join(models)
-        msg = await channel.send(content)
-        if models:
-            as_schedule_messages[msg.id] = {
-                "models": models,
-                "source_channel_id": channel.id,
-            }
-            react_messages.append(msg)
+        if react_messages:
+            asyncio.create_task(_add_as_reactions(react_messages))
 
-    chatters = []
-    for team in teams:
-        chatters.extend(extract_chatters(team["chatter"]))
-    seen = set()
-    uniq = []
-    for c in chatters:
-        k = c.lower()
-        if k not in seen:
-            seen.add(k)
-            uniq.append(c)
-    await channel.send("!check " + ", ".join(uniq) if uniq else "!check")
 
-    await interaction.followup.send(
-        f"✅ Poslao {len(teams)} timova i !check liniju.", ephemeral=True
-    )
-
-    if react_messages:
-        asyncio.create_task(_add_as_reactions(react_messages))
+@tree.command(name="as", description="Auto schedule: podeli raspored po timovima i rutiraj", guild=GUILD_OBJ)
+async def as_cmd(interaction: discord.Interaction):
+    await interaction.response.send_modal(AsModal())
 
 
 # ========== OFF DAYS ==========
