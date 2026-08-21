@@ -1748,6 +1748,41 @@ def parse_schedule(text):
     return teams
 
 
+def parse_schedule_meta(text):
+    for ln in (text or "").splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        m = re.search(
+            r"(\d{1,2}\.\d{1,2}(?:\.\d{2,4})?)\s*(?:[-–—]\s*)?(graveyard|grave|afternoon|after|main)",
+            ln,
+            re.IGNORECASE,
+        )
+        if m:
+            date_str = m.group(1)
+            raw = m.group(2).lower()
+            if raw in ("grave", "graveyard"):
+                shift = "graveyard"
+            elif raw in ("after", "afternoon"):
+                shift = "afternoon"
+            else:
+                shift = "main"
+            return {"date": date_str, "shift": shift}
+        break
+    return None
+
+
+def format_channel_schedule(info):
+    models_text = " / ".join(info["models"])
+    date_str = info.get("date")
+    shift = info.get("shift")
+    if date_str:
+        role_id = SHIFT_ROLES.get(shift)
+        header = f"{date_str}, <@&{role_id}>" if role_id else date_str
+        return f"{header}\n{models_text}"
+    return models_text
+
+
 async def _add_as_reactions(messages):
     for msg in messages:
         try:
@@ -1778,6 +1813,8 @@ class AsModal(Modal, title="Auto Schedule"):
                 "❌ Nisam pronašao nijedan TEAM u tekstu.", ephemeral=True
             )
 
+        meta = parse_schedule_meta(self.schedule.value)
+
         channel = interaction.channel
         react_messages = []
         for team in teams:
@@ -1790,6 +1827,8 @@ class AsModal(Modal, title="Auto Schedule"):
                 as_schedule_messages[msg.id] = {
                     "models": models,
                     "source_channel_id": channel.id,
+                    "date": meta.get("date") if meta else None,
+                    "shift": meta.get("shift") if meta else None,
                 }
                 react_messages.append(msg)
 
@@ -2081,19 +2120,18 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     if payload.message_id in as_schedule_messages:
         info = as_schedule_messages[payload.message_id]
         emoji = str(payload.emoji)
-        models_text = " / ".join(info["models"])
         if emoji == AS_BLANKO_EMOJI:
             src = bot.get_channel(info["source_channel_id"])
             if src:
                 try:
-                    await src.send(models_text)
+                    await src.send(" / ".join(info["models"]))
                 except Exception as e:
                     print("[AS] blanko fail:", e)
         elif emoji in AS_EMOJI_TO_CHANNEL:
             tgt = bot.get_channel(AS_EMOJI_TO_CHANNEL[emoji])
             if tgt:
                 try:
-                    await tgt.send(models_text)
+                    await tgt.send(format_channel_schedule(info))
                 except Exception as e:
                     print("[AS] send fail:", e)
         return
