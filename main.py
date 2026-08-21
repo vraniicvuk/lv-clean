@@ -1656,9 +1656,12 @@ async def resync(interaction: discord.Interaction):
 @tree.error
 async def on_app_command_error(interaction: discord.Interaction, error):
     try:
-        await interaction.response.send_message(f"greška: {error}", ephemeral=True)
-    except:
-        await interaction.followup.send(f"greška: {error}", ephemeral=True)
+        if interaction.response.is_done():
+            await interaction.followup.send(f"greška: {error}", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"greška: {error}", ephemeral=True)
+    except Exception:
+        pass
 
 
 # ---------- MM HOOKS ----------
@@ -1745,6 +1748,16 @@ def parse_schedule(text):
     return teams
 
 
+async def _add_as_reactions(messages):
+    for msg in messages:
+        try:
+            for emoji in AS_NUMBER_EMOJIS:
+                await msg.add_reaction(emoji)
+            await msg.add_reaction(AS_BLANKO_EMOJI)
+        except Exception as e:
+            print("[AS] reaction add fail:", e)
+
+
 @tree.command(name="as", description="Auto schedule: podeli raspored po timovima i rutiraj", guild=GUILD_OBJ)
 @app_commands.describe(text="Zalepi ceo raspored ovde")
 async def as_cmd(interaction: discord.Interaction, text: str):
@@ -1756,6 +1769,7 @@ async def as_cmd(interaction: discord.Interaction, text: str):
         )
 
     channel = interaction.channel
+    react_messages = []
     for team in teams:
         models = team["models"]
         content = f"**{team['header']}**"
@@ -1763,13 +1777,11 @@ async def as_cmd(interaction: discord.Interaction, text: str):
             content += "\n\n" + " / ".join(models)
         msg = await channel.send(content)
         if models:
-            for emoji in AS_NUMBER_EMOJIS:
-                await msg.add_reaction(emoji)
-            await msg.add_reaction(AS_BLANKO_EMOJI)
             as_schedule_messages[msg.id] = {
                 "models": models,
                 "source_channel_id": channel.id,
             }
+            react_messages.append(msg)
 
     chatters = []
     for team in teams:
@@ -1786,6 +1798,9 @@ async def as_cmd(interaction: discord.Interaction, text: str):
     await interaction.followup.send(
         f"✅ Poslao {len(teams)} timova i !check liniju.", ephemeral=True
     )
+
+    if react_messages:
+        asyncio.create_task(_add_as_reactions(react_messages))
 
 
 # ========== OFF DAYS ==========
