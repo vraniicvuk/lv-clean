@@ -1737,6 +1737,47 @@ def extract_chatters(chatter_str):
     return out
 
 
+def _find_member_by_name(guild, name, role):
+    target = (name or "").strip().lower()
+    if not target:
+        return None
+
+    def exact(m):
+        return (m.display_name or "").lower() == target or (m.name or "").lower() == target
+
+    def partial(m):
+        return target in (m.display_name or "").lower() or target in (m.name or "").lower()
+
+    members = [m for m in guild.members if not m.bot]
+    if role is not None:
+        for m in members:
+            if role in m.roles and exact(m):
+                return m
+    for m in members:
+        if exact(m):
+            return m
+    if role is not None:
+        for m in members:
+            if role in m.roles and partial(m):
+                return m
+    for m in members:
+        if partial(m):
+            return m
+    return None
+
+
+def find_chatter_mentions(guild, chatter_str, shift):
+    names = extract_chatters(chatter_str)
+    role_id = SHIFT_ROLES.get(shift) if shift else None
+    role = guild.get_role(role_id) if role_id else None
+    mentions = []
+    for name in names:
+        member = _find_member_by_name(guild, name, role)
+        if member:
+            mentions.append(member.mention)
+    return mentions
+
+
 def parse_schedule(text):
     lines = [ln.rstrip() for ln in (text or "").splitlines()]
     token_re = re.compile(r"(COVER\s+TEAM|TEAM\s*\d+)\s*\(\s*([^)]*?)\s*\)", re.IGNORECASE)
@@ -1797,10 +1838,16 @@ def parse_schedule_meta(text):
 def format_channel_schedule(info):
     models_text = " / ".join(info["models"])
     date_str = info.get("date")
-    shift = info.get("shift")
-    if date_str:
-        role_id = SHIFT_ROLES.get(shift)
-        header = f"{date_str}, <@&{role_id}>" if role_id else date_str
+    mentions = info.get("mentions") or []
+    if date_str and mentions:
+        header = f"{date_str}, {' '.join(mentions)}"
+    elif date_str:
+        header = date_str
+    elif mentions:
+        header = " ".join(mentions)
+    else:
+        header = ""
+    if header:
         return f"{header}\n{models_text}"
     return models_text
 
@@ -1853,7 +1900,13 @@ class AsModal(Modal, title="Auto Schedule"):
                         skipped.append(f"{block['header']} (cover kanal nije nađen: {cover_channel_name(target['name'])})")
                         continue
 
-                info = {"models": models, "date": date_str, "shift": shift}
+                mentions = find_chatter_mentions(guild, target["chatter"], shift)
+                if not mentions and shift:
+                    role_id = SHIFT_ROLES.get(shift)
+                    if role_id:
+                        mentions = [f"<@&{role_id}>"]
+
+                info = {"models": models, "date": date_str, "mentions": mentions}
                 try:
                     await tgt.send(format_channel_schedule(info))
                     sent.append(desc)
