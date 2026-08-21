@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from openai import OpenAI
+from aiohttp import web
 from collections import defaultdict
 
 # --- env first ---
@@ -24,6 +25,10 @@ GUILD_ID = os.getenv("GUILD_ID")
 USE_AI_FU = os.getenv("USE_AI_FU", "false").lower() in ("1", "true", "yes", "on")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+# bridge (telegram -> discord)
+BRIDGE_TOKEN = os.getenv("BRIDGE_TOKEN", "")
+BRIDGE_PORT = int(os.getenv("BRIDGE_PORT", "8080"))
+AS_CHECK_CHANNEL_ID = os.getenv("AS_CHECK_CHANNEL_ID", "")
 # build client only after env is loaded
 client = OpenAI(api_key=OPENAI_API_KEY) if (USE_AI_FU and OPENAI_API_KEY) else None
 if not TOKEN:
@@ -1852,6 +1857,73 @@ def format_channel_schedule(info):
     return models_text
 
 
+async def route_schedule(guild, text, check_channel=None):
+    blocks = parse_schedule(text)
+    if not blocks:
+        return {"ok": False, "error": "Nisam pronašao nijedan TEAM u tekstu."}
+
+    meta = parse_schedule_meta(text)
+    date_str = meta.get("date") if meta else None
+    shift = meta.get("shift") if meta else None
+
+    sent = []
+    skipped = []
+    for block in blocks:
+        models = block["models"]
+        if not models:
+            skipped.append(f"{block['header']} (off)")
+            continue
+        for target in block["targets"]:
+            if target["kind"] == "team":
+                num = target["num"]
+                if not (num and num in AS_CHANNELS):
+                    skipped.append(f"{block['header']} (nepoznat tim {num})")
+                    continue
+                tgt = bot.get_channel(AS_CHANNELS[num])
+                desc = f"TEAM {num}"
+            else:
+                tgt = await find_cover_channel(guild, target["name"])
+                desc = f"COVER {target['name']}"
+                if not tgt:
+                    skipped.append(f"{block['header']} (cover kanal nije nađen: {cover_channel_name(target['name'])})")
+                    continue
+
+            mentions = find_chatter_mentions(guild, target["chatter"], shift)
+            if not mentions and shift:
+                role_id = SHIFT_ROLES.get(shift)
+                if role_id:
+                    mentions = [f"<@&{role_id}>"]
+
+            info = {"models": models, "date": date_str, "mentions": mentions}
+            try:
+                await tgt.send(format_channel_schedule(info))
+                sent.append(desc)
+            except Exception as e:
+                skipped.append(f"{block['header']} → {desc} (greška)")
+                print("[AS] auto send fail:", e)
+
+    chatters = []
+    for block in blocks:
+        for target in block["targets"]:
+            chatters.extend(extract_chatters(target["chatter"]))
+    seen = set()
+    uniq = []
+    for c in chatters:
+        k = c.lower()
+        if k not in seen:
+            seen.add(k)
+            uniq.append(c)
+    check_line = "!check " + ", ".join(uniq) if uniq else "!check"
+
+    if check_channel is not None:
+        try:
+            await check_channel.send(check_line)
+        except Exception as e:
+            print("[AS] check send fail:", e)
+
+    return {"ok": True, "sent": sent, "skipped": skipped, "check_line": check_line}
+
+
 class AsModal(Modal, title="Auto Schedule"):
     def __init__(self):
         super().__init__(timeout=None)
@@ -1866,67 +1938,15 @@ class AsModal(Modal, title="Auto Schedule"):
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        blocks = parse_schedule(self.schedule.value)
-        if not blocks:
+        result = await route_schedule(
+            interaction.guild, self.schedule.value, check_channel=interaction.channel
+        )
+        if not result.get("ok"):
             return await interaction.followup.send(
-                "❌ Nisam pronašao nijedan TEAM u tekstu.", ephemeral=True
+                f"❌ {result['error']}", ephemeral=True
             )
-
-        meta = parse_schedule_meta(self.schedule.value)
-        date_str = meta.get("date") if meta else None
-        shift = meta.get("shift") if meta else None
-        guild = interaction.guild
-
-        channel = interaction.channel
-        sent = []
-        skipped = []
-        for block in blocks:
-            models = block["models"]
-            if not models:
-                skipped.append(f"{block['header']} (off)")
-                continue
-            for target in block["targets"]:
-                if target["kind"] == "team":
-                    num = target["num"]
-                    if not (num and num in AS_CHANNELS):
-                        skipped.append(f"{block['header']} (nepoznat tim {num})")
-                        continue
-                    tgt = bot.get_channel(AS_CHANNELS[num])
-                    desc = f"TEAM {num}"
-                else:
-                    tgt = await find_cover_channel(guild, target["name"])
-                    desc = f"COVER {target['name']}"
-                    if not tgt:
-                        skipped.append(f"{block['header']} (cover kanal nije nađen: {cover_channel_name(target['name'])})")
-                        continue
-
-                mentions = find_chatter_mentions(guild, target["chatter"], shift)
-                if not mentions and shift:
-                    role_id = SHIFT_ROLES.get(shift)
-                    if role_id:
-                        mentions = [f"<@&{role_id}>"]
-
-                info = {"models": models, "date": date_str, "mentions": mentions}
-                try:
-                    await tgt.send(format_channel_schedule(info))
-                    sent.append(desc)
-                except Exception as e:
-                    skipped.append(f"{block['header']} → {desc} (greška)")
-                    print("[AS] auto send fail:", e)
-
-        chatters = []
-        for block in blocks:
-            for target in block["targets"]:
-                chatters.extend(extract_chatters(target["chatter"]))
-        seen = set()
-        uniq = []
-        for c in chatters:
-            k = c.lower()
-            if k not in seen:
-                seen.add(k)
-                uniq.append(c)
-        await channel.send("!check " + ", ".join(uniq) if uniq else "!check")
-
+        sent = result["sent"]
+        skipped = result["skipped"]
         summary = f"✅ Poslao {len(sent)} poruka"
         if sent:
             summary += ": " + ", ".join(sent)
@@ -2271,6 +2291,43 @@ async def _before_off_reminder():
     await bot.wait_until_ready()
 
 
+# ---------- BRIDGE (telegram -> discord) ----------
+async def handle_bridge_as(request):
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid json"}, status=400)
+    if BRIDGE_TOKEN and data.get("token") != BRIDGE_TOKEN:
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    text = (data.get("text") or "").strip()
+    if not text:
+        return web.json_response({"ok": False, "error": "empty text"}, status=400)
+    guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
+    if not guild:
+        return web.json_response({"ok": False, "error": "guild not found"}, status=500)
+    check_channel = None
+    if AS_CHECK_CHANNEL_ID:
+        try:
+            check_channel = bot.get_channel(int(AS_CHECK_CHANNEL_ID))
+        except Exception:
+            check_channel = None
+    result = await route_schedule(guild, text, check_channel=check_channel)
+    return web.json_response(result)
+
+
+async def start_bridge_server():
+    if not BRIDGE_TOKEN:
+        print("[BRIDGE] BRIDGE_TOKEN nije setovan — bridge ne radi.")
+        return
+    app = web.Application()
+    app.router.add_post("/as", handle_bridge_as)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", BRIDGE_PORT)
+    await site.start()
+    print(f"[BRIDGE] HTTP server sluša na portu {BRIDGE_PORT}")
+
+
 # ---------- on_ready ----------
 @bot.event
 async def on_ready():
@@ -2285,6 +2342,8 @@ async def on_ready():
         if not off_day_reminder_loop.is_running():
             off_day_reminder_loop.start()
             print("✅ Off day reminder task pokrenut")
+        if BRIDGE_TOKEN:
+            asyncio.create_task(start_bridge_server())
     except Exception as e:
         print("sync fail:", e)
 
