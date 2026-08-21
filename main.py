@@ -2332,6 +2332,44 @@ async def start_bridge_server():
     print(f"[BRIDGE] HTTP server sluša na portu {BRIDGE_PORT}")
 
 
+# ---------- SEED (jednokratno vraćanje izgubljenih off dana) ----------
+SEED_OFF_DAYS = [
+    ("kvu", "graveyard", ["2026-08-28", "2026-08-29"]),
+    ("khazperix", "afternoon", ["2026-08-28", "2026-08-23", "2026-09-07"]),
+    ("ckevuz", "main", ["2026-08-30", "2026-09-06", "2026-08-27"]),
+    ("Dejan", "graveyard", ["2026-08-22", "2026-08-23", "2026-08-30"]),
+    ("Nemac", "main", ["2026-08-23", "2026-09-01"]),
+]
+
+
+async def seed_off_days(guild):
+    added = 0
+    missing = []
+    for name, shift, dates in SEED_OFF_DAYS:
+        member = _find_member_by_name(guild, name, None)
+        if not member:
+            missing.append(name)
+            continue
+        for d in dates:
+            if any(e.get("user_id") == member.id and e.get("date") == d for e in off_days):
+                continue
+            off_days.append({
+                "user_id": member.id,
+                "username": member.display_name or name,
+                "date": d,
+                "shift": shift,
+                "message_id": None,
+                "confirmed": True,
+                "group_id": None,
+            })
+            added += 1
+    if added:
+        save_off_days()
+        print(f"[SEED] vraćeno {added} off dana")
+    if missing:
+        print(f"[SEED] upozorenje: nije nađen member za: {', '.join(missing)}")
+
+
 # ---------- on_ready ----------
 @bot.event
 async def on_ready():
@@ -2347,6 +2385,9 @@ async def on_ready():
             off_day_reminder_loop.start()
             print("✅ Off day reminder task pokrenut")
         asyncio.create_task(start_bridge_server())
+        guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
+        if guild:
+            await seed_off_days(guild)
     except Exception as e:
         print("sync fail:", e)
 
