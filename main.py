@@ -3,19 +3,17 @@
 import os
 import re
 import json
-import unicodedata
 import asyncio
 import random
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord.ui import Modal, TextInput
 from discord import TextStyle
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from openai import OpenAI
-from difflib import SequenceMatcher
 from collections import defaultdict
 
 # --- env first ---
@@ -29,43 +27,12 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 client = OpenAI(api_key=OPENAI_API_KEY) if (USE_AI_FU and OPENAI_API_KEY) else None
 if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN nije setovan u .env")
-STOPWORDS = {
-    "vip",
-    "free",
-    "paid",
-    "oll",
-    "ock",
-    "ra",
-    "inb",
-    "eep",
-    "tsu",
-    "jsn",
-    "vf",
-    "ggn",
-    "bcl",
-    "hnq",
-    "bk",
-    "sa",
-    "tvn",
-    "yll",
-    "oftv",
-    "kct",
-    "trans",
-    "sexy",
-    "zzz",
-    "x",
-    "c",
-    "g",
-}
 # ---------- TUNABLES ----------
 SLEEP_BETWEEN_CALLS = 0.35
 CHUNK_SIZE = 24
 RETRIES = 5
 RETRY_BASE_SLEEP = 0.8
 PROGRESS_EVERY_N = 5
-# Role koje SE NIKAD NE DIRAJU kod auto-clean (pre /schedule)
-KEEP_ROLE_NAMES = {"AFTERNOON", "GRAVEYARD", "MAIN", "OBUKA", "LV CHATTER"}
-role_index = {}
 
 # QC statistika za /qcurrent
 qc_history = defaultdict(list)   # (year, month, user_id) -> list of {'date': day, 'count': num_chattera}
@@ -95,6 +62,14 @@ SCHEDULE_CHANNEL = {
 }
 
 SR_WEEKDAYS = ["ponedeljak", "utorak", "sreda", "četvrtak", "petak", "subota", "nedelja"]
+
+# podsetnik za off dan (kome se šalje + kada po smeni)
+REMINDER_TARGET_USER_ID = 923657835164889119
+OFF_REMINDER_SCHEDULE = {
+    "graveyard": {"day_offset": -1, "hour": 22, "minute": 0},
+    "afternoon": {"day_offset": 0, "hour": 10, "minute": 0},
+    "main": {"day_offset": -1, "hour": 22, "minute": 0},
+}
 
 off_days = []
 
@@ -144,23 +119,6 @@ load_off_days()
 
 # ==== anti-spam za AI pozive ====
 AI_BLOCKED_UNTIL = None
-
-
-def extract_core_name(name: str):
-    name = name.lower()
-    name = name.replace("/", " ")
-    name = re.sub(r"\d+", " ", name)
-    parts = name.split()
-    clean = []
-    for p in parts:
-        if len(p) <= 2:
-            continue
-        if p in STOPWORDS:
-            continue
-        clean.append(p)
-    if not clean:
-        return name.strip()
-    return clean[0]
 
 
 def ai_available():
@@ -361,153 +319,9 @@ async def generate_fus(mm_line: str) -> list[str]:
     return labeled[:4]
 
 
-STATUS_WORDS = {
-    "ra",
-    "n",
-    "vip",
-    "x",
-    "oll",
-    "ock",
-    "inb",
-    "zzz",
-    "vf",
-    "eep",
-    "jsn",
-    "bcl",
-    "bk",
-    "hnq",
-    "jaa",
-    "sa",
-    "ggn",
-    "yll",
-    "oftv",
-    "rco",
-    "tvn",
-    "tsu",
-    "kct",
-    "yr",
-    "oll",
-}
-
-
-def extract_model_name(entry: str) -> str:
-    words = entry.lower().strip().split()
-    model_parts = []
-    for w in words:
-        if w.isdigit():
-            continue
-        if w in STATUS_WORDS:
-            break
-        model_parts.append(w)
-    return " ".join(model_parts)
-
-
-def normalize_model_name(name: str):
-    core = extract_core_name(name)
-    core = unicodedata.normalize("NFKD", core)
-    core = "".join(c for c in core if not unicodedata.combining(c))
-    core = re.sub(r"[^a-z0-9]", "", core)
-    return core
-
-
-def similarity(a: str, b: str):
-    return SequenceMatcher(None, a, b).ratio()
-
-
 # ---------- ROLE LOOKUP ----------
 def norm(s: str) -> str:
     return re.sub(r"[^A-Z0-9]+", "", (s or "").upper())
-
-
-def build_role_index(guild: discord.Guild):
-    by_norm = {}
-    by_norm_no_team = {}
-    for r in guild.roles:
-        by_norm[norm(r.name)] = r
-        if r.name.upper().startswith("TEAM "):
-            stripped = r.name[5:]
-            by_norm_no_team[norm(stripped)] = r
-    return by_norm, by_norm_no_team
-
-
-# alias normalizacija + resolve
-ALIAS_TO_BASE = {
-    "ANITA2USASOPHIE": "ANITA",
-    "ANITA2USA": "ANITA",
-    "ANITA": "ANITA",
-    "SKYLARONLYF": "SKYLAR ONLYF",
-    "SKYLARONLYFYY": "SKYLAR ONLYF",
-    "SKYLAR": "SKYLAR ONLYF",
-    "AMBEREMERSONT": "AMBER EMERSON T",
-    "AMBEREMERSON": "AMBER EMERSON T",
-    "AMBER": "AMBER EMERSON T",
-    "DIAX": "DIA",
-    "DIAVIP": "DIA",
-    "DIA": "DIA",
-    "MIAROUGE": "MIA ROUGE",
-    "MIAROGUE": "MIA ROUGE",
-    "MIA": "MIA ROUGE",
-    "KASSIEX": "KASSIE X",
-    "KASSIE": "KASSIE X",
-    "EMILYONLYF": "EMILY ONLYF",
-    "EVAG": "EVA G",
-    "LARAG": "LARA G",
-    "MAYAFOXEY": "MAYA FOXY",
-    "SKAYLARONLYF": "SKYLAR ONLYF",
-    "SYNDEY": "SYDNEY",
-    "HANAS": "HANNAS",
-    "MIAPOZZZP": "MIAPOZZZ P",
-    "LEKESSIAT": "LEKESSIA",
-    "EMILYKOIVC": "EMILYKOI V C",
-    "MOLLYVC": "MOLLY V C",
-    "RAVENSA": "RAVEN",
-    "MIAPOPZZ": "MIAPOZZZ P",
-    "MACCMKATIE": "CCM KATIE",
-    "KENDALLTINDER": "KENDAL TINDER",
-}
-ALIAS_KEYS_BY_LEN = sorted(ALIAS_TO_BASE.keys(), key=len, reverse=True)
-NOISE_WORDS_IN_PHRASE = {"YY"}
-
-
-def clean_role_phrase(phrase: str) -> str:
-    if not phrase:
-        return ""
-    s = phrase.strip()
-    if s.upper() in {"X"}:
-        return ""
-    s = re.sub(r"\b(inbox|inb)\s*([0-9]+)\b", "", s, flags=re.IGNORECASE)
-    s = re.sub(r"\b(inbox[0-9]+|inb[0-9]+)\b", "", s, flags=re.IGNORECASE)
-    s = re.sub(r"\b(free|paid|full)\b", "", s, flags=re.IGNORECASE)
-    toks = [
-        t for t in re.split(r"\s+", s) if t and t.upper() not in NOISE_WORDS_IN_PHRASE
-    ]
-    s = " ".join(toks).strip()
-    s = re.sub(r"\b([A-Za-z]+)\s+2\b", r"\1", s)
-    return s
-
-
-def _resolve_alias_to_base(base: str) -> str | None:
-    nb = norm(base)
-    for key in ALIAS_KEYS_BY_LEN:
-        if key in nb:
-            return ALIAS_TO_BASE[key]
-    return None
-
-
-def role_from_phrase(guild, phrase):
-    base = normalize_model_name(phrase)
-    if base in role_index:
-        return role_index[base][0]
-    best = None
-    best_score = 0
-    for k, roles in role_index.items():
-        score = similarity(base, k)
-        if score > best_score:
-            best_score = score
-            best = roles[0]
-    if best_score >= 0.72:
-        return best
-    return None
 
 
 def parse_roles_from_text(guild: discord.Guild, text: str) -> list[discord.Role]:
@@ -569,14 +383,6 @@ def why_blocked(bot_member: discord.Member, role: discord.Role):
     if bot_member.top_role <= role:
         r.append("bot below role")
     return r or ["ok"]
-
-
-def is_model_role(role: discord.Role) -> bool:
-    return role.name.upper().startswith("TEAM ")
-
-
-def is_keep_role(role: discord.Role) -> bool:
-    return role.name.upper() in KEEP_ROLE_NAMES
 
 
 # ==================== PERMISSION CHECKS ====================
@@ -1802,6 +1608,7 @@ class OffDaySelect(discord.ui.Select):
             "shift": self.shift,
             "message_id": None,
             "confirmed": False,
+            "reminder_sent": False,
         }
         off_days.append(entry)
         save_off_days()
@@ -1951,6 +1758,56 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
                     print("[OFF] edit delete fail:", e)
 
 
+@tasks.loop(minutes=1)
+async def off_day_reminder_loop():
+    channel = bot.get_channel(OFF_DAY_CHANNEL_ID)
+    if not channel:
+        return
+    now = _local_now()
+    for entry in list(off_days):
+        if entry.get("reminder_sent"):
+            continue
+        cfg = OFF_REMINDER_SCHEDULE.get(entry.get("shift"))
+        if not cfg:
+            entry["reminder_sent"] = True
+            save_off_days()
+            continue
+        try:
+            off_date = datetime.strptime(entry["date"], "%Y-%m-%d").date()
+        except Exception:
+            continue
+        if now.date() > off_date:
+            entry["reminder_sent"] = True
+            save_off_days()
+            continue
+        reminder_day = off_date + timedelta(days=cfg["day_offset"])
+        reminder_dt = now.replace(
+            year=reminder_day.year,
+            month=reminder_day.month,
+            day=reminder_day.day,
+            hour=cfg["hour"],
+            minute=cfg["minute"],
+            second=0,
+            microsecond=0,
+        )
+        if now >= reminder_dt:
+            rel = "sutra" if cfg["day_offset"] < 0 else "danas"
+            date_str = off_date.strftime("%d.%m.%Y")
+            try:
+                await channel.send(
+                    f"🔔 Podsetnik: <@{entry.get('user_id')}> je uzeo day off {rel} ({date_str}). <@{REMINDER_TARGET_USER_ID}>"
+                )
+                entry["reminder_sent"] = True
+                save_off_days()
+            except Exception as e:
+                print("[OFF] reminder send fail:", e)
+
+
+@off_day_reminder_loop.before_loop
+async def _before_off_reminder():
+    await bot.wait_until_ready()
+
+
 # ---------- on_ready ----------
 @bot.event
 async def on_ready():
@@ -1962,6 +1819,9 @@ async def on_ready():
             cmds = await tree.sync()
             print(f"synced {len(cmds)} globalnih slash komandi")
         print(f"✅ logged in as {bot.user}")
+        if not off_day_reminder_loop.is_running():
+            off_day_reminder_loop.start()
+            print("✅ Off day reminder task pokrenut")
     except Exception as e:
         print("sync fail:", e)
 
