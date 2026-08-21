@@ -1813,22 +1813,26 @@ class OffDaySelect(discord.ui.Select):
                     f"📅 **OFF DAY**\n"
                     f"**Datum:** {d.strftime('%d.%m.%Y')} ({SR_WEEKDAYS[d.weekday()]})\n"
                     f"**Chatter:** {interaction.user.mention} ({interaction.user.display_name})\n"
-                    f"**Smena:** {self.shift}\n"
-                    f"Potvrdi klikom na ✅ da si video/la, ili klikni ❌ da obrišeš."
+                    f"**Smena:** {self.shift}"
                 )
-                msg = await channel.send(content)
-                await msg.add_reaction("✅")
-                await msg.add_reaction("❌")
-                entry["message_id"] = msg.id
-                save_off_days()
+                await channel.send(content)
             except Exception as e:
-                print("[OFF] slanje u kanal nije uspelo:", e)
+                print("[OFF] slanje u management kanal nije uspelo:", e)
 
         await interaction.response.send_message(
-            f"✅ Off day upisan za **{d.strftime('%d.%m.%Y')}** ({SR_WEEKDAYS[d.weekday()]}).\n"
-            f"Potvrdi u <#{OFF_DAY_CHANNEL_ID}> klikom na ✅ (ili obriši klikom na ❌).",
-            ephemeral=True,
+            f"📅 **{interaction.user.mention} je rezervisao/la off day**\n"
+            f"**Datum:** {d.strftime('%d.%m.%Y')} ({SR_WEEKDAYS[d.weekday()]})\n"
+            f"**Smena:** {self.shift}\n"
+            f"Potvrdi klikom na ✅ da si video/la, ili klikni ❌ da obrišeš."
         )
+        msg = await interaction.original_response()
+        entry["message_id"] = msg.id
+        save_off_days()
+        try:
+            await msg.add_reaction("✅")
+            await msg.add_reaction("❌")
+        except Exception as e:
+            print("[OFF] dodavanje reakcija nije uspelo:", e)
 
 
 @tree.command(name="off", description="Rezerviši slobodan dan (off day)", guild=GUILD_OBJ)
