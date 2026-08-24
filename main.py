@@ -1905,26 +1905,44 @@ async def route_schedule(guild, text, check_channel=None):
                 skipped.append(f"{block['header']} → {desc} (greška)")
                 print("[AS] auto send fail:", e)
 
-    chatters = []
+    first_half = []
+    second_half = []
     for block in blocks:
-        for target in block["targets"]:
-            chatters.extend(extract_chatters(target["chatter"]))
-    seen = set()
-    uniq = []
-    for c in chatters:
-        k = c.lower()
-        if k not in seen:
-            seen.add(k)
-            uniq.append(c)
-    check_line = "!check " + ", ".join(uniq) if uniq else "!check"
+        targets = block["targets"]
+        for i, target in enumerate(targets):
+            names = extract_chatters(target["chatter"])
+            if len(targets) == 1 or i == 0:
+                first_half.extend(names)
+            else:
+                second_half.extend(names)
+
+    def _dedupe(lst):
+        seen = set()
+        out = []
+        for c in lst:
+            k = c.lower()
+            if k not in seen:
+                seen.add(k)
+                out.append(c)
+        return out
+
+    check_line = "!check " + ", ".join(_dedupe(first_half)) if first_half else "!check"
+    check_line_second = "!check " + ", ".join(_dedupe(second_half)) if second_half else ""
 
     if check_channel is not None:
         try:
-            await check_channel.send(check_line)
+            full = ", ".join(_dedupe(first_half + second_half))
+            await check_channel.send("!check " + full if full else "!check")
         except Exception as e:
             print("[AS] check send fail:", e)
 
-    return {"ok": True, "sent": sent, "skipped": skipped, "check_line": check_line}
+    return {
+        "ok": True,
+        "sent": sent,
+        "skipped": skipped,
+        "check_line": check_line,
+        "check_line_second": check_line_second,
+    }
 
 
 class AsModal(Modal, title="Auto Schedule"):
