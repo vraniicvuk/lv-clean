@@ -1843,18 +1843,32 @@ def parse_schedule_meta(text):
     return None
 
 
+SHIFT_LABELS = {"afternoon": "AFTERNOON", "graveyard": "GRAVEYARD", "main": "MAIN"}
+
+
 def format_channel_schedule(info):
     models_text = " / ".join(info["models"])
     date_str = info.get("date")
     mentions = info.get("mentions") or []
-    if date_str and mentions:
-        header = f"{date_str}, {' '.join(mentions)}"
-    elif date_str:
-        header = date_str
-    elif mentions:
-        header = " ".join(mentions)
-    else:
-        header = ""
+    shift = info.get("shift")
+    part = info.get("part")  # None / "first" / "second"
+
+    shift_label = SHIFT_LABELS.get(shift) if shift else None
+
+    parts = []
+    if shift_label:
+        if part == "first":
+            parts.append(f"prvi deo {shift_label} smene")
+        elif part == "second":
+            parts.append(f"drugi deo {shift_label} smene")
+        else:
+            parts.append(shift_label)
+    if date_str:
+        parts.append(date_str)
+    if mentions:
+        parts.append(" ".join(mentions))
+
+    header = " ".join(parts)
     if header:
         return f"{header}\n{models_text}"
     return models_text
@@ -1876,7 +1890,7 @@ async def route_schedule(guild, text, check_channel=None):
         if not models:
             skipped.append(f"{block['header']} (off)")
             continue
-        for target in block["targets"]:
+        for i, target in enumerate(block["targets"]):
             if target["kind"] == "team":
                 num = target["num"]
                 if not (num and num in AS_CHANNELS):
@@ -1897,7 +1911,11 @@ async def route_schedule(guild, text, check_channel=None):
                 if role_id:
                     mentions = [f"<@&{role_id}>"]
 
-            info = {"models": models, "date": date_str, "mentions": mentions}
+            part = None
+            if len(block["targets"]) > 1:
+                part = "first" if i == 0 else "second"
+
+            info = {"models": models, "date": date_str, "mentions": mentions, "shift": shift, "part": part}
             try:
                 await tgt.send(format_channel_schedule(info))
                 sent.append(desc)
