@@ -226,14 +226,15 @@ def get_user_shift(member):
 
 
 def taken_dates_for_shift(shift):
-    out = set()
+    counts = {}
     for e in off_days:
         if e.get("shift") == shift:
             try:
-                out.add(datetime.strptime(e["date"], "%Y-%m-%d").date())
+                d = datetime.strptime(e["date"], "%Y-%m-%d").date()
+                counts[d] = counts.get(d, 0) + 1
             except Exception:
                 pass
-    return out
+    return {d for d, c in counts.items() if c >= 2}
 
 
 def build_date_range():
