@@ -2036,13 +2036,15 @@ class ReassignActionsView(discord.ui.View):
             await interaction.response.send_message("❌ Nema započetog reassign-a.", ephemeral=True)
             return
         original_channel = interaction.channel
-        info_text = f"🔄 **REASSIGN**\n\n```{format_reassign(data)}```"
+        info_text = f"🔄 **REASSIGN**\n\n{format_reassign(data)}"
 
+        ticket_msg_id = None
         # 1) info u kanalu gde je komanda pokrenuta (npr. ticket)
         try:
             m1 = await original_channel.send(info_text)
             await m1.add_reaction("✅")
-            reassign_messages[m1.id] = {"channel_id": original_channel.id, "user_id": interaction.user.id}
+            ticket_msg_id = m1.id
+            reassign_messages[m1.id] = {"channel_id": original_channel.id, "user_id": interaction.user.id, "ticket_msg_id": m1.id}
         except Exception as e:
             print("[REASSIGN] ticket send fail:", e)
 
@@ -2058,7 +2060,7 @@ class ReassignActionsView(discord.ui.View):
             try:
                 m2 = await overview.send(info_text)
                 await m2.add_reaction("✅")
-                reassign_messages[m2.id] = {"channel_id": original_channel.id, "user_id": interaction.user.id}
+                reassign_messages[m2.id] = {"channel_id": original_channel.id, "user_id": interaction.user.id, "ticket_msg_id": ticket_msg_id}
             except Exception as e:
                 print("[REASSIGN] overview send fail:", e)
 
@@ -2394,7 +2396,15 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
                 target = bot.get_channel(info["channel_id"])
                 if target:
                     try:
-                        await target.send(f"✅ **Uspešno reassignovano** — <@{info['user_id']}>")
+                        ticket_msg_id = info.get("ticket_msg_id")
+                        if ticket_msg_id:
+                            msg = await target.fetch_message(ticket_msg_id)
+                            await msg.reply(
+                                f"✅ **Uspešno reassignovano** — <@{info['user_id']}>",
+                                mention_author=False,
+                            )
+                        else:
+                            await target.send(f"✅ **Uspešno reassignovano** — <@{info['user_id']}>")
                     except Exception as e:
                         print("[REASSIGN] notify fail:", e)
         return
