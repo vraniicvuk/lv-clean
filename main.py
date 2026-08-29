@@ -2000,6 +2000,111 @@ async def as_cmd(interaction: discord.Interaction):
     await interaction.response.send_modal(AsModal())
 
 
+# ========== REASSIGN ==========
+REASSIGN_CHANNEL_ID = 1543240286615117925
+pending_reassigns = {}  # user_id -> {"model","date","reassign_to","fans":[(name,sale),...],"preview_msg": Message}
+reassign_messages = {}  # message_id -> user_id (ko je popunio formular)
+
+
+def format_reassign(data):
+    lines = [f"MODEL: {data['model']}"]
+    for name, sale in data["fans"]:
+        lines.append(f"FAN'S NAME (ne fan's @): {name}")
+        lines.append(f"SALE: ${sale}")
+    lines.append(f"DATE: {data['date']}")
+    lines.append(f"REASSIGN TO: {data['reassign_to']}")
+    return "\n".join(lines)
+
+
+class ReassignActionsView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=900)
+
+    @discord.ui.button(label="➕ Dodaj još", style=discord.ButtonStyle.secondary)
+    async def add_fan(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(AddFanModal())
+
+    @discord.ui.button(label="✅ Završi", style=discord.ButtonStyle.success)
+    async def finish(self, interaction: discord.Interaction, button: discord.ui.Button):
+        data = pending_reassigns.pop(interaction.user.id, None)
+        if not data:
+            await interaction.response.send_message("❌ Nema započetog reassign-a.", ephemeral=True)
+            return
+        channel = bot.get_channel(REASSIGN_CHANNEL_ID)
+        if not channel:
+            await interaction.response.send_message("❌ Reassign kanal nije nađen.", ephemeral=True)
+            return
+        try:
+            msg = await channel.send(f"🔄 **REASSIGN**\n\n```{format_reassign(data)}```")
+            await msg.add_reaction("✅")
+            reassign_messages[msg.id] = interaction.user.id
+        except Exception as e:
+            print("[REASSIGN] send fail:", e)
+        await interaction.response.edit_message(content="✅ Reassign poslat u kanal.", view=None)
+
+
+class ReassignModal(Modal, title="Reassign unos"):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.model = TextInput(label="Model", placeholder="npr. TRIXXY B", required=True, max_length=100)
+        self.fan = TextInput(label="Fan's name (ne @)", required=True, max_length=100)
+        self.sale = TextInput(label="Sale ($)", required=True, max_length=20)
+        self.date = TextInput(label="Datum", placeholder="npr. 28.8.", required=True, max_length=20)
+        self.reassign_to = TextInput(label="Reassign to", placeholder="npr. veljkoo", required=True, max_length=100)
+        self.add_item(self.model)
+        self.add_item(self.fan)
+        self.add_item(self.sale)
+        self.add_item(self.date)
+        self.add_item(self.reassign_to)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        data = {
+            "model": self.model.value.strip(),
+            "date": self.date.value.strip(),
+            "reassign_to": self.reassign_to.value.strip(),
+            "fans": [(self.fan.value.strip(), self.sale.value.strip())],
+        }
+        pending_reassigns[interaction.user.id] = data
+        await interaction.response.send_message(
+            "**Reassign (u izradi):**\n\n" + format_reassign(data),
+            view=ReassignActionsView(),
+            ephemeral=True,
+        )
+        msg = await interaction.original_response()
+        data["preview_msg"] = msg
+
+
+class AddFanModal(Modal, title="Dodaj fan-a"):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.fan = TextInput(label="Fan's name (ne @)", required=True, max_length=100)
+        self.sale = TextInput(label="Sale ($)", required=True, max_length=20)
+        self.add_item(self.fan)
+        self.add_item(self.sale)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        data = pending_reassigns.get(interaction.user.id)
+        if not data:
+            await interaction.response.send_message("❌ Nema započetog reassign-a.", ephemeral=True)
+            return
+        data["fans"].append((self.fan.value.strip(), self.sale.value.strip()))
+        preview_msg = data.get("preview_msg")
+        if preview_msg:
+            try:
+                await preview_msg.edit(
+                    content="**Reassign (u izradi):**\n\n" + format_reassign(data),
+                    view=ReassignActionsView(),
+                )
+            except Exception as e:
+                print("[REASSIGN] preview edit fail:", e)
+        await interaction.response.defer()
+
+
+@tree.command(name="reassign", description="Prijavi reassign prodaje", guild=GUILD_OBJ)
+async def reassign_cmd(interaction: discord.Interaction):
+    await interaction.response.send_modal(ReassignModal())
+
+
 # ========== OFF DAYS ==========
 class DayPickSelect(discord.ui.Select):
     def __init__(self, dates, taken):
@@ -2257,6 +2362,18 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
         except Exception:
             return
     if member.bot:
+        return
+
+    # /reassign potvrda
+    if payload.message_id in reassign_messages:
+        if str(payload.emoji) == "✅":
+            user_id = reassign_messages.get(payload.message_id)
+            channel = bot.get_channel(payload.channel_id)
+            if channel and user_id:
+                try:
+                    await channel.send(f"✅ **Uspešno reassignovano** — <@{user_id}>")
+                except Exception as e:
+                    print("[REASSIGN] notify fail:", e)
         return
 
     entries = [e for e in off_days if e.get("message_id") == payload.message_id]
