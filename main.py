@@ -963,7 +963,6 @@ class FarmModal(Modal, title="Farm unos"):
             f"<@&{rid}>" for rid in [1410958063824801802, 1410962105749995591, 1474070997274464379]
         )
         lines = [
-            f"{farm_roles}",
             f"**Novi farm unos** (by {self.opener.mention}):",
             f"- Iznos: `{self.amount.value.strip()}`",
             f"- Model: `{self.model_name.value.strip()}`",
@@ -983,6 +982,11 @@ class FarmModal(Modal, title="Farm unos"):
             await msg.add_reaction("🚫")
         except:
             pass
+        # zasebna poruka sa tagom rola
+        try:
+            await interaction.channel.send(farm_roles)
+        except Exception as e:
+            print("[FARM] role ping fail:", e)
 
 
 @tree.command(name="farm", description="Otvori formu za farm unos", guild=GUILD_OBJ)
@@ -2002,8 +2006,9 @@ async def as_cmd(interaction: discord.Interaction):
 
 # ========== REASSIGN ==========
 REASSIGN_CHANNEL_ID = 1543240286615117925
+REASSIGN_PING_ROLE_ID = 1410958063824801802
 pending_reassigns = {}  # user_id -> {"model","date","reassign_to","fans":[(name,sale),...],"preview_msg": Message}
-reassign_messages = {}  # message_id -> user_id (ko je popunio formular)
+reassign_messages = {}  # message_id -> {"channel_id": int, "user_id": int}
 
 
 def format_reassign(data):
@@ -2030,17 +2035,34 @@ class ReassignActionsView(discord.ui.View):
         if not data:
             await interaction.response.send_message("❌ Nema započetog reassign-a.", ephemeral=True)
             return
-        channel = bot.get_channel(REASSIGN_CHANNEL_ID)
-        if not channel:
-            await interaction.response.send_message("❌ Reassign kanal nije nađen.", ephemeral=True)
-            return
+        original_channel = interaction.channel
+        info_text = f"🔄 **REASSIGN**\n\n```{format_reassign(data)}```"
+
+        # 1) info u kanalu gde je komanda pokrenuta (npr. ticket)
         try:
-            msg = await channel.send(f"🔄 **REASSIGN**\n\n```{format_reassign(data)}```")
-            await msg.add_reaction("✅")
-            reassign_messages[msg.id] = interaction.user.id
+            m1 = await original_channel.send(info_text)
+            await m1.add_reaction("✅")
+            reassign_messages[m1.id] = {"channel_id": original_channel.id, "user_id": interaction.user.id}
         except Exception as e:
-            print("[REASSIGN] send fail:", e)
-        await interaction.response.edit_message(content="✅ Reassign poslat u kanal.", view=None)
+            print("[REASSIGN] ticket send fail:", e)
+
+        # 2) zasebna poruka sa tagom role
+        try:
+            await original_channel.send(f"<@&{REASSIGN_PING_ROLE_ID}>")
+        except Exception as e:
+            print("[REASSIGN] role ping fail:", e)
+
+        # 3) info u preglednom kanalu
+        overview = bot.get_channel(REASSIGN_CHANNEL_ID)
+        if overview:
+            try:
+                m2 = await overview.send(info_text)
+                await m2.add_reaction("✅")
+                reassign_messages[m2.id] = {"channel_id": original_channel.id, "user_id": interaction.user.id}
+            except Exception as e:
+                print("[REASSIGN] overview send fail:", e)
+
+        await interaction.response.edit_message(content="✅ Reassign poslat.", view=None)
 
 
 class ReassignModal(Modal, title="Reassign unos"):
@@ -2367,13 +2389,14 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     # /reassign potvrda
     if payload.message_id in reassign_messages:
         if str(payload.emoji) == "✅":
-            user_id = reassign_messages.get(payload.message_id)
-            channel = bot.get_channel(payload.channel_id)
-            if channel and user_id:
-                try:
-                    await channel.send(f"✅ **Uspešno reassignovano** — <@{user_id}>")
-                except Exception as e:
-                    print("[REASSIGN] notify fail:", e)
+            info = reassign_messages.get(payload.message_id)
+            if info:
+                target = bot.get_channel(info["channel_id"])
+                if target:
+                    try:
+                        await target.send(f"✅ **Uspešno reassignovano** — <@{info['user_id']}>")
+                    except Exception as e:
+                        print("[REASSIGN] notify fail:", e)
         return
 
     entries = [e for e in off_days if e.get("message_id") == payload.message_id]
