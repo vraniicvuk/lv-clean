@@ -4,6 +4,7 @@ import os
 import re
 import json
 import sqlite3
+import time
 import asyncio
 import random
 import discord
@@ -944,6 +945,10 @@ async def clean_multi(interaction: discord.Interaction, users: str, keep: str = 
 
 
 # ---------- /farm (modal forma) ----------
+FARM_REMINDER_TIMES = [3600, 7200, 10800]  # 1h, 2h, 3h
+farm_reminders = {}  # message_id -> {"user_id", "channel_id", "created_at", "sent":[b,b,b], "done": bool}
+
+
 class FarmModal(Modal, title="Farm unos"):
     def __init__(self, opener: discord.Member):
         super().__init__(timeout=None)
@@ -988,10 +993,8 @@ class FarmModal(Modal, title="Farm unos"):
         extra = self.more_details.value.strip() if self.more_details.value else ""
         if extra:
             lines.append(f"- Detalji: {extra}")
-        lines.append("")
-        lines.append(
-            "**Pitanje:** da li je fan dodat na odgovarajuće liste i da li su ažurirane beleške o istom?"
-        )
+
+        # 1) forma (bez pitanja)
         await interaction.response.send_message("\n".join(lines))
         msg = await interaction.original_response()
         try:
@@ -999,7 +1002,24 @@ class FarmModal(Modal, title="Farm unos"):
             await msg.add_reaction("🚫")
         except:
             pass
-        # zasebna poruka sa tagom rola
+
+        # 2) pitanje + tag onog ko je poslao + ✅ react + reminder tracking
+        try:
+            q_msg = await interaction.channel.send(
+                f"**Pitanje:** da li je fan dodat na odgovarajuće liste i da li su ažurirane beleške o istom?\n{self.opener.mention}"
+            )
+            await q_msg.add_reaction("✅")
+            farm_reminders[q_msg.id] = {
+                "user_id": self.opener.id,
+                "channel_id": interaction.channel.id,
+                "created_at": time.time(),
+                "sent": [False, False, False],
+                "done": False,
+            }
+        except Exception as e:
+            print("[FARM] question send fail:", e)
+
+        # 3) zasebna poruka sa tagom rola
         try:
             await interaction.channel.send(farm_roles)
         except Exception as e:
@@ -2514,6 +2534,20 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
                         print("[REASSIGN] notify fail:", e)
         return
 
+    # /farm potvrda
+    if payload.message_id in farm_reminders:
+        info = farm_reminders.get(payload.message_id)
+        if info and str(payload.emoji) == "✅" and member.id == info["user_id"]:
+            info["done"] = True
+            channel = bot.get_channel(payload.channel_id)
+            if channel:
+                try:
+                    qmsg = await channel.fetch_message(payload.message_id)
+                    await qmsg.edit(content=f"{qmsg.content}\n\n✅ Odgovoreno.")
+                except Exception as e:
+                    print("[FARM] confirm edit fail:", e)
+        return
+
     entries = [e for e in off_days if e.get("message_id") == payload.message_id]
     if not entries:
         return
@@ -2583,6 +2617,37 @@ async def off_day_reminder_loop():
 
 @off_day_reminder_loop.before_loop
 async def _before_off_reminder():
+    await bot.wait_until_ready()
+
+
+@tasks.loop(minutes=1)
+async def farm_reminder_loop():
+    now = time.time()
+    for msg_id in list(farm_reminders.keys()):
+        info = farm_reminders.get(msg_id)
+        if not info:
+            continue
+        if info["done"]:
+            farm_reminders.pop(msg_id, None)
+            continue
+        elapsed = now - info["created_at"]
+        channel = bot.get_channel(info["channel_id"])
+        for i, threshold in enumerate(FARM_REMINDER_TIMES):
+            if elapsed >= threshold and not info["sent"][i]:
+                info["sent"][i] = True
+                if channel:
+                    try:
+                        await channel.send(
+                            f"⏰ <@{info['user_id']}> podsetnik: reaguj ✅ na pitanje o farmi (da li je fan dodat na liste i ažurirane beleške)."
+                        )
+                    except Exception as e:
+                        print("[FARM] reminder fail:", e)
+        if elapsed >= FARM_REMINDER_TIMES[-1] and all(info["sent"]):
+            farm_reminders.pop(msg_id, None)
+
+
+@farm_reminder_loop.before_loop
+async def _before_farm_reminder():
     await bot.wait_until_ready()
 
 
@@ -2679,6 +2744,9 @@ async def on_ready():
         if not off_day_reminder_loop.is_running():
             off_day_reminder_loop.start()
             print("✅ Off day reminder task pokrenut")
+        if not farm_reminder_loop.is_running():
+            farm_reminder_loop.start()
+            print("✅ Farm reminder task pokrenut")
         asyncio.create_task(start_bridge_server())
         guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
         if guild:
