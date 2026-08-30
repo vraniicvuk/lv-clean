@@ -118,10 +118,15 @@ def init_db():
             date TEXT,
             chatter TEXT,
             fans TEXT,
-            created_at TEXT
+            created_at TEXT,
+            done INTEGER DEFAULT 0
         )
         """
     )
+    try:
+        conn.execute("ALTER TABLE reassigns ADD COLUMN done INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     conn.close()
 
@@ -2024,7 +2029,7 @@ reassign_messages = {}  # message_id -> {"channel_id": int, "user_id": int}
 
 def save_reassign(data):
     conn = _db()
-    conn.execute(
+    cur = conn.execute(
         "INSERT INTO reassigns (model, date, chatter, fans, created_at) VALUES (?,?,?,?,?)",
         (
             data["model"],
@@ -2035,12 +2040,24 @@ def save_reassign(data):
         ),
     )
     conn.commit()
+    rid = cur.lastrowid
+    conn.close()
+    return rid
+
+
+def mark_reassign_done(rid):
+    conn = _db()
+    conn.execute("UPDATE reassigns SET done=1 WHERE id=?", (rid,))
+    conn.commit()
     conn.close()
 
 
-def get_reassigns():
+def get_reassigns(done=False):
     conn = _db()
-    rows = conn.execute("SELECT model, date, chatter, fans FROM reassigns ORDER BY created_at DESC, id DESC").fetchall()
+    rows = conn.execute(
+        "SELECT id, model, date, chatter, fans FROM reassigns WHERE done=? ORDER BY created_at DESC, id DESC",
+        (1 if done else 0,),
+    ).fetchall()
     conn.close()
     out = []
     for r in rows:
@@ -2048,7 +2065,7 @@ def get_reassigns():
             fans = json.loads(r["fans"]) if r["fans"] else []
         except Exception:
             fans = []
-        out.append({"model": r["model"], "date": r["date"], "chatter": r["chatter"], "fans": fans})
+        out.append({"id": r["id"], "model": r["model"], "date": r["date"], "chatter": r["chatter"], "fans": fans})
     return out
 
 
@@ -2079,7 +2096,7 @@ class ReassignActionsView(discord.ui.View):
         original_channel = interaction.channel
         info_text = f"🔄 **REASSIGN**\n\n{format_reassign(data)}"
 
-        save_reassign(data)
+        rid = save_reassign(data)
 
         ticket_msg_id = None
         # 1) info u kanalu gde je komanda pokrenuta (npr. ticket)
@@ -2087,7 +2104,7 @@ class ReassignActionsView(discord.ui.View):
             m1 = await original_channel.send(info_text)
             await m1.add_reaction("✅")
             ticket_msg_id = m1.id
-            reassign_messages[m1.id] = {"channel_id": original_channel.id, "user_id": interaction.user.id, "ticket_msg_id": m1.id}
+            reassign_messages[m1.id] = {"channel_id": original_channel.id, "user_id": interaction.user.id, "ticket_msg_id": m1.id, "reassign_id": rid}
         except Exception as e:
             print("[REASSIGN] ticket send fail:", e)
 
@@ -2097,7 +2114,7 @@ class ReassignActionsView(discord.ui.View):
             try:
                 m2 = await overview.send(info_text)
                 await m2.add_reaction("✅")
-                reassign_messages[m2.id] = {"channel_id": original_channel.id, "user_id": interaction.user.id, "ticket_msg_id": ticket_msg_id}
+                reassign_messages[m2.id] = {"channel_id": original_channel.id, "user_id": interaction.user.id, "ticket_msg_id": ticket_msg_id, "reassign_id": rid}
             except Exception as e:
                 print("[REASSIGN] overview send fail:", e)
 
@@ -2478,6 +2495,9 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
         if str(payload.emoji) == "✅":
             info = reassign_messages.get(payload.message_id)
             if info:
+                rid = info.get("reassign_id")
+                if rid:
+                    mark_reassign_done(rid)
                 target = bot.get_channel(info["channel_id"])
                 if target:
                     try:
