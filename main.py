@@ -110,6 +110,18 @@ def init_db():
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS reassigns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            model TEXT,
+            date TEXT,
+            chatter TEXT,
+            fans TEXT,
+            created_at TEXT
+        )
+        """
+    )
     conn.commit()
     conn.close()
 
@@ -2006,9 +2018,38 @@ async def as_cmd(interaction: discord.Interaction):
 
 # ========== REASSIGN ==========
 REASSIGN_CHANNEL_ID = 1543240286615117925
-REASSIGN_PING_ROLE_ID = 1410958063824801802
 pending_reassigns = {}  # user_id -> {"model","date","reassign_to","fans":[(name,sale),...],"preview_msg": Message}
 reassign_messages = {}  # message_id -> {"channel_id": int, "user_id": int}
+
+
+def save_reassign(data):
+    conn = _db()
+    conn.execute(
+        "INSERT INTO reassigns (model, date, chatter, fans, created_at) VALUES (?,?,?,?,?)",
+        (
+            data["model"],
+            data["date"],
+            data["reassign_to"],
+            json.dumps(data["fans"], ensure_ascii=False),
+            _local_now().isoformat(),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_reassigns():
+    conn = _db()
+    rows = conn.execute("SELECT model, date, chatter, fans FROM reassigns ORDER BY created_at DESC, id DESC").fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        try:
+            fans = json.loads(r["fans"]) if r["fans"] else []
+        except Exception:
+            fans = []
+        out.append({"model": r["model"], "date": r["date"], "chatter": r["chatter"], "fans": fans})
+    return out
 
 
 def format_reassign(data):
@@ -2038,6 +2079,8 @@ class ReassignActionsView(discord.ui.View):
         original_channel = interaction.channel
         info_text = f"🔄 **REASSIGN**\n\n{format_reassign(data)}"
 
+        save_reassign(data)
+
         ticket_msg_id = None
         # 1) info u kanalu gde je komanda pokrenuta (npr. ticket)
         try:
@@ -2048,13 +2091,7 @@ class ReassignActionsView(discord.ui.View):
         except Exception as e:
             print("[REASSIGN] ticket send fail:", e)
 
-        # 2) zasebna poruka sa tagom role
-        try:
-            await original_channel.send(f"<@&{REASSIGN_PING_ROLE_ID}>")
-        except Exception as e:
-            print("[REASSIGN] role ping fail:", e)
-
-        # 3) info u preglednom kanalu
+        # 2) info u preglednom kanalu
         overview = bot.get_channel(REASSIGN_CHANNEL_ID)
         if overview:
             try:
@@ -2127,6 +2164,54 @@ class AddFanModal(Modal, title="Dodaj fan-a"):
 @tree.command(name="reassign", description="Prijavi reassign prodaje", guild=GUILD_OBJ)
 async def reassign_cmd(interaction: discord.Interaction):
     await interaction.response.send_modal(ReassignModal())
+
+
+def _fans_str(fans):
+    return ", ".join(f"{name} (${sale})" for name, sale in fans)
+
+
+@tree.command(name="listr", description="Lista reassignova po modelu + datumu", guild=GUILD_OBJ)
+async def listr(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    reassigns = get_reassigns()
+    if not reassigns:
+        return await interaction.followup.send("Nema reassignova.", ephemeral=True)
+
+    groups = {}
+    for r in reassigns:
+        key = (r["model"], r["date"])
+        groups.setdefault(key, []).append(r)
+
+    lines = []
+    for (model, date), rs in sorted(groups.items(), key=lambda x: x[0][1] + x[0][0]):
+        lines.append(f"**{model} — {date}**")
+        for r in rs:
+            lines.append(f"• {r['chatter']}: {_fans_str(r['fans'])}")
+        lines.append("")
+
+    await interaction.followup.send("\n".join(lines).strip(), ephemeral=True)
+
+
+@tree.command(name="listch", description="Lista reassignova po chatteru + datumu", guild=GUILD_OBJ)
+async def listch(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    reassigns = get_reassigns()
+    if not reassigns:
+        return await interaction.followup.send("Nema reassignova.", ephemeral=True)
+
+    groups = {}
+    for r in reassigns:
+        key = (r["chatter"], r["date"])
+        groups.setdefault(key, []).append(r)
+
+    lines = []
+    for (chatter, date), rs in sorted(groups.items(), key=lambda x: x[0][1] + x[0][0]):
+        lines.append(f"**{chatter} — {date}**")
+        for r in rs:
+            lines.append(f"• {r['model']}: {_fans_str(r['fans'])}")
+        lines.append("")
+
+    await interaction.followup.send("\n".join(lines).strip(), ephemeral=True)
 
 
 # ========== OFF DAYS ==========
