@@ -120,14 +120,19 @@ def init_db():
             chatter TEXT,
             fans TEXT,
             created_at TEXT,
-            done INTEGER DEFAULT 0
+            done INTEGER DEFAULT 0,
+            channel_id INTEGER,
+            user_id INTEGER,
+            ticket_msg_id INTEGER,
+            overview_msg_id INTEGER
         )
         """
     )
-    try:
-        conn.execute("ALTER TABLE reassigns ADD COLUMN done INTEGER DEFAULT 0")
-    except sqlite3.OperationalError:
-        pass
+    for col in ["done INTEGER DEFAULT 0", "channel_id INTEGER", "user_id INTEGER", "ticket_msg_id INTEGER", "overview_msg_id INTEGER"]:
+        try:
+            conn.execute(f"ALTER TABLE reassigns ADD COLUMN {col}")
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
     conn.close()
 
@@ -2043,25 +2048,54 @@ async def as_cmd(interaction: discord.Interaction):
 # ========== REASSIGN ==========
 REASSIGN_CHANNEL_ID = 1543240286615117925
 pending_reassigns = {}  # user_id -> {"model","date","reassign_to","fans":[(name,sale),...],"preview_msg": Message}
-reassign_messages = {}  # message_id -> {"channel_id": int, "user_id": int}
 
 
-def save_reassign(data):
+def save_reassign(data, channel_id=None, user_id=None):
     conn = _db()
     cur = conn.execute(
-        "INSERT INTO reassigns (model, date, chatter, fans, created_at) VALUES (?,?,?,?,?)",
+        "INSERT INTO reassigns (model, date, chatter, fans, created_at, channel_id, user_id) VALUES (?,?,?,?,?,?,?)",
         (
             data["model"],
             data["date"],
             data["reassign_to"],
             json.dumps(data["fans"], ensure_ascii=False),
             _local_now().isoformat(),
+            channel_id,
+            user_id,
         ),
     )
     conn.commit()
     rid = cur.lastrowid
     conn.close()
     return rid
+
+
+def set_reassign_messages(rid, ticket_msg_id, overview_msg_id):
+    conn = _db()
+    conn.execute(
+        "UPDATE reassigns SET ticket_msg_id=?, overview_msg_id=? WHERE id=?",
+        (ticket_msg_id, overview_msg_id, rid),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_reassign_by_message(message_id):
+    conn = _db()
+    row = conn.execute(
+        "SELECT id, channel_id, user_id, ticket_msg_id, done FROM reassigns WHERE ticket_msg_id=? OR overview_msg_id=?",
+        (message_id, message_id),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "id": row["id"],
+        "channel_id": row["channel_id"],
+        "user_id": row["user_id"],
+        "ticket_msg_id": row["ticket_msg_id"],
+        "done": row["done"],
+    }
 
 
 def mark_reassign_done(rid):
@@ -2115,15 +2149,15 @@ class ReassignActionsView(discord.ui.View):
         original_channel = interaction.channel
         info_text = f"🔄 **REASSIGN**\n\n{format_reassign(data)}"
 
-        rid = save_reassign(data)
+        rid = save_reassign(data, channel_id=original_channel.id, user_id=interaction.user.id)
 
         ticket_msg_id = None
+        overview_msg_id = None
         # 1) info u kanalu gde je komanda pokrenuta (npr. ticket)
         try:
             m1 = await original_channel.send(info_text)
             await m1.add_reaction("✅")
             ticket_msg_id = m1.id
-            reassign_messages[m1.id] = {"channel_id": original_channel.id, "user_id": interaction.user.id, "ticket_msg_id": m1.id, "reassign_id": rid}
         except Exception as e:
             print("[REASSIGN] ticket send fail:", e)
 
@@ -2133,9 +2167,11 @@ class ReassignActionsView(discord.ui.View):
             try:
                 m2 = await overview.send(info_text)
                 await m2.add_reaction("✅")
-                reassign_messages[m2.id] = {"channel_id": original_channel.id, "user_id": interaction.user.id, "ticket_msg_id": ticket_msg_id, "reassign_id": rid}
+                overview_msg_id = m2.id
             except Exception as e:
                 print("[REASSIGN] overview send fail:", e)
+
+        set_reassign_messages(rid, ticket_msg_id, overview_msg_id)
 
         await interaction.response.edit_message(content="✅ Reassign poslat.", view=None)
 
@@ -2510,27 +2546,24 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
         return
 
     # /reassign potvrda
-    if payload.message_id in reassign_messages:
-        if str(payload.emoji) == "✅":
-            info = reassign_messages.get(payload.message_id)
-            if info:
-                rid = info.get("reassign_id")
-                if rid:
-                    mark_reassign_done(rid)
-                target = bot.get_channel(info["channel_id"])
-                if target:
-                    try:
-                        ticket_msg_id = info.get("ticket_msg_id")
-                        if ticket_msg_id:
-                            msg = await target.fetch_message(ticket_msg_id)
-                            await msg.reply(
-                                f"✅ **Uspešno reassignovano** — <@{info['user_id']}>",
-                                mention_author=False,
-                            )
-                        else:
-                            await target.send(f"✅ **Uspešno reassignovano** — <@{info['user_id']}>")
-                    except Exception as e:
-                        print("[REASSIGN] notify fail:", e)
+    info = get_reassign_by_message(payload.message_id)
+    if info is not None:
+        if str(payload.emoji) == "✅" and not info["done"]:
+            mark_reassign_done(info["id"])
+            target = bot.get_channel(info["channel_id"])
+            if target:
+                try:
+                    ticket_msg_id = info.get("ticket_msg_id")
+                    if ticket_msg_id:
+                        msg = await target.fetch_message(ticket_msg_id)
+                        await msg.reply(
+                            f"✅ **Uspešno reassignovano** — <@{info['user_id']}>",
+                            mention_author=False,
+                        )
+                    else:
+                        await target.send(f"✅ **Uspešno reassignovano** — <@{info['user_id']}>")
+                except Exception as e:
+                    print("[REASSIGN] notify fail:", e)
         return
 
     # /farm potvrda
