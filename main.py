@@ -2242,6 +2242,23 @@ def _fans_str(fans):
     return ", ".join(f"{name} (${sale})" for name, sale in fans)
 
 
+async def _send_chunks(interaction, lines, limit=1900):
+    chunks = []
+    cur = []
+    cur_len = 0
+    for ln in lines:
+        if cur and cur_len + len(ln) + 1 > limit:
+            chunks.append("\n".join(cur))
+            cur = []
+            cur_len = 0
+        cur.append(ln)
+        cur_len += len(ln) + 1
+    if cur:
+        chunks.append("\n".join(cur))
+    for ch in chunks:
+        await interaction.followup.send(ch, ephemeral=True)
+
+
 @tree.command(name="listr", description="Lista reassignova po modelu + datumu", guild=GUILD_OBJ)
 async def listr(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
@@ -2261,7 +2278,7 @@ async def listr(interaction: discord.Interaction):
             lines.append(f"• {r['chatter']}: {_fans_str(r['fans'])}")
         lines.append("")
 
-    await interaction.followup.send("\n".join(lines).strip(), ephemeral=True)
+    await _send_chunks(interaction, lines)
 
 
 @tree.command(name="listch", description="Lista reassignova po chatteru + datumu", guild=GUILD_OBJ)
@@ -2283,7 +2300,7 @@ async def listch(interaction: discord.Interaction):
             lines.append(f"• {r['model']}: {_fans_str(r['fans'])}")
         lines.append("")
 
-    await interaction.followup.send("\n".join(lines).strip(), ephemeral=True)
+    await _send_chunks(interaction, lines)
 
 
 # ========== OFF DAYS ==========
