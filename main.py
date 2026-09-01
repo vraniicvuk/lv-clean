@@ -2756,8 +2756,10 @@ async def farm_reminder_loop():
                 info["sent"][i] = True
                 if channel:
                     try:
-                        await channel.send(
-                            f"⏰ <@{info['user_id']}> podsetnik: reaguj ✅ na pitanje o farmi (da li je fan dodat na liste i ažurirane beleške)."
+                        qmsg = await channel.fetch_message(msg_id)
+                        await qmsg.reply(
+                            f"⏰ <@{info['user_id']}> podsetnik: reaguj ✅ na pitanje o farmi (da li je fan dodat na liste i ažurirane beleške).",
+                            mention_author=False,
                         )
                     except Exception as e:
                         print("[FARM] reminder fail:", e)
