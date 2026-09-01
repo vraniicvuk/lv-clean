@@ -53,6 +53,8 @@ tree = bot.tree
 GUILD_OBJ = discord.Object(id=int(GUILD_ID)) if GUILD_ID else None
 # ==== OFF DAYS ====
 OFF_DAY_CHANNEL_ID = 1539560126061478049
+OFF_CANCEL_ROLE_ID = 1410958063824801802
+off_cancel_requests = {}  # cancel_msg_id -> {"off_message_id": int, "user_id": int}
 OFF_DAYS_FILE = "off_days.json"   # legacy (migrira se jednom u bazu)
 OFF_DAYS_DB = os.getenv("OFF_DAYS_DB", "off_days.db")
 
@@ -2597,6 +2599,31 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
                     print("[FARM] confirm edit fail:", e)
         return
 
+    # /off otkazivanje — potvrda (✅ na cancel request poruci, role required)
+    if payload.message_id in off_cancel_requests:
+        info = off_cancel_requests.get(payload.message_id)
+        if info and str(payload.emoji) == "✅":
+            has_role = any(r.id == OFF_CANCEL_ROLE_ID for r in member.roles)
+            if has_role:
+                off_message_id = info["off_message_id"]
+                user_id = info["user_id"]
+                off_days[:] = [e for e in off_days if e.get("message_id") != off_message_id]
+                save_off_days()
+                off_cancel_requests.pop(payload.message_id, None)
+                channel = bot.get_channel(payload.channel_id)
+                if channel:
+                    try:
+                        msg = await channel.fetch_message(payload.message_id)
+                        await msg.edit(content=f"{msg.content}\n\n✅ Otkazivanje potvrđeno.")
+                        await msg.clear_reactions()
+                    except Exception as e:
+                        print("[OFF] cancel confirm edit fail:", e)
+                    try:
+                        await channel.send(f"✅ Off day je otkazan — <@{user_id}>")
+                    except Exception as e:
+                        print("[OFF] cancel notify fail:", e)
+        return
+
     entries = [e for e in off_days if e.get("message_id") == payload.message_id]
     if not entries:
         return
@@ -2619,8 +2646,8 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
                     print("[OFF] edit confirm fail:", e)
 
     elif emoji == "❌":
-        can_delete = (member.id == entries[0].get("user_id")) or member.guild_permissions.manage_roles
-        if can_delete:
+        # admin (manage_roles) može direktno da obriše
+        if member.guild_permissions.manage_roles:
             off_days[:] = [e for e in off_days if e.get("message_id") != payload.message_id]
             save_off_days()
             if channel:
@@ -2630,6 +2657,26 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
                     await msg.clear_reactions()
                 except Exception as e:
                     print("[OFF] edit delete fail:", e)
+        # chatter traži otkazivanje (čeka potvrdu role)
+        elif member.id == entries[0].get("user_id"):
+            dates = ", ".join(sorted({e.get("date") for e in entries if e.get("date")}))
+            off_chan = bot.get_channel(OFF_DAY_CHANNEL_ID)
+            if off_chan:
+                try:
+                    cm = await off_chan.send(
+                        f"🔔 <@{member.id}> želi da **otkaže** off day ({dates}).\n"
+                        f"Klikni ✅ da potvrdiš otkazivanje. <@&{OFF_CANCEL_ROLE_ID}>"
+                    )
+                    await cm.add_reaction("✅")
+                    off_cancel_requests[cm.id] = {"off_message_id": payload.message_id, "user_id": member.id}
+                except Exception as e:
+                    print("[OFF] cancel request send fail:", e)
+            if channel:
+                try:
+                    msg = await channel.fetch_message(payload.message_id)
+                    await msg.edit(content=f"{msg.content}\n\n⏳ Otkazivanje zatraženo — čeka potvrdu.")
+                except Exception as e:
+                    print("[OFF] cancel edit fail:", e)
 
 
 @tasks.loop(minutes=1)
