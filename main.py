@@ -252,10 +252,13 @@ def get_user_shift(member):
 
 def taken_dates_for_shift(shift):
     out = set()
+    today = _local_now().date()
     for e in off_days:
         if e.get("shift") == shift:
             try:
-                out.add(datetime.strptime(e["date"], "%Y-%m-%d").date())
+                d = datetime.strptime(e["date"], "%Y-%m-%d").date()
+                if d >= today:
+                    out.add(d)
             except Exception:
                 pass
     return out
@@ -2528,18 +2531,24 @@ async def loff(interaction: discord.Interaction):
     for e in off_days:
         by_date[e.get("date")].append(e)
 
+    today = _local_now().date()
     lines = []
     for date_iso in sorted(k for k in by_date.keys() if k):
         try:
             d = datetime.strptime(date_iso, "%Y-%m-%d").date()
-            wd = SR_WEEKDAYS[d.weekday()]
         except Exception:
             continue
+        if d < today:
+            continue
+        wd = SR_WEEKDAYS[d.weekday()]
         names = []
         for e in sorted(by_date[date_iso], key=lambda x: str(x.get("username", ""))):
             mark = "✅" if e.get("confirmed") else "⏳"
             names.append(f"{mark} {e.get('username', e.get('user_id'))} ({e.get('shift')})")
         lines.append(f"**{d.strftime('%d.%m.%Y')}** ({wd})\n" + "\n".join(names))
+
+    if not lines:
+        return await interaction.followup.send("Nema nijednog budućeg off dana.")
 
     embed = discord.Embed(
         title="📅 Off dani",
