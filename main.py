@@ -2611,22 +2611,23 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
                 off_days[:] = [e for e in off_days if e.get("message_id") != off_message_id]
                 save_off_days()
                 off_cancel_requests.pop(payload.message_id, None)
+                # edit reply (zahtev) na potvrđeno
                 channel = bot.get_channel(payload.channel_id)
                 if channel:
                     try:
                         msg = await channel.fetch_message(payload.message_id)
-                        await msg.edit(content=f"{msg.content}\n\n✅ Otkazivanje potvrđeno.")
+                        await msg.edit(content=f"✅ Off day je obrisan — <@{user_id}>")
                         await msg.clear_reactions()
                     except Exception as e:
                         print("[OFF] cancel confirm edit fail:", e)
-                # obavesti chattera u njegovom kanalu (reply na off-day poruku)
+                # edit originalnu off-day poruku
                 chatter_channel = bot.get_channel(off_channel_id) if off_channel_id else None
                 if chatter_channel:
                     try:
                         off_msg = await chatter_channel.fetch_message(off_message_id)
-                        await off_msg.reply(f"✅ Off day je otkazan — <@{user_id}>", mention_author=False)
+                        await off_msg.edit(content=f"{off_msg.content}\n\n❌ Off day je obrisan.")
                     except Exception as e:
-                        print("[OFF] cancel notify fail:", e)
+                        print("[OFF] cancel orig edit fail:", e)
         return
 
     entries = [e for e in off_days if e.get("message_id") == payload.message_id]
@@ -2665,23 +2666,23 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
         # chatter traži otkazivanje (čeka potvrdu role)
         elif member.id == entries[0].get("user_id"):
             dates = ", ".join(sorted({e.get("date") for e in entries if e.get("date")}))
-            off_chan = bot.get_channel(OFF_DAY_CHANNEL_ID)
-            if off_chan:
-                try:
-                    cm = await off_chan.send(
-                        f"🔔 <@{member.id}> želi da **otkaže** off day ({dates}).\n"
-                        f"Klikni ✅ da potvrdiš otkazivanje. <@&{OFF_CANCEL_ROLE_ID}>"
-                    )
-                    await cm.add_reaction("✅")
-                    off_cancel_requests[cm.id] = {"off_message_id": payload.message_id, "user_id": member.id, "off_channel_id": payload.channel_id}
-                except Exception as e:
-                    print("[OFF] cancel request send fail:", e)
-            if channel:
-                try:
-                    msg = await channel.fetch_message(payload.message_id)
-                    await msg.edit(content=f"{msg.content}\n\n⏳ Otkazivanje zatraženo — čeka potvrdu.")
-                except Exception as e:
-                    print("[OFF] cancel edit fail:", e)
+            # reply na originalnu poruku — taguje rolu
+            try:
+                orig_msg = await channel.fetch_message(payload.message_id)
+                cm = await orig_msg.reply(
+                    f"🔔 <@&{OFF_CANCEL_ROLE_ID}> — potvrdi brisanje off dana za <@{member.id}> ({dates}).",
+                    mention_author=False,
+                )
+                await cm.add_reaction("✅")
+                off_cancel_requests[cm.id] = {"off_message_id": payload.message_id, "user_id": member.id, "off_channel_id": payload.channel_id}
+            except Exception as e:
+                print("[OFF] cancel request send fail:", e)
+            # edit originalnu poruku
+            try:
+                msg = await channel.fetch_message(payload.message_id)
+                await msg.edit(content=f"{msg.content}\n\n⏳ Otkazivanje zatraženo — čeka potvrdu.")
+            except Exception as e:
+                print("[OFF] cancel edit fail:", e)
 
 
 @tasks.loop(minutes=1)
