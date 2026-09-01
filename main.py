@@ -101,10 +101,15 @@ def init_db():
             message_id INTEGER,
             confirmed INTEGER DEFAULT 0,
             group_id TEXT,
+            channel_id INTEGER,
             UNIQUE(user_id, date)
         )
         """
     )
+    try:
+        conn.execute("ALTER TABLE off_days ADD COLUMN channel_id INTEGER")
+    except sqlite3.OperationalError:
+        pass
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS state (
@@ -188,7 +193,7 @@ def load_off_days():
     migrate_from_json()
     conn = _db()
     rows = conn.execute(
-        "SELECT user_id, username, date, shift, message_id, confirmed, group_id FROM off_days ORDER BY date"
+        "SELECT user_id, username, date, shift, message_id, confirmed, group_id, channel_id FROM off_days ORDER BY date"
     ).fetchall()
     conn.close()
     off_days = [
@@ -200,6 +205,7 @@ def load_off_days():
             "message_id": r["message_id"],
             "confirmed": bool(r["confirmed"]),
             "group_id": r["group_id"],
+            "channel_id": r["channel_id"],
         }
         for r in rows
     ]
@@ -210,7 +216,7 @@ def save_off_days():
     conn.execute("DELETE FROM off_days")
     for e in off_days:
         conn.execute(
-            "INSERT INTO off_days (user_id, username, date, shift, message_id, confirmed, group_id) VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO off_days (user_id, username, date, shift, message_id, confirmed, group_id, channel_id) VALUES (?,?,?,?,?,?,?,?)",
             (
                 e.get("user_id"),
                 e.get("username"),
@@ -219,6 +225,7 @@ def save_off_days():
                 e.get("message_id"),
                 1 if e.get("confirmed") else 0,
                 e.get("group_id"),
+                e.get("channel_id"),
             ),
         )
     conn.commit()
@@ -2403,6 +2410,7 @@ async def book_off_days(interaction, start_date, end_date, shift):
             "message_id": None,
             "confirmed": False,
             "group_id": group_id,
+            "channel_id": interaction.channel.id,
         })
     save_off_days()
 
@@ -2762,6 +2770,35 @@ async def _before_farm_reminder():
     await bot.wait_until_ready()
 
 
+@tasks.loop(minutes=30)
+async def off_confirm_reminder_loop():
+    today = _local_now().date()
+    for e in list(off_days):
+        if e.get("confirmed"):
+            continue
+        try:
+            d = datetime.strptime(e["date"], "%Y-%m-%d").date()
+        except Exception:
+            continue
+        if d < today:
+            continue
+        ch = bot.get_channel(e.get("channel_id")) if e.get("channel_id") else None
+        if not ch:
+            continue
+        try:
+            await ch.send(
+                f"⏳ <@{e.get('user_id')}> — nisi potvrdio/la svoj off day ({d.strftime('%d.%m.%Y')}). "
+                f"Klikni ✅ (potvrda) ili ❌ (otkazivanje) na svoju off-day poruku."
+            )
+        except Exception as ex:
+            print("[OFF] confirm reminder fail:", ex)
+
+
+@off_confirm_reminder_loop.before_loop
+async def _before_off_confirm_reminder():
+    await bot.wait_until_ready()
+
+
 # ---------- BRIDGE (telegram -> discord) ----------
 async def handle_health(request):
     return web.Response(text="ok")
@@ -2858,6 +2895,9 @@ async def on_ready():
         if not farm_reminder_loop.is_running():
             farm_reminder_loop.start()
             print("✅ Farm reminder task pokrenut")
+        if not off_confirm_reminder_loop.is_running():
+            off_confirm_reminder_loop.start()
+            print("✅ Off confirm reminder task pokrenut")
         asyncio.create_task(start_bridge_server())
         guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
         if guild:
