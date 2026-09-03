@@ -271,6 +271,11 @@ def taken_dates_for_shift(shift):
     return out
 
 
+def count_month_off_days(user_id):
+    month = _local_now().strftime("%Y-%m")
+    return sum(1 for e in off_days if e.get("user_id") == user_id and (e.get("date") or "").startswith(month))
+
+
 def build_date_range():
     today = _local_now().date()
     start = today + timedelta(days=2)  # prvi dostupan dan = prekosutra
@@ -2060,6 +2065,20 @@ async def as_cmd(interaction: discord.Interaction):
 # ========== REASSIGN ==========
 REASSIGN_CHANNEL_ID = 1543240286615117925
 pending_reassigns = {}  # user_id -> {"model","date","reassign_to","fans":[(name,sale),...],"preview_msg": Message}
+reassign_msg_ids = set()  # cache id-jeva poruka (pending) da ne querijemo DB na svaku reakciju
+
+
+def load_reassign_msg_ids():
+    global reassign_msg_ids
+    conn = _db()
+    rows = conn.execute("SELECT ticket_msg_id, overview_msg_id FROM reassigns WHERE done=0").fetchall()
+    conn.close()
+    reassign_msg_ids = set()
+    for r in rows:
+        if r["ticket_msg_id"]:
+            reassign_msg_ids.add(r["ticket_msg_id"])
+        if r["overview_msg_id"]:
+            reassign_msg_ids.add(r["overview_msg_id"])
 
 
 def save_reassign(data, channel_id=None, user_id=None):
@@ -2090,12 +2109,16 @@ def set_reassign_messages(rid, ticket_msg_id, overview_msg_id):
     )
     conn.commit()
     conn.close()
+    if ticket_msg_id:
+        reassign_msg_ids.add(ticket_msg_id)
+    if overview_msg_id:
+        reassign_msg_ids.add(overview_msg_id)
 
 
 def get_reassign_by_message(message_id):
     conn = _db()
     row = conn.execute(
-        "SELECT id, channel_id, user_id, ticket_msg_id, done FROM reassigns WHERE ticket_msg_id=? OR overview_msg_id=?",
+        "SELECT id, channel_id, user_id, ticket_msg_id, overview_msg_id, done FROM reassigns WHERE ticket_msg_id=? OR overview_msg_id=?",
         (message_id, message_id),
     ).fetchone()
     conn.close()
@@ -2106,6 +2129,7 @@ def get_reassign_by_message(message_id):
         "channel_id": row["channel_id"],
         "user_id": row["user_id"],
         "ticket_msg_id": row["ticket_msg_id"],
+        "overview_msg_id": row["overview_msg_id"],
         "done": row["done"],
     }
 
@@ -2400,6 +2424,16 @@ async def book_off_days(interaction, start_date, end_date, shift):
         )
         return
 
+    # limit: maksimalno 4 off dana mesečno po chatteru
+    month_count = count_month_off_days(interaction.user.id)
+    if month_count + len(days) > 4:
+        remaining = 4 - month_count
+        await interaction.response.send_message(
+            f"❌ Maksimalno 4 off dana mesečno. Ovog meseca si već uzeo/la {month_count} — ostalo ti je {remaining}.",
+            ephemeral=True,
+        )
+        return
+
     group_id = f"{interaction.user.id}-{int(datetime.now().timestamp())}"
     for day in days:
         off_days.append({
@@ -2437,6 +2471,7 @@ async def book_off_days(interaction, start_date, end_date, shift):
         f"📅 **{interaction.user.mention} je rezervisao/la off day**\n"
         f"**Datum:** {date_str}\n"
         f"**Smena:** {shift}\n"
+        f"**Preostalo off dana ovog meseca:** {4 - (month_count + len(days))}\n"
         f"Potvrdi klikom na ✅ da si video/la, ili klikni ❌ da obrišeš."
     )
     msg = await interaction.original_response()
@@ -2582,10 +2617,15 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
         return
 
     # /reassign potvrda
-    info = get_reassign_by_message(payload.message_id)
-    if info is not None:
-        if str(payload.emoji) == "✅" and not info["done"]:
+    if payload.message_id in reassign_msg_ids:
+        info = get_reassign_by_message(payload.message_id)
+        if info is not None and str(payload.emoji) == "✅" and not info["done"]:
             mark_reassign_done(info["id"])
+            reassign_msg_ids.discard(payload.message_id)
+            if info.get("ticket_msg_id"):
+                reassign_msg_ids.discard(info["ticket_msg_id"])
+            if info.get("overview_msg_id"):
+                reassign_msg_ids.discard(info["overview_msg_id"])
             target = bot.get_channel(info["channel_id"])
             if target:
                 try:
@@ -2904,6 +2944,7 @@ async def on_ready():
         guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
         if guild:
             await seed_off_days(guild)
+        load_reassign_msg_ids()
     except Exception as e:
         print("sync fail:", e)
 
