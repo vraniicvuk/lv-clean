@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from openai import OpenAI
 from aiohttp import web
-import aiohttp
+import requests
 from collections import defaultdict
 
 # --- env first ---
@@ -2293,33 +2293,36 @@ async def reassign_cmd(interaction: discord.Interaction):
 async def fetch_creators():
     if not NOTION_TOKEN or not NOTION_DATABASE_ID:
         return []
-    headers = {
-        "Authorization": f"Bearer {NOTION_TOKEN}",
-        "Notion-Version": "2022-06-28",
-        "Content-Type": "application/json",
-    }
-    url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
-    names = []
-    payload = {"page_size": 100}
+
+    def _fetch():
+        headers = {
+            "Authorization": f"Bearer {NOTION_TOKEN}",
+            "Notion-Version": "2022-06-28",
+            "Content-Type": "application/json",
+        }
+        url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
+        names = []
+        payload = {"page_size": 100}
+        while True:
+            r = requests.post(url, headers=headers, json=payload, timeout=30)
+            if r.status_code != 200:
+                break
+            data = r.json()
+            for item in data.get("results", []):
+                title = "".join(t.get("plain_text", "") for t in item["properties"].get("CREATOR", {}).get("title", []))
+                if title.strip():
+                    names.append(title.strip())
+            if data.get("has_more") and data.get("next_cursor"):
+                payload["start_cursor"] = data["next_cursor"]
+            else:
+                break
+        return names
+
     try:
-        async with aiohttp.ClientSession() as session:
-            while True:
-                async with session.post(url, headers=headers, json=payload) as resp:
-                    if resp.status != 200:
-                        break
-                    data = await resp.json()
-                for r in data.get("results", []):
-                    title = "".join(t.get("plain_text", "") for t in r["properties"].get("CREATOR", {}).get("title", []))
-                    if title.strip():
-                        names.append(title.strip())
-                if data.get("has_more") and data.get("next_cursor"):
-                    payload["start_cursor"] = data["next_cursor"]
-                else:
-                    break
+        return await asyncio.to_thread(_fetch)
     except Exception as e:
         print("[REASSIGN] fetch_creators fail:", e)
         return []
-    return sorted(names)
 
 
 class ModelSelect(discord.ui.Select):
