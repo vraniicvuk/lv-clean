@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from openai import OpenAI
 from aiohttp import web
+import aiohttp
 from collections import defaultdict
 
 # --- env first ---
@@ -30,6 +31,9 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 BRIDGE_TOKEN = os.getenv("BRIDGE_TOKEN", "")
 BRIDGE_PORT = int(os.getenv("PORT", os.getenv("BRIDGE_PORT", "8080")))
 AS_CHECK_CHANNEL_ID = os.getenv("AS_CHECK_CHANNEL_ID", "")
+# notion (za /reassign dropdown modela)
+NOTION_TOKEN = os.getenv("NOTION_TOKEN", "")
+NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID", "a397b3af-356c-4024-8229-2e81ffc11654")
 # build client only after env is loaded
 client = OpenAI(api_key=OPENAI_API_KEY) if (USE_AI_FU and OPENAI_API_KEY) else None
 if not TOKEN:
@@ -2144,7 +2148,7 @@ def mark_reassign_done(rid):
 def get_reassigns(done=False):
     conn = _db()
     rows = conn.execute(
-        "SELECT id, model, date, chatter, fans FROM reassigns WHERE done=? ORDER BY created_at DESC, id DESC",
+        "SELECT id, model, date, chatter, fans, channel_id, ticket_msg_id, overview_msg_id FROM reassigns WHERE done=? ORDER BY created_at DESC, id DESC",
         (1 if done else 0,),
     ).fetchall()
     conn.close()
@@ -2154,7 +2158,16 @@ def get_reassigns(done=False):
             fans = json.loads(r["fans"]) if r["fans"] else []
         except Exception:
             fans = []
-        out.append({"id": r["id"], "model": r["model"], "date": r["date"], "chatter": r["chatter"], "fans": fans})
+        out.append({
+            "id": r["id"],
+            "model": r["model"],
+            "date": r["date"],
+            "chatter": r["chatter"],
+            "fans": fans,
+            "channel_id": r["channel_id"],
+            "ticket_msg_id": r["ticket_msg_id"],
+            "overview_msg_id": r["overview_msg_id"],
+        })
     return out
 
 
@@ -2213,14 +2226,13 @@ class ReassignActionsView(discord.ui.View):
 
 
 class ReassignModal(Modal, title="Reassign unos"):
-    def __init__(self):
+    def __init__(self, model):
         super().__init__(timeout=None)
-        self.model = TextInput(label="Model", placeholder="npr. TRIXXY B", required=True, max_length=100)
+        self.model = model
         self.fan = TextInput(label="Fan's name (ne @)", required=True, max_length=100)
         self.sale = TextInput(label="Sale ($)", required=True, max_length=20)
         self.date = TextInput(label="Datum", placeholder="npr. 28.8.", required=True, max_length=20)
         self.reassign_to = TextInput(label="Reassign to", placeholder="npr. veljkoo", required=True, max_length=100)
-        self.add_item(self.model)
         self.add_item(self.fan)
         self.add_item(self.sale)
         self.add_item(self.date)
@@ -2228,7 +2240,7 @@ class ReassignModal(Modal, title="Reassign unos"):
 
     async def on_submit(self, interaction: discord.Interaction):
         data = {
-            "model": self.model.value.strip(),
+            "model": self.model,
             "date": self.date.value.strip(),
             "reassign_to": self.reassign_to.value.strip(),
             "fans": [(self.fan.value.strip(), self.sale.value.strip())],
@@ -2271,11 +2283,107 @@ class AddFanModal(Modal, title="Dodaj fan-a"):
 
 @tree.command(name="reassign", description="Prijavi reassign prodaje", guild=GUILD_OBJ)
 async def reassign_cmd(interaction: discord.Interaction):
-    await interaction.response.send_modal(ReassignModal())
+    await interaction.response.defer(ephemeral=True)
+    creators = await fetch_creators()
+    if not creators:
+        return await interaction.followup.send("❌ Nisam uspeo da učitam modele iz Notiona.", ephemeral=True)
+    await interaction.followup.send("🗓 Izaberi model:", view=ModelPickView(creators), ephemeral=True)
+
+
+async def fetch_creators():
+    if not NOTION_TOKEN or not NOTION_DATABASE_ID:
+        return []
+    headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json",
+    }
+    url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
+    names = []
+    payload = {"page_size": 100}
+    try:
+        async with aiohttp.ClientSession() as session:
+            while True:
+                async with session.post(url, headers=headers, json=payload) as resp:
+                    if resp.status != 200:
+                        break
+                    data = await resp.json()
+                for r in data.get("results", []):
+                    title = "".join(t.get("plain_text", "") for t in r["properties"].get("CREATOR", {}).get("title", []))
+                    if title.strip():
+                        names.append(title.strip())
+                if data.get("has_more") and data.get("next_cursor"):
+                    payload["start_cursor"] = data["next_cursor"]
+                else:
+                    break
+    except Exception as e:
+        print("[REASSIGN] fetch_creators fail:", e)
+        return []
+    return sorted(names)
+
+
+class ModelSelect(discord.ui.Select):
+    def __init__(self, options):
+        super().__init__(placeholder="Izaberi model", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(ReassignModal(self.values[0]))
+
+
+class ModelPickView(discord.ui.View):
+    def __init__(self, creators):
+        super().__init__(timeout=600)
+        self.creators = creators
+        self.page = 0
+        self._render()
+
+    @property
+    def total_pages(self):
+        return (len(self.creators) + 24) // 25
+
+    def _page_creators(self):
+        return self.creators[self.page * 25:(self.page + 1) * 25]
+
+    def _render(self):
+        self.clear_items()
+        options = [discord.SelectOption(label=c[:100], value=c[:100]) for c in self._page_creators()]
+        self.add_item(ModelSelect(options))
+        prev_btn = discord.ui.Button(style=discord.ButtonStyle.secondary, emoji="◀", row=1, disabled=(self.page == 0))
+        prev_btn.callback = self._prev
+        next_btn = discord.ui.Button(style=discord.ButtonStyle.secondary, emoji="▶", row=1, disabled=(self.page >= self.total_pages - 1))
+        next_btn.callback = self._next
+        self.add_item(prev_btn)
+        self.add_item(next_btn)
+
+    async def _prev(self, interaction: discord.Interaction):
+        self.page -= 1
+        self._render()
+        await interaction.response.edit_message(view=self)
+
+    async def _next(self, interaction: discord.Interaction):
+        self.page += 1
+        self._render()
+        await interaction.response.edit_message(view=self)
 
 
 def _fans_str(fans):
     return ", ".join(f"{name} (${sale})" for name, sale in fans)
+
+
+def reassign_jump(r):
+    msg_id = r.get("overview_msg_id") or r.get("ticket_msg_id")
+    if not msg_id or not GUILD_ID:
+        return None
+    ch_id = REASSIGN_CHANNEL_ID if r.get("overview_msg_id") else r.get("channel_id")
+    if not ch_id:
+        return None
+    return f"https://discord.com/channels/{GUILD_ID}/{ch_id}/{msg_id}"
+
+
+def _entry_lines(r):
+    jump = reassign_jump(r)
+    link = f" ↪ [skoči na poruku]({jump})" if jump else ""
+    return f"• {r['chatter']}: {_fans_str(r['fans'])}{link}"
 
 
 async def _send_chunks(interaction, lines, limit=1900):
@@ -2311,7 +2419,7 @@ async def listr(interaction: discord.Interaction):
     for (model, date), rs in sorted(groups.items(), key=lambda x: x[0][1] + x[0][0]):
         lines.append(f"**{model} — {date}**")
         for r in rs:
-            lines.append(f"• {r['chatter']}: {_fans_str(r['fans'])}")
+            lines.append(_entry_lines(r))
         lines.append("")
 
     await _send_chunks(interaction, lines)
@@ -2333,7 +2441,7 @@ async def listch(interaction: discord.Interaction):
     for (chatter, date), rs in sorted(groups.items(), key=lambda x: x[0][1] + x[0][0]):
         lines.append(f"**{chatter} — {date}**")
         for r in rs:
-            lines.append(f"• {r['model']}: {_fans_str(r['fans'])}")
+            lines.append(_entry_lines(r))
         lines.append("")
 
     await _send_chunks(interaction, lines)
