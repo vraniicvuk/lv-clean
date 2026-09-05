@@ -2232,17 +2232,15 @@ class ReassignModal(Modal, title="Reassign unos"):
         self.fan = TextInput(label="Fan's name (ne @)", required=True, max_length=100)
         self.sale = TextInput(label="Sale ($)", required=True, max_length=20)
         self.date = TextInput(label="Datum", placeholder="npr. 28.8.", required=True, max_length=20)
-        self.reassign_to = TextInput(label="Reassign to", placeholder="npr. veljkoo", required=True, max_length=100)
         self.add_item(self.fan)
         self.add_item(self.sale)
         self.add_item(self.date)
-        self.add_item(self.reassign_to)
 
     async def on_submit(self, interaction: discord.Interaction):
         data = {
             "model": self.model,
             "date": self.date.value.strip(),
-            "reassign_to": self.reassign_to.value.strip(),
+            "reassign_to": interaction.user.display_name,
             "fans": [(self.fan.value.strip(), self.sale.value.strip())],
         }
         pending_reassigns[interaction.user.id] = data
