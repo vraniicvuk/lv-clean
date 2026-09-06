@@ -2378,19 +2378,22 @@ async def reassign_cmd(interaction: discord.Interaction, model: str):
 
 def build_reassign_dates():
     today = _local_now().date()
-    return [today + timedelta(days=i) for i in range(-7, 31)]
+    return [today - timedelta(days=i) for i in range(0, 8)]
 
 
 class ReassignDateSelect(discord.ui.Select):
     def __init__(self, dates):
-        options = [
-            discord.SelectOption(
-                label=d.strftime("%d.%m.%Y"),
-                value=d.isoformat(),
-                description=SR_WEEKDAYS[d.weekday()],
+        today = _local_now().date()
+        options = []
+        for d in dates:
+            label = ("DANAS · " + d.strftime("%d.%m.%Y")) if d == today else d.strftime("%d.%m.%Y")
+            options.append(
+                discord.SelectOption(
+                    label=label,
+                    value=d.isoformat(),
+                    description=SR_WEEKDAYS[d.weekday()],
+                )
             )
-            for d in dates
-        ]
         super().__init__(placeholder="Izaberi datum", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
