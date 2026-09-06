@@ -2295,7 +2295,10 @@ async def fetch_creators():
         }
         url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
         names = []
-        payload = {"page_size": 100}
+        payload = {
+            "page_size": 100,
+            "filter": {"property": "STATUS", "select": {"equals": "Active"}},
+        }
         while True:
             r = requests.post(url, headers=headers, json=payload, timeout=30)
             if r.status_code != 200:
