@@ -2171,12 +2171,39 @@ def get_reassigns(done=False):
     return out
 
 
+def parse_date_str(s):
+    s = (s or "").strip()
+    if not s:
+        return None
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").date()
+    except Exception:
+        pass
+    for fmt in ("%d.%m.%Y", "%d.%m.%y"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except Exception:
+            continue
+    m = re.match(r"^(\d{1,2})\.(\d{1,2})$", s)
+    if m:
+        try:
+            return datetime(_local_now().year, int(m.group(2)), int(m.group(1))).date()
+        except Exception:
+            return None
+    return None
+
+
+def format_date_str(s):
+    d = parse_date_str(s)
+    return d.strftime("%d.%m.%Y") if d else s
+
+
 def format_reassign(data):
     lines = [f"MODEL: {data['model']}"]
     for name, sale in data["fans"]:
         lines.append(f"FAN'S NAME (ne fan's @): {name}")
         lines.append(f"SALE: ${sale}")
-    lines.append(f"DATE: {data['date']}")
+    lines.append(f"DATE: {format_date_str(data['date'])}")
     lines.append(f"REASSIGN TO: {data['reassign_to']}")
     return "\n".join(lines)
 
@@ -2226,20 +2253,19 @@ class ReassignActionsView(discord.ui.View):
 
 
 class ReassignModal(Modal, title="Reassign unos"):
-    def __init__(self, model):
+    def __init__(self, model, date):
         super().__init__(timeout=None)
         self.model = model
+        self.date = date
         self.fan = TextInput(label="Fan's name (ne @)", required=True, max_length=100)
         self.sale = TextInput(label="Sale ($)", required=True, max_length=20)
-        self.date = TextInput(label="Datum", placeholder="npr. 28.8.", required=True, max_length=20)
         self.add_item(self.fan)
         self.add_item(self.sale)
-        self.add_item(self.date)
 
     async def on_submit(self, interaction: discord.Interaction):
         data = {
             "model": self.model,
-            "date": self.date.value.strip(),
+            "date": self.date,
             "reassign_to": interaction.user.display_name,
             "fans": [(self.fan.value.strip(), self.sale.value.strip())],
         }
@@ -2342,7 +2368,69 @@ async def model_autocomplete(interaction: discord.Interaction, current: str):
 @tree.command(name="reassign", description="Prijavi reassign prodaje", guild=GUILD_OBJ)
 @app_commands.autocomplete(model=model_autocomplete)
 async def reassign_cmd(interaction: discord.Interaction, model: str):
-    await interaction.response.send_modal(ReassignModal(model))
+    dates = build_reassign_dates()
+    await interaction.response.send_message(
+        f"🗓 Izaberi datum za **{model}**:",
+        view=ReassignDateView(model, dates),
+        ephemeral=True,
+    )
+
+
+def build_reassign_dates():
+    today = _local_now().date()
+    return [today + timedelta(days=i) for i in range(-7, 31)]
+
+
+class ReassignDateSelect(discord.ui.Select):
+    def __init__(self, dates):
+        options = [
+            discord.SelectOption(
+                label=d.strftime("%d.%m.%Y"),
+                value=d.isoformat(),
+                description=SR_WEEKDAYS[d.weekday()],
+            )
+            for d in dates
+        ]
+        super().__init__(placeholder="Izaberi datum", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(ReassignModal(self.view.model, self.values[0]))
+
+
+class ReassignDateView(discord.ui.View):
+    def __init__(self, model, dates):
+        super().__init__(timeout=600)
+        self.model = model
+        self.dates = dates
+        self.page = 0
+        self._render()
+
+    @property
+    def total_pages(self):
+        return (len(self.dates) + 24) // 25
+
+    def _page_dates(self):
+        return self.dates[self.page * 25:(self.page + 1) * 25]
+
+    def _render(self):
+        self.clear_items()
+        self.add_item(ReassignDateSelect(self._page_dates()))
+        prev_btn = discord.ui.Button(style=discord.ButtonStyle.secondary, emoji="◀", row=1, disabled=(self.page == 0))
+        prev_btn.callback = self._prev
+        next_btn = discord.ui.Button(style=discord.ButtonStyle.secondary, emoji="▶", row=1, disabled=(self.page >= self.total_pages - 1))
+        next_btn.callback = self._next
+        self.add_item(prev_btn)
+        self.add_item(next_btn)
+
+    async def _prev(self, interaction: discord.Interaction):
+        self.page -= 1
+        self._render()
+        await interaction.response.edit_message(view=self)
+
+    async def _next(self, interaction: discord.Interaction):
+        self.page += 1
+        self._render()
+        await interaction.response.edit_message(view=self)
 
 
 def _fans_str(fans):
@@ -2359,10 +2447,15 @@ def reassign_jump(r):
     return f"https://discord.com/channels/{GUILD_ID}/{ch_id}/{msg_id}"
 
 
-def _entry_lines(r):
+def _entry_lines(r, name):
     jump = reassign_jump(r)
     link = f" ↪ [skoči na poruku]({jump})" if jump else ""
-    return f"• {r['chatter']}: {_fans_str(r['fans'])}{link}"
+    return f"• {name}: {_fans_str(r['fans'])}{link}"
+
+
+def _date_sort_key(s):
+    d = parse_date_str(s)
+    return d if d else datetime(9999, 12, 31).date()
 
 
 async def _send_chunks(interaction, lines, limit=1900):
@@ -2395,10 +2488,10 @@ async def listr(interaction: discord.Interaction):
         groups.setdefault(key, []).append(r)
 
     lines = []
-    for (model, date), rs in sorted(groups.items(), key=lambda x: x[0][1] + x[0][0]):
-        lines.append(f"**{model} — {date}**")
+    for (model, date), rs in sorted(groups.items(), key=lambda x: (x[0][0].lower(), _date_sort_key(x[0][1]))):
+        lines.append(f"**{model} — {format_date_str(date)}**")
         for r in rs:
-            lines.append(_entry_lines(r))
+            lines.append(_entry_lines(r, r["chatter"]))
         lines.append("")
 
     await _send_chunks(interaction, lines)
@@ -2417,10 +2510,10 @@ async def listch(interaction: discord.Interaction):
         groups.setdefault(key, []).append(r)
 
     lines = []
-    for (chatter, date), rs in sorted(groups.items(), key=lambda x: x[0][1] + x[0][0]):
-        lines.append(f"**{chatter} — {date}**")
+    for (chatter, date), rs in sorted(groups.items(), key=lambda x: (x[0][0].lower(), _date_sort_key(x[0][1]))):
+        lines.append(f"**{chatter} — {format_date_str(date)}**")
         for r in rs:
-            lines.append(_entry_lines(r))
+            lines.append(_entry_lines(r, r["model"]))
         lines.append("")
 
     await _send_chunks(interaction, lines)
