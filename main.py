@@ -2279,13 +2279,8 @@ class AddFanModal(Modal, title="Dodaj fan-a"):
         await interaction.response.defer()
 
 
-@tree.command(name="reassign", description="Prijavi reassign prodaje", guild=GUILD_OBJ)
-async def reassign_cmd(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    creators = await fetch_creators()
-    if not creators:
-        return await interaction.followup.send("❌ Nisam uspeo da učitam modele iz Notiona.", ephemeral=True)
-    await interaction.followup.send("🗓 Izaberi model:", view=ModelPickView(creators), ephemeral=True)
+_creators_cache = None
+_creators_cache_time = 0.0
 
 
 async def fetch_creators():
@@ -2323,48 +2318,28 @@ async def fetch_creators():
         return []
 
 
-class ModelSelect(discord.ui.Select):
-    def __init__(self, options):
-        super().__init__(placeholder="Izaberi model", min_values=1, max_values=1, options=options)
+async def get_creators_cached():
+    global _creators_cache, _creators_cache_time
+    if _creators_cache and (time.time() - _creators_cache_time) < 3600:
+        return _creators_cache
+    creators = await fetch_creators()
+    if creators:
+        _creators_cache = creators
+        _creators_cache_time = time.time()
+    return _creators_cache or []
 
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(ReassignModal(self.values[0]))
+
+async def model_autocomplete(interaction: discord.Interaction, current: str):
+    creators = await get_creators_cached()
+    current = (current or "").strip().lower()
+    matches = [c for c in creators if current in c.lower()][:25]
+    return [app_commands.Choice(name=c, value=c) for c in matches]
 
 
-class ModelPickView(discord.ui.View):
-    def __init__(self, creators):
-        super().__init__(timeout=600)
-        self.creators = creators
-        self.page = 0
-        self._render()
-
-    @property
-    def total_pages(self):
-        return (len(self.creators) + 24) // 25
-
-    def _page_creators(self):
-        return self.creators[self.page * 25:(self.page + 1) * 25]
-
-    def _render(self):
-        self.clear_items()
-        options = [discord.SelectOption(label=c[:100], value=c[:100]) for c in self._page_creators()]
-        self.add_item(ModelSelect(options))
-        prev_btn = discord.ui.Button(style=discord.ButtonStyle.secondary, emoji="◀", row=1, disabled=(self.page == 0))
-        prev_btn.callback = self._prev
-        next_btn = discord.ui.Button(style=discord.ButtonStyle.secondary, emoji="▶", row=1, disabled=(self.page >= self.total_pages - 1))
-        next_btn.callback = self._next
-        self.add_item(prev_btn)
-        self.add_item(next_btn)
-
-    async def _prev(self, interaction: discord.Interaction):
-        self.page -= 1
-        self._render()
-        await interaction.response.edit_message(view=self)
-
-    async def _next(self, interaction: discord.Interaction):
-        self.page += 1
-        self._render()
-        await interaction.response.edit_message(view=self)
+@tree.command(name="reassign", description="Prijavi reassign prodaje", guild=GUILD_OBJ)
+@app_commands.autocomplete(model=model_autocomplete)
+async def reassign_cmd(interaction: discord.Interaction, model: str):
+    await interaction.response.send_modal(ReassignModal(model))
 
 
 def _fans_str(fans):
