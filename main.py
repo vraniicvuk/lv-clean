@@ -2237,20 +2237,27 @@ class ReassignActionsView(discord.ui.View):
         if not data:
             await interaction.response.send_message("❌ Nema započetog reassign-a.", ephemeral=True)
             return
+        await interaction.response.defer(ephemeral=True)
+
         original_channel = interaction.channel
         info_text = f"🔄 **REASSIGN**\n\n{format_reassign(data)}"
 
-        rid = save_reassign(data, channel_id=original_channel.id, user_id=interaction.user.id)
+        rid = save_reassign(
+            data,
+            channel_id=original_channel.id if original_channel else None,
+            user_id=interaction.user.id,
+        )
 
         ticket_msg_id = None
         overview_msg_id = None
         # 1) info u kanalu gde je komanda pokrenuta (npr. ticket)
-        try:
-            m1 = await original_channel.send(info_text)
-            await m1.add_reaction("✅")
-            ticket_msg_id = m1.id
-        except Exception as e:
-            print("[REASSIGN] ticket send fail:", e)
+        if original_channel:
+            try:
+                m1 = await original_channel.send(info_text)
+                await m1.add_reaction("✅")
+                ticket_msg_id = m1.id
+            except Exception as e:
+                print("[REASSIGN] ticket send fail:", e)
 
         # 2) info u preglednom kanalu
         overview = bot.get_channel(REASSIGN_CHANNEL_ID)
@@ -2264,7 +2271,7 @@ class ReassignActionsView(discord.ui.View):
 
         set_reassign_messages(rid, ticket_msg_id, overview_msg_id)
 
-        await interaction.response.edit_message(content="✅ Reassign poslat.", view=None)
+        await interaction.edit_original_response(content="✅ Reassign poslat.", view=None)
 
 
 class ReassignModal(Modal, title="Reassign unos"):
@@ -2308,6 +2315,7 @@ class AddFanModal(Modal, title="Dodaj fan-a"):
             await interaction.response.send_message("❌ Nema započetog reassign-a.", ephemeral=True)
             return
         data["fans"].append((self.fan.value.strip(), self.sale.value.strip()))
+        await interaction.response.defer(ephemeral=True)
         preview_msg = data.get("preview_msg")
         if preview_msg:
             try:
@@ -2317,7 +2325,6 @@ class AddFanModal(Modal, title="Dodaj fan-a"):
                 )
             except Exception as e:
                 print("[REASSIGN] preview edit fail:", e)
-        await interaction.response.defer()
 
 
 _creators_cache = None
@@ -3147,6 +3154,21 @@ async def on_ready():
         load_reassign_msg_ids()
     except Exception as e:
         print("sync fail:", e)
+
+
+# ---------- global error logging ----------
+@bot.event
+async def on_error(event_method, *args, **kwargs):
+    import traceback
+    print(f"[ERROR] event={event_method}")
+    traceback.print_exc()
+
+
+@tree.error
+async def on_tree_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    import traceback
+    print(f"[ERROR] command={interaction.command.name if interaction.command else '?'}")
+    traceback.print_exc()
 
 
 # ---------- RUN ----------
