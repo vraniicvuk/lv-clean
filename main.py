@@ -2321,6 +2321,7 @@ async def fetch_creators():
         }
         url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
         names = []
+        seen = set()
         payload = {
             "page_size": 100,
             "filter": {"property": "STATUS", "select": {"equals": "Active"}},
@@ -2332,8 +2333,10 @@ async def fetch_creators():
             data = r.json()
             for item in data.get("results", []):
                 title = "".join(t.get("plain_text", "") for t in item["properties"].get("CREATOR", {}).get("title", []))
-                if title.strip():
-                    names.append(title.strip())
+                name = title.strip().split("\n", 1)[0].strip()[:100]
+                if name and name not in seen:
+                    seen.add(name)
+                    names.append(name)
             if data.get("has_more") and data.get("next_cursor"):
                 payload["start_cursor"] = data["next_cursor"]
             else:
