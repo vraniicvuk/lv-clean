@@ -191,10 +191,25 @@ def migrate_from_json():
         print(f"[DB] migrirano {inserted} off dana iz off_days.json u bazu")
 
 
+def clear_reassigns_once():
+    """Jednokratno: označi sve postojeće reassignove kao done."""
+    conn = _db()
+    row = conn.execute("SELECT value FROM state WHERE key='reassigns_cleared_2026_09'").fetchone()
+    if row:
+        conn.close()
+        return
+    cur = conn.execute("UPDATE reassigns SET done=1 WHERE done=0")
+    conn.execute("INSERT OR REPLACE INTO state (key, value) VALUES ('reassigns_cleared_2026_09', '1')")
+    conn.commit()
+    conn.close()
+    print(f"[DB] reassign cleanup: {cur.rowcount} označeno kao done")
+
+
 def load_off_days():
     global off_days
     init_db()
     migrate_from_json()
+    clear_reassigns_once()
     conn = _db()
     rows = conn.execute(
         "SELECT user_id, username, date, shift, message_id, confirmed, group_id, channel_id FROM off_days ORDER BY date"
