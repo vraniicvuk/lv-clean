@@ -2616,15 +2616,33 @@ async def _send_list_with_actions(interaction, lines, reassigns):
             await interaction.followup.send(ch, ephemeral=True)
 
 
-@tree.command(name="listr", description="Lista reassignova po modelu + datumu", guild=GUILD_OBJ)
-async def listr(interaction: discord.Interaction):
+@tree.command(name="listr", description="Tvoji reassignovi (po modelu + datumu), opseg datuma", guild=GUILD_OBJ)
+@app_commands.describe(od="Od datuma (YYYY-MM-DD ili DD.MM, opciono)", do="Do datuma (YYYY-MM-DD ili DD.MM, opciono)")
+async def listr(interaction: discord.Interaction, od: str = None, do: str = None):
     await interaction.response.defer(ephemeral=True)
     reassigns = get_reassigns()
     if not reassigns:
         return await interaction.followup.send("Nema reassignova.", ephemeral=True)
 
+    today = _local_now().date()
+    start = parse_date_str(od) if od else (today - timedelta(days=6))
+    end = parse_date_str(do) if do else today
+    if start is None or end is None:
+        return await interaction.followup.send("❌ Loš format datuma. Koristi YYYY-MM-DD ili DD.MM.", ephemeral=True)
+    if start > end:
+        start, end = end, start
+
+    mine = [r for r in reassigns if r.get("user_id") == interaction.user.id]
+    filtered = []
+    for r in mine:
+        d = parse_date_str(r["date"])
+        if d and start <= d <= end:
+            filtered.append(r)
+    if not filtered:
+        return await interaction.followup.send("Nema tvojih reassignova u tom opsegu.", ephemeral=True)
+
     groups = {}
-    for r in reassigns:
+    for r in filtered:
         key = (r["model"], r["date"])
         groups.setdefault(key, []).append(r)
 
@@ -2635,7 +2653,7 @@ async def listr(interaction: discord.Interaction):
             lines.append(_entry_lines(r, r["chatter"]))
         lines.append("")
 
-    await _send_list_with_actions(interaction, lines, reassigns)
+    await _send_list_with_actions(interaction, lines, filtered)
 
 
 @tree.command(name="listch", description="Lista reassignova po chatteru + datumu", guild=GUILD_OBJ)
@@ -2725,6 +2743,43 @@ async def rtotal(interaction: discord.Interaction, ceter: str, mesec: str = None
 
     await interaction.followup.send(
         f"📊 **{ceter}** — {month}\n"
+        f"Reassignova: {total_reassigns}\n"
+        f"Fanova: {total_fans}\n"
+        f"Ukupno: ${total_usd:,.0f}",
+        ephemeral=True,
+    )
+
+
+@tree.command(name="rtotaltotal", description="Zbir svih reassignova svih cetera za mesec (gross)", guild=GUILD_OBJ)
+@app_commands.describe(mesec="Mesec u formatu MM.YYYY (npr. 09.2026)")
+@need_off_manager()
+async def rtotaltotal(interaction: discord.Interaction, mesec: str = None):
+    await interaction.response.defer(ephemeral=True)
+    now = _local_now()
+    if not mesec:
+        month = now.strftime("%Y-%m")
+    else:
+        m = re.match(r"^(\d{1,2})\.(\d{4})$", mesec.strip())
+        if not m:
+            return await interaction.followup.send("❌ Format meseca: MM.YYYY", ephemeral=True)
+        month = f"{m.group(2)}-{int(m.group(1)):02d}"
+
+    reassigns = get_reassigns(done=False) + get_reassigns(done=True)
+    total_reassigns = 0
+    total_fans = 0
+    total_usd = 0.0
+    for r in reassigns:
+        d = parse_date_str(r["date"])
+        if not d or d.strftime("%Y-%m") != month:
+            continue
+        total_reassigns += 1
+        fans = r.get("fans") or []
+        total_fans += len(fans)
+        for name, sale in fans:
+            total_usd += _parse_sale(sale)
+
+    await interaction.followup.send(
+        f"📊 **UKUPNO — {month}**\n"
         f"Reassignova: {total_reassigns}\n"
         f"Fanova: {total_fans}\n"
         f"Ukupno: ${total_usd:,.0f}",
