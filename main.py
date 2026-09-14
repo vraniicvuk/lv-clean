@@ -2833,20 +2833,25 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
                 reassign_msg_ids.discard(info["ticket_msg_id"])
             if info.get("overview_msg_id"):
                 reassign_msg_ids.discard(info["overview_msg_id"])
-            target = bot.get_channel(info["channel_id"])
-            if target:
+            DONE_EMOJI = "☑️"
+
+            ticket_channel = bot.get_channel(info["channel_id"])
+            ticket_msg_id = info.get("ticket_msg_id")
+            if ticket_channel and ticket_msg_id:
                 try:
-                    ticket_msg_id = info.get("ticket_msg_id")
-                    if ticket_msg_id:
-                        msg = await target.fetch_message(ticket_msg_id)
-                        await msg.reply(
-                            f"✅ **Uspešno reassignovano** — <@{info['user_id']}>",
-                            mention_author=False,
-                        )
-                    else:
-                        await target.send(f"✅ **Uspešno reassignovano** — <@{info['user_id']}>")
+                    msg = await ticket_channel.fetch_message(ticket_msg_id)
+                    await msg.add_reaction(DONE_EMOJI)
                 except Exception as e:
-                    print("[REASSIGN] notify fail:", e)
+                    print("[REASSIGN] ticket react fail:", e)
+
+            overview_channel = bot.get_channel(REASSIGN_CHANNEL_ID)
+            overview_msg_id = info.get("overview_msg_id")
+            if overview_channel and overview_msg_id:
+                try:
+                    msg = await overview_channel.fetch_message(overview_msg_id)
+                    await msg.add_reaction(DONE_EMOJI)
+                except Exception as e:
+                    print("[REASSIGN] overview react fail:", e)
         return
 
     # /farm potvrda
