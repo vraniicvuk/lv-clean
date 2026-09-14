@@ -114,6 +114,11 @@ def init_db():
         conn.execute("ALTER TABLE off_days ADD COLUMN channel_id INTEGER")
     except sqlite3.OperationalError:
         pass
+    for col in ["approved_by INTEGER", "needs_cover INTEGER DEFAULT 0", "cover_reminder_due TEXT"]:
+        try:
+            conn.execute(f"ALTER TABLE off_days ADD COLUMN {col}")
+        except sqlite3.OperationalError:
+            pass
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS state (
@@ -212,7 +217,7 @@ def load_off_days():
     clear_reassigns_once()
     conn = _db()
     rows = conn.execute(
-        "SELECT user_id, username, date, shift, message_id, confirmed, group_id, channel_id FROM off_days ORDER BY date"
+        "SELECT user_id, username, date, shift, message_id, confirmed, group_id, channel_id, approved_by, needs_cover, cover_reminder_due FROM off_days ORDER BY date"
     ).fetchall()
     conn.close()
     off_days = [
@@ -225,6 +230,9 @@ def load_off_days():
             "confirmed": bool(r["confirmed"]),
             "group_id": r["group_id"],
             "channel_id": r["channel_id"],
+            "approved_by": r["approved_by"],
+            "needs_cover": r["needs_cover"] or 0,
+            "cover_reminder_due": r["cover_reminder_due"],
         }
         for r in rows
     ]
@@ -235,7 +243,7 @@ def save_off_days():
     conn.execute("DELETE FROM off_days")
     for e in off_days:
         conn.execute(
-            "INSERT INTO off_days (user_id, username, date, shift, message_id, confirmed, group_id, channel_id) VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT INTO off_days (user_id, username, date, shift, message_id, confirmed, group_id, channel_id, approved_by, needs_cover, cover_reminder_due) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (
                 e.get("user_id"),
                 e.get("username"),
@@ -245,6 +253,9 @@ def save_off_days():
                 1 if e.get("confirmed") else 0,
                 e.get("group_id"),
                 e.get("channel_id"),
+                e.get("approved_by"),
+                1 if e.get("needs_cover") else 0,
+                e.get("cover_reminder_due"),
             ),
         )
     conn.commit()
@@ -578,6 +589,16 @@ def need_manage_roles():
         if gp.manage_roles or gp.administrator:
             return True
         raise app_commands.CheckFailure("treba ti Manage Roles.")
+
+    return app_commands.check(predicate)
+
+
+def need_off_manager():
+    async def predicate(interaction: discord.Interaction):
+        if any(r.id == OFF_CANCEL_ROLE_ID for r in interaction.user.roles):
+            return True
+        await interaction.response.send_message("Samo manager rola može ovo.", ephemeral=True)
+        return False
 
     return app_commands.check(predicate)
 
@@ -2160,10 +2181,17 @@ def mark_reassign_done(rid):
     conn.close()
 
 
+def delete_reassign(rid):
+    conn = _db()
+    conn.execute("DELETE FROM reassigns WHERE id=?", (rid,))
+    conn.commit()
+    conn.close()
+
+
 def get_reassigns(done=False):
     conn = _db()
     rows = conn.execute(
-        "SELECT id, model, date, chatter, fans, channel_id, ticket_msg_id, overview_msg_id FROM reassigns WHERE done=? ORDER BY created_at DESC, id DESC",
+        "SELECT id, model, date, chatter, fans, channel_id, ticket_msg_id, overview_msg_id, user_id FROM reassigns WHERE done=? ORDER BY created_at DESC, id DESC",
         (1 if done else 0,),
     ).fetchall()
     conn.close()
@@ -2182,6 +2210,7 @@ def get_reassigns(done=False):
             "channel_id": r["channel_id"],
             "ticket_msg_id": r["ticket_msg_id"],
             "overview_msg_id": r["overview_msg_id"],
+            "user_id": r["user_id"],
         })
     return out
 
@@ -2502,6 +2531,91 @@ async def _send_chunks(interaction, lines, limit=1900):
         await interaction.followup.send(ch, ephemeral=True)
 
 
+REASSIGN_DELETE_DM = "proverite da li je dobar datum unet. Ako je javljeno već da reassign ne treba da se odradi, samo ignorisite poruku"
+
+
+class ReassignListSelect(discord.ui.Select):
+    def __init__(self, reassigns):
+        options = []
+        for r in reassigns[:25]:
+            label = f"{r['model']} — {format_date_str(r['date'])} ({r['chatter']})"
+            options.append(discord.SelectOption(label=label[:100], value=str(r["id"])))
+        super().__init__(placeholder="Izaberi reassign", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.selected_id = int(self.values[0])
+        await interaction.response.defer()
+
+
+class ReassignListActions(discord.ui.View):
+    def __init__(self, reassigns):
+        super().__init__(timeout=1800)
+        self.reassigns = reassigns
+        self.selected_id = None
+        self.add_item(ReassignListSelect(reassigns))
+
+    async def _notify_ceter(self, interaction, r):
+        if not r or not r.get("user_id"):
+            return
+        guild = interaction.guild
+        user = guild.get_member(r["user_id"])
+        if not user:
+            try:
+                user = await guild.fetch_member(r["user_id"])
+            except Exception:
+                return
+        try:
+            await user.send(REASSIGN_DELETE_DM)
+        except Exception as e:
+            print("[REASSIGN] DM ceteru neuspelo:", e)
+
+    @discord.ui.button(label="✅ Urađeno", style=discord.ButtonStyle.success)
+    async def done(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.selected_id:
+            await interaction.response.send_message("Prvo izaberi reassign iz liste.", ephemeral=True)
+            return
+        mark_reassign_done(self.selected_id)
+        await interaction.response.send_message("✅ Označeno kao urađeno.", ephemeral=True)
+
+    @discord.ui.button(label="🗑 Izbriši", style=discord.ButtonStyle.danger)
+    async def delete(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.selected_id:
+            await interaction.response.send_message("Prvo izaberi reassign iz liste.", ephemeral=True)
+            return
+        r = next((x for x in self.reassigns if x["id"] == self.selected_id), None)
+        delete_reassign(self.selected_id)
+        await self._notify_ceter(interaction, r)
+        await interaction.response.send_message("🗑 Reassign obrisan.", ephemeral=True)
+
+    @discord.ui.button(label="✔ Sve urađeno", style=discord.ButtonStyle.secondary)
+    async def all_done(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for r in self.reassigns:
+            mark_reassign_done(r["id"])
+        await interaction.response.send_message("✅ Svi reassignovi označeni kao urađeni.", ephemeral=True)
+
+
+async def _send_list_with_actions(interaction, lines, reassigns):
+    chunks = []
+    cur = []
+    cur_len = 0
+    for ln in lines:
+        if cur and cur_len + len(ln) + 1 > 1900:
+            chunks.append("\n".join(cur))
+            cur = []
+            cur_len = 0
+        cur.append(ln)
+        cur_len += len(ln) + 1
+    if cur:
+        chunks.append("\n".join(cur))
+
+    view = ReassignListActions(reassigns)
+    for i, ch in enumerate(chunks):
+        if i == 0:
+            await interaction.followup.send(ch, ephemeral=True, view=view)
+        else:
+            await interaction.followup.send(ch, ephemeral=True)
+
+
 @tree.command(name="listr", description="Lista reassignova po modelu + datumu", guild=GUILD_OBJ)
 async def listr(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
@@ -2521,7 +2635,7 @@ async def listr(interaction: discord.Interaction):
             lines.append(_entry_lines(r, r["chatter"]))
         lines.append("")
 
-    await _send_chunks(interaction, lines)
+    await _send_list_with_actions(interaction, lines, reassigns)
 
 
 @tree.command(name="listch", description="Lista reassignova po chatteru + datumu", guild=GUILD_OBJ)
@@ -2543,7 +2657,7 @@ async def listch(interaction: discord.Interaction):
             lines.append(_entry_lines(r, r["model"]))
         lines.append("")
 
-    await _send_chunks(interaction, lines)
+    await _send_list_with_actions(interaction, lines, reassigns)
 
 
 @tree.command(name="listundone", description="Lista nerešenih reassignova za jednog cetera", guild=GUILD_OBJ)
@@ -2568,6 +2682,54 @@ async def listundone(interaction: discord.Interaction, ceter: str):
         lines.append("")
 
     await _send_chunks(interaction, lines)
+
+
+def _parse_sale(s):
+    s = str(s or "").replace("$", "").replace(",", "").replace(" ", "").strip()
+    try:
+        return float(s)
+    except Exception:
+        return 0.0
+
+
+@tree.command(name="rtotal", description="Zbir reassignova jednog cetera za mesec (gross)", guild=GUILD_OBJ)
+@app_commands.describe(ceter="Ime cetera (chattera)", mesec="Mesec u formatu MM.YYYY (npr. 09.2026)")
+@need_off_manager()
+async def rtotal(interaction: discord.Interaction, ceter: str, mesec: str = None):
+    await interaction.response.defer(ephemeral=True)
+    now = _local_now()
+    if not mesec:
+        month = now.strftime("%Y-%m")
+    else:
+        m = re.match(r"^(\d{1,2})\.(\d{4})$", mesec.strip())
+        if not m:
+            return await interaction.followup.send("❌ Format meseca: MM.YYYY", ephemeral=True)
+        month = f"{m.group(2)}-{int(m.group(1)):02d}"
+
+    reassigns = get_reassigns(done=False) + get_reassigns(done=True)
+    query = ceter.strip().lower()
+    total_reassigns = 0
+    total_fans = 0
+    total_usd = 0.0
+    for r in reassigns:
+        if r["chatter"].lower() != query:
+            continue
+        d = parse_date_str(r["date"])
+        if not d or d.strftime("%Y-%m") != month:
+            continue
+        total_reassigns += 1
+        fans = r.get("fans") or []
+        total_fans += len(fans)
+        for name, sale in fans:
+            total_usd += _parse_sale(sale)
+
+    await interaction.followup.send(
+        f"📊 **{ceter}** — {month}\n"
+        f"Reassignova: {total_reassigns}\n"
+        f"Fanova: {total_fans}\n"
+        f"Ukupno: ${total_usd:,.0f}",
+        ephemeral=True,
+    )
 
 
 # ========== OFF DAYS ==========
@@ -2795,6 +2957,56 @@ async def multioff(interaction: discord.Interaction):
     )
 
 
+@tree.command(name="approvedoff", description="Manager override: odobri off dan (bez limita i zauzeća)", guild=GUILD_OBJ)
+@app_commands.describe(ceter="Chatter", datum="Datum (YYYY-MM-DD ili DD.MM.YYYY)")
+@need_off_manager()
+async def approvedoff(interaction: discord.Interaction, ceter: discord.Member, datum: str):
+    shift = get_user_shift(ceter)
+    if shift is None:
+        return await interaction.response.send_message("❌ Taj član nema tačno jednu smensku rolu.", ephemeral=True)
+    if shift == "multiple":
+        return await interaction.response.send_message("❌ Član ima više smenskih rola.", ephemeral=True)
+
+    d = parse_date_str(datum)
+    if not d:
+        return await interaction.response.send_message("❌ Loš format datuma. Koristi YYYY-MM-DD ili DD.MM.YYYY.", ephemeral=True)
+
+    cover_due = (d - timedelta(days=3)).isoformat()
+    off_days.append({
+        "user_id": ceter.id,
+        "username": ceter.display_name,
+        "date": d.isoformat(),
+        "shift": shift,
+        "message_id": None,
+        "confirmed": True,
+        "group_id": f"{ceter.id}-{int(datetime.now().timestamp())}",
+        "channel_id": interaction.channel.id,
+        "approved_by": interaction.user.id,
+        "needs_cover": 1,
+        "cover_reminder_due": cover_due,
+    })
+    save_off_days()
+
+    channel = bot.get_channel(OFF_DAY_CHANNEL_ID)
+    if channel:
+        try:
+            await channel.send(
+                f"🛡 **MANAGER OVERRIDE — OFF DAY**\n"
+                f"**Datum:** {d.strftime('%d.%m.%Y')} ({SR_WEEKDAYS[d.weekday()]})\n"
+                f"**Chatter:** {ceter.mention} ({ceter.display_name})\n"
+                f"**Smena:** {shift}\n"
+                f"**Odobrio:** {interaction.user.mention}\n"
+                f"⚠️ Treba cover"
+            )
+        except Exception as e:
+            print("[OFF] MANAGER OVERRIDE slanje nije uspelo:", e)
+
+    await interaction.response.send_message(
+        f"🛡 Manager override off dan upisan za {ceter.mention} ({d.strftime('%d.%m.%Y')}, {shift}).",
+        ephemeral=True,
+    )
+
+
 @tree.command(name="loff", description="Pregled svih off dana po datumima", guild=GUILD_OBJ)
 async def loff(interaction: discord.Interaction):
     await interaction.response.defer()
@@ -2818,7 +3030,10 @@ async def loff(interaction: discord.Interaction):
         names = []
         for e in sorted(by_date[date_iso], key=lambda x: str(x.get("username", ""))):
             mark = "✅" if e.get("confirmed") else "⏳"
-            names.append(f"{mark} {e.get('username', e.get('user_id'))} ({e.get('shift')})")
+            if e.get("approved_by"):
+                mark = "🛡"
+            extra = " ⚠️ treba cover" if e.get("needs_cover") else ""
+            names.append(f"{mark} {e.get('username', e.get('user_id'))} ({e.get('shift')}){extra}")
         lines.append(f"**{d.strftime('%d.%m.%Y')}** ({wd})\n" + "\n".join(names))
 
     if not lines:
@@ -3077,6 +3292,74 @@ async def _before_off_confirm_reminder():
     await bot.wait_until_ready()
 
 
+# ========== COVER PODSETNIK ==========
+class CoverReminderView(discord.ui.View):
+    def __init__(self, entry):
+        super().__init__(timeout=None)
+        self.entry = entry
+
+    @discord.ui.button(label="🔁 Podseti me sutra", style=discord.ButtonStyle.secondary)
+    async def remind_tomorrow(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.entry["cover_reminder_due"] = (_local_now().date() + timedelta(days=1)).isoformat()
+        save_off_days()
+        await interaction.response.send_message("🔁 Podsetiću te sutra.", ephemeral=True)
+
+    @discord.ui.button(label="✅ Nađen cover", style=discord.ButtonStyle.success)
+    async def cover_found(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.entry["needs_cover"] = 0
+        save_off_days()
+        await interaction.response.send_message("✅ Cover nađen — prestajem da podsećam.", ephemeral=True)
+
+
+@tasks.loop(minutes=60)
+async def cover_reminder_loop():
+    now = _local_now()
+    if now.hour != 11:
+        return
+    today_iso = now.date().isoformat()
+    if get_state("last_cover_reminder_date") == today_iso:
+        return
+    today = now.date()
+    changed = False
+    for e in list(off_days):
+        if not e.get("needs_cover"):
+            continue
+        try:
+            d = datetime.strptime(e["date"], "%Y-%m-%d").date()
+        except Exception:
+            continue
+        if d < today:
+            e["needs_cover"] = 0
+            changed = True
+            continue
+        due = e.get("cover_reminder_due")
+        if not due:
+            continue
+        try:
+            due_d = datetime.strptime(due, "%Y-%m-%d").date()
+        except Exception:
+            continue
+        if due_d <= today:
+            manager_id = e.get("approved_by")
+            channel = bot.get_channel(OFF_DAY_CHANNEL_ID)
+            if manager_id and channel:
+                try:
+                    await channel.send(
+                        f"🛡 <@{manager_id}> — još nije nađen cover za off dan <@{e['user_id']}> ({e.get('username')}) {d.strftime('%d.%m.%Y')}.",
+                        view=CoverReminderView(e),
+                    )
+                except Exception as ex:
+                    print("[COVER] reminder fail:", ex)
+    if changed:
+        save_off_days()
+    set_state("last_cover_reminder_date", today_iso)
+
+
+@cover_reminder_loop.before_loop
+async def _before_cover_reminder():
+    await bot.wait_until_ready()
+
+
 # ---------- BRIDGE (telegram -> discord) ----------
 async def handle_health(request):
     return web.Response(text="ok")
@@ -3176,6 +3459,9 @@ async def on_ready():
         if not off_confirm_reminder_loop.is_running():
             off_confirm_reminder_loop.start()
             print("✅ Off confirm reminder task pokrenut")
+        if not cover_reminder_loop.is_running():
+            cover_reminder_loop.start()
+            print("✅ Cover reminder task pokrenut")
         asyncio.create_task(start_bridge_server())
         guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
         if guild:
