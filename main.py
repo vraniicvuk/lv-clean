@@ -2546,6 +2546,30 @@ async def listch(interaction: discord.Interaction):
     await _send_chunks(interaction, lines)
 
 
+@tree.command(name="listundone", description="Lista nerešenih reassignova za jednog cetera", guild=GUILD_OBJ)
+@app_commands.describe(ceter="Ime cetera (chattera)")
+async def listundone(interaction: discord.Interaction, ceter: str):
+    await interaction.response.defer(ephemeral=True)
+    reassigns = get_reassigns()  # done=False po default-u -> samo nerešeni
+    query = ceter.strip().lower()
+    matched = [r for r in reassigns if r["chatter"].lower() == query]
+    if not matched:
+        return await interaction.followup.send(f"Nema nerešenih reassignova za '{ceter}'.", ephemeral=True)
+
+    groups = {}
+    for r in matched:
+        groups.setdefault(r["date"], []).append(r)
+
+    lines = [f"Nerešeni reassignovi — {ceter}", ""]
+    for date, rs in sorted(groups.items(), key=lambda x: _date_sort_key(x[0])):
+        lines.append(f"{format_date_str(date)}")
+        for r in rs:
+            lines.append(_entry_lines(r, r["model"]))
+        lines.append("")
+
+    await _send_chunks(interaction, lines)
+
+
 # ========== OFF DAYS ==========
 class DayPickSelect(discord.ui.Select):
     def __init__(self, dates, taken):
