@@ -2616,41 +2616,81 @@ async def _send_list_with_actions(interaction, lines, reassigns):
             await interaction.followup.send(ch, ephemeral=True)
 
 
-@tree.command(name="listr", description="Tvoji reassignovi (po modelu + datumu)", guild=GUILD_OBJ)
-@app_commands.choices(opseg=[
-    app_commands.Choice(name="Danas", value="1"),
-    app_commands.Choice(name="Poslednjih 7 dana", value="7"),
-    app_commands.Choice(name="Poslednjih 14 dana", value="14"),
-    app_commands.Choice(name="Poslednjih 30 dana", value="30"),
-    app_commands.Choice(name="Sve", value="all"),
-])
-async def listr(interaction: discord.Interaction, opseg: str = "7"):
+async def listr_date_autocomplete(interaction: discord.Interaction, current: str):
+    """Predlozi datuma: ukucani datum (ako je validan), danas/juče, pa datumi tvojih reassignova."""
+    current = (current or "").strip()
+    today = _local_now().date()
+    out = []
+
+    def add(d, label=None):
+        v = d.strftime("%d.%m.%Y")
+        if all(c.value != v for c in out):
+            out.append(app_commands.Choice(name=f"{v}{(' — ' + label) if label else ''}", value=v))
+
+    typed = parse_date_str(current)
+    if typed:
+        add(typed)
+    q = current.lower()
+    base = [(today, "danas"), (today - timedelta(days=1), "juče")]
+    try:
+        seen = set()
+        for r in get_reassigns():
+            if r.get("user_id") != interaction.user.id:
+                continue
+            d = parse_date_str(r["date"])
+            if d and d not in seen:
+                seen.add(d)
+                base.append((d, None))
+    except Exception as e:
+        print("[LISTR] autocomplete fail:", e)
+    base.sort(key=lambda x: x[0], reverse=True)
+    for d, label in base:
+        if not q or q in d.strftime("%d.%m.%Y") or (label and q in label):
+            add(d, label)
+        if len(out) >= 25:
+            break
+    return out[:25]
+
+
+@tree.command(name="listr", description="Tvoji reassignovi u izabranom opsegu datuma", guild=GUILD_OBJ)
+@app_commands.rename(do_="do")
+@app_commands.describe(
+    od="Od datuma (DD.MM.YYYY, npr. 01.09.2026 ili 1.9.)",
+    do_="Do datuma (DD.MM.YYYY) — prazno = danas",
+)
+@app_commands.autocomplete(od=listr_date_autocomplete, do_=listr_date_autocomplete)
+async def listr(interaction: discord.Interaction, od: str, do_: str = ""):
     await interaction.response.defer(ephemeral=True)
+    today = _local_now().date()
+    start = parse_date_str(od)
+    if not start:
+        return await interaction.followup.send(f"❌ Neispravan datum 'od': `{od}` (koristi DD.MM.YYYY).", ephemeral=True)
+    end = parse_date_str(do_) if (do_ or "").strip() else today
+    if not end:
+        return await interaction.followup.send(f"❌ Neispravan datum 'do': `{do_}` (koristi DD.MM.YYYY).", ephemeral=True)
+    if start > end:
+        start, end = end, start
+
     reassigns = get_reassigns()
     if not reassigns:
         return await interaction.followup.send("Nema reassignova.", ephemeral=True)
 
-    today = _local_now().date()
     mine = [r for r in reassigns if r.get("user_id") == interaction.user.id]
-    if opseg == "all":
-        filtered = mine
-    else:
-        days = int(opseg)
-        start = today - timedelta(days=days - 1)
-        filtered = []
-        for r in mine:
-            d = parse_date_str(r["date"])
-            if d and start <= d <= today:
-                filtered.append(r)
+    filtered = []
+    for r in mine:
+        d = parse_date_str(r["date"])
+        if d and start <= d <= end:
+            filtered.append(r)
+    range_txt = f"{start.strftime('%d.%m.%Y')} – {end.strftime('%d.%m.%Y')}"
     if not filtered:
-        return await interaction.followup.send("Nema tvojih reassignova u tom opsegu.", ephemeral=True)
+        return await interaction.followup.send(f"Nema tvojih reassignova za {range_txt}.", ephemeral=True)
 
     groups = {}
     for r in filtered:
         key = (r["model"], r["date"])
         groups.setdefault(key, []).append(r)
 
-    lines = []
+    lines = [f"📅 {range_txt} — {len(filtered)} reassign(a)", ""]
     for (model, date), rs in sorted(groups.items(), key=lambda x: (x[0][0].lower(), _date_sort_key(x[0][1]))):
         lines.append(f"**{model} — {format_date_str(date)}**")
         for r in rs:
