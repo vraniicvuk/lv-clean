@@ -3424,6 +3424,61 @@ async def handle_health(request):
     return web.Response(text="ok")
 
 
+def normalize_shift(s):
+    s = (s or "").strip().lower()
+    if s in ("after", "afternoon"):
+        return "afternoon"
+    if s in ("grave", "graveyard"):
+        return "graveyard"
+    if s == "main":
+        return "main"
+    return None
+
+
+async def handle_bridge_announcement(request):
+    if not BRIDGE_TOKEN:
+        return web.json_response({"ok": False, "error": "bridge disabled"}, status=403)
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid json"}, status=400)
+    if data.get("token") != BRIDGE_TOKEN:
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    text = (data.get("text") or "").strip()
+    if not text:
+        return web.json_response({"ok": False, "error": "empty text"}, status=400)
+    guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
+    if not guild:
+        return web.json_response({"ok": False, "error": "guild not found"}, status=500)
+
+    lines = text.splitlines()
+    shift = normalize_shift(lines[0].strip()) if lines else None
+    body = "\n".join(lines[1:]).strip()
+    if not shift:
+        return web.json_response({"ok": False, "error": "Prva linija mora biti smena (afternoon/grave/main)."}, status=400)
+    if not body:
+        return web.json_response({"ok": False, "error": "Nema teksta poruke."}, status=400)
+
+    role_id = SHIFT_ROLES.get(shift)
+    mention = f"<@&{role_id}>" if role_id else f"@{shift}"
+
+    targets = [ch for ch in guild.channels if isinstance(ch, discord.TextChannel) and "announcement" in ch.name.lower()]
+    if not targets:
+        return web.json_response({"ok": False, "error": "Nema announcement kanala."}, status=400)
+
+    full_text = f"{mention}\n{body}"
+    sent = []
+    skipped = []
+    for ch in targets:
+        try:
+            await ch.send(full_text)
+            sent.append(ch.name)
+        except Exception as e:
+            skipped.append(f"{ch.name} (greška)")
+            print("[ANNOUNCE] send fail:", e)
+    return web.json_response({"ok": True, "sent": sent, "skipped": skipped})
+
+
 async def handle_bridge_as(request):
     if not BRIDGE_TOKEN:
         return web.json_response({"ok": False, "error": "bridge disabled"}, status=403)
@@ -3453,6 +3508,7 @@ async def start_bridge_server():
     app = web.Application()
     app.router.add_get("/", handle_health)
     app.router.add_post("/as", handle_bridge_as)
+    app.router.add_post("/announcement", handle_bridge_announcement)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", BRIDGE_PORT)
