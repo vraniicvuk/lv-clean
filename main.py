@@ -2617,46 +2617,44 @@ async def _send_list_with_actions(interaction, lines, reassigns):
 
 
 async def listr_date_autocomplete(interaction: discord.Interaction, current: str):
-    """Predlozi datuma: ukucani datum (ako je validan), danas/juče, pa datumi tvojih reassignova."""
+    """Predlozi: poslednjih 30 dana (danas -> unazad), bez budućnosti. Discord max 25 — kucanjem se filtrira ostatak."""
     current = (current or "").strip()
-    today = _local_now().date()
-    out = []
-
-    def add(d, label=None):
-        v = d.strftime("%d.%m.%Y")
-        if all(c.value != v for c in out):
-            out.append(app_commands.Choice(name=f"{v}{(' — ' + label) if label else ''}", value=v))
-
-    typed = parse_date_str(current)
-    if typed:
-        add(typed)
     q = current.lower()
-    base = [(today, "danas"), (today - timedelta(days=1), "juče")]
+    today = _local_now().date()
+    counts = {}
     try:
-        seen = set()
         for r in get_reassigns():
             if r.get("user_id") != interaction.user.id:
                 continue
             d = parse_date_str(r["date"])
-            if d and d not in seen:
-                seen.add(d)
-                base.append((d, None))
+            if d:
+                counts[d] = counts.get(d, 0) + 1
     except Exception as e:
         print("[LISTR] autocomplete fail:", e)
-    base.sort(key=lambda x: x[0], reverse=True)
-    for d, label in base:
-        if not q or q in d.strftime("%d.%m.%Y") or (label and q in label):
-            add(d, label)
-        if len(out) >= 25:
-            break
-    return out[:25]
+
+    def label(d):
+        delta = (today - d).days
+        name = "danas" if delta == 0 else "juče" if delta == 1 else SR_WEEKDAYS[d.weekday()]
+        extra = f" • {counts[d]} reassign" if counts.get(d) else ""
+        return f"{d.strftime('%d.%m.%Y')} — {name}{extra}"
+
+    def choice(d):
+        return app_commands.Choice(name=label(d), value=d.strftime("%d.%m.%Y"))
+
+    typed = parse_date_str(current)
+    if typed:
+        # ukucan konkretan datum → samo on (budućnost se ne nudi)
+        return [choice(typed)] if typed <= today else []
+    days = [today - timedelta(days=i) for i in range(30)]  # danas → 29 dana unazad
+    matches = [d for d in days if not q or q in label(d).lower()]
+    return [choice(d) for d in matches[:25]]
 
 
 @tree.command(name="listr", description="Tvoji reassignovi u izabranom opsegu datuma", guild=GUILD_OBJ)
 @app_commands.rename(do_="do")
 @app_commands.describe(
-    od="Od datuma (DD.MM.YYYY, npr. 01.09.2026 ili 1.9.)",
-    do_="Do datuma (DD.MM.YYYY) — prazno = danas",
+    od="Od datuma — izaberi iz poslednjih 30 dana ili ukucaj (DD.MM.YYYY)",
+    do_="Do datuma — prazno = danas",
 )
 @app_commands.autocomplete(od=listr_date_autocomplete, do_=listr_date_autocomplete)
 async def listr(interaction: discord.Interaction, od: str, do_: str = ""):
@@ -2670,6 +2668,10 @@ async def listr(interaction: discord.Interaction, od: str, do_: str = ""):
         return await interaction.followup.send(f"❌ Neispravan datum 'do': `{do_}` (koristi DD.MM.YYYY).", ephemeral=True)
     if start > end:
         start, end = end, start
+    if start > today:
+        return await interaction.followup.send("❌ Datum ne može biti u budućnosti.", ephemeral=True)
+    if end > today:
+        end = today
 
     reassigns = get_reassigns()
     if not reassigns:
