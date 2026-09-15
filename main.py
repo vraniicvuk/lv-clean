@@ -2216,7 +2216,7 @@ def get_reassigns(done=False):
 
 
 def parse_date_str(s):
-    s = (s or "").strip()
+    s = (s or "").strip().rstrip(".")
     if not s:
         return None
     try:
@@ -2228,7 +2228,7 @@ def parse_date_str(s):
             return datetime.strptime(s, fmt).date()
         except Exception:
             continue
-    m = re.match(r"^(\d{1,2})\.(\d{1,2})$", s)
+    m = re.match(r"^(\d{1,2})\.(\d{1,2})\.?$", s)
     if m:
         try:
             return datetime(_local_now().year, int(m.group(2)), int(m.group(1))).date()
@@ -2616,28 +2616,32 @@ async def _send_list_with_actions(interaction, lines, reassigns):
             await interaction.followup.send(ch, ephemeral=True)
 
 
-@tree.command(name="listr", description="Tvoji reassignovi (po modelu + datumu), opseg datuma", guild=GUILD_OBJ)
-@app_commands.describe(od="Od datuma (YYYY-MM-DD ili DD.MM, opciono)", do="Do datuma (YYYY-MM-DD ili DD.MM, opciono)")
-async def listr(interaction: discord.Interaction, od: str = None, do: str = None):
+@tree.command(name="listr", description="Tvoji reassignovi (po modelu + datumu)", guild=GUILD_OBJ)
+@app_commands.choices(opseg=[
+    app_commands.Choice(name="Danas", value="1"),
+    app_commands.Choice(name="Poslednjih 7 dana", value="7"),
+    app_commands.Choice(name="Poslednjih 14 dana", value="14"),
+    app_commands.Choice(name="Poslednjih 30 dana", value="30"),
+    app_commands.Choice(name="Sve", value="all"),
+])
+async def listr(interaction: discord.Interaction, opseg: str = "7"):
     await interaction.response.defer(ephemeral=True)
     reassigns = get_reassigns()
     if not reassigns:
         return await interaction.followup.send("Nema reassignova.", ephemeral=True)
 
     today = _local_now().date()
-    start = parse_date_str(od) if od else (today - timedelta(days=6))
-    end = parse_date_str(do) if do else today
-    if start is None or end is None:
-        return await interaction.followup.send("❌ Loš format datuma. Koristi YYYY-MM-DD ili DD.MM.", ephemeral=True)
-    if start > end:
-        start, end = end, start
-
     mine = [r for r in reassigns if r.get("user_id") == interaction.user.id]
-    filtered = []
-    for r in mine:
-        d = parse_date_str(r["date"])
-        if d and start <= d <= end:
-            filtered.append(r)
+    if opseg == "all":
+        filtered = mine
+    else:
+        days = int(opseg)
+        start = today - timedelta(days=days - 1)
+        filtered = []
+        for r in mine:
+            d = parse_date_str(r["date"])
+            if d and start <= d <= today:
+                filtered.append(r)
     if not filtered:
         return await interaction.followup.send("Nema tvojih reassignova u tom opsegu.", ephemeral=True)
 
@@ -2669,7 +2673,7 @@ async def listch(interaction: discord.Interaction):
         groups.setdefault(key, []).append(r)
 
     lines = []
-    for (chatter, date), rs in sorted(groups.items(), key=lambda x: (x[0][0].lower(), _date_sort_key(x[0][1]))):
+    for (chatter, date), rs in sorted(groups.items(), key=lambda x: (_date_sort_key(x[0][1]), x[0][0].lower())):
         lines.append(f"**{chatter} — {format_date_str(date)}**")
         for r in rs:
             lines.append(_entry_lines(r, r["model"]))
