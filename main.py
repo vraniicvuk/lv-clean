@@ -3420,8 +3420,17 @@ async def _before_cover_reminder():
 
 
 # ---------- BRIDGE (telegram -> discord) ----------
+_bridge_started = False
+
+
 async def handle_health(request):
-    return web.Response(text="ok")
+    return web.Response(text="ok" if bot.is_ready() else "starting (discord not ready)")
+
+
+def _bridge_not_ready():
+    if not bot.is_ready():
+        return web.json_response({"ok": False, "error": "Discord bot još nije spreman (restart/deploy u toku), probaj ponovo za minut."}, status=503)
+    return None
 
 
 def normalize_shift(s):
@@ -3436,6 +3445,15 @@ def normalize_shift(s):
 
 
 async def handle_bridge_announcement(request):
+    try:
+        return await _bridge_announcement_impl(request)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return web.json_response({"ok": False, "error": f"interna greška: {e}"}, status=500)
+
+
+async def _bridge_announcement_impl(request):
     if not BRIDGE_TOKEN:
         return web.json_response({"ok": False, "error": "bridge disabled"}, status=403)
     try:
@@ -3447,6 +3465,9 @@ async def handle_bridge_announcement(request):
     text = (data.get("text") or "").strip()
     if not text:
         return web.json_response({"ok": False, "error": "empty text"}, status=400)
+    nr = _bridge_not_ready()
+    if nr:
+        return nr
     guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
     if not guild:
         return web.json_response({"ok": False, "error": "guild not found"}, status=500)
@@ -3467,11 +3488,12 @@ async def handle_bridge_announcement(request):
         return web.json_response({"ok": False, "error": "Nema announcement kanala."}, status=400)
 
     full_text = f"{mention}\n{body}"
+    print(f"[ANNOUNCE] shift={shift} kanali={[c.name for c in targets]}")
     sent = []
     skipped = []
     for ch in targets:
         try:
-            await ch.send(full_text)
+            await ch.send(full_text, allowed_mentions=discord.AllowedMentions(roles=True))
             sent.append(ch.name)
         except Exception as e:
             skipped.append(f"{ch.name} (greška)")
@@ -3491,6 +3513,9 @@ async def handle_bridge_as(request):
     text = (data.get("text") or "").strip()
     if not text:
         return web.json_response({"ok": False, "error": "empty text"}, status=400)
+    nr = _bridge_not_ready()
+    if nr:
+        return nr
     guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
     if not guild:
         return web.json_response({"ok": False, "error": "guild not found"}, status=500)
@@ -3505,6 +3530,10 @@ async def handle_bridge_as(request):
 
 
 async def start_bridge_server():
+    global _bridge_started
+    if _bridge_started:
+        return
+    _bridge_started = True
     app = web.Application()
     app.router.add_get("/", handle_health)
     app.router.add_post("/as", handle_bridge_as)
@@ -3577,7 +3606,6 @@ async def on_ready():
         if not cover_reminder_loop.is_running():
             cover_reminder_loop.start()
             print("✅ Cover reminder task pokrenut")
-        asyncio.create_task(start_bridge_server())
         guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
         if guild:
             await seed_off_days(guild)
@@ -3602,4 +3630,10 @@ async def on_tree_error(interaction: discord.Interaction, error: app_commands.Ap
 
 
 # ---------- RUN ----------
+async def _setup_hook():
+    # bridge (HTTP port) se diže PRE Discord logina, da Render odmah vidi port
+    # i da /as i /announcement vrate jasnu grešku (503) umesto 502 dok bot nije spreman
+    await start_bridge_server()
+
+bot.setup_hook = _setup_hook
 bot.run(TOKEN)
