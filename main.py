@@ -1498,23 +1498,14 @@ OTHER_SUPPORT_ROLES = [
     1504564869569970196
 ]
 
-@tree.command(
-    name="ticket",
-    description="Otvori novi ticket",
-    guild=GUILD_OBJ
-)
-@app_commands.describe(razlog="Razlog otvaranja ticketa")
-async def ticket(interaction: discord.Interaction, razlog: str):
-    await interaction.response.defer(ephemeral=True)
-
-    guild = interaction.guild
+async def create_ticket_channel(guild, member, razlog):
+    """Kreira ticket kanal za member-a (isto kao /ticket). Vraća kanal ili baca exception."""
     category = guild.get_channel(TICKET_CATEGORY_ID)
-
-    ticket_name = f"ticket-{interaction.user.name}"
+    ticket_name = f"ticket-{member.name}"
 
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
-        interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_messages=True),
+        member: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_messages=True),
     }
 
     # Dodajemo ostale support role
@@ -1526,7 +1517,7 @@ async def ticket(interaction: discord.Interaction, razlog: str):
     # === USLOVNA VIDLJIVOST ZA SUPERVIZORA ===
     supervisor_to_ping = None
     for shift_role_id, sup_role_id in SHIFT_SUPERVISOR_MAP.items():
-        if any(r.id == shift_role_id for r in interaction.user.roles):
+        if any(r.id == shift_role_id for r in member.roles):
             supervisor_to_ping = sup_role_id
             break
 
@@ -1535,43 +1526,153 @@ async def ticket(interaction: discord.Interaction, razlog: str):
         if sup_role:
             overwrites[sup_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_messages=True)
 
+    ticket_channel = await guild.create_text_channel(
+        name=ticket_name,
+        category=category,
+        overwrites=overwrites,
+        reason=f"Ticket by {member}"
+    )
+
+    # === Pingovi van embeda ===
+    mentions = [f"<@{member.id}>"]
+    if supervisor_to_ping:
+        mentions.append(f"<@&{supervisor_to_ping}>")
+    for rid in OTHER_SUPPORT_ROLES:
+        mentions.append(f"<@&{rid}>")
+    await ticket_channel.send(" ".join(mentions))
+
+    # === Embed ===
+    embed = discord.Embed(
+        title="🎟️ Novi Ticket",
+        description=f"**Korisnik:** {member.mention}\n**Razlog:** {razlog}",
+        color=0x00b0f4,
+        timestamp=discord.utils.utcnow()
+    )
+    embed.set_footer(text="Koristite /close za zatvaranje sa transcriptom\n/delete za brisanje bez transcripta")
+    await ticket_channel.send(embed=embed)
+    return ticket_channel
+
+
+@tree.command(
+    name="ticket",
+    description="Otvori novi ticket",
+    guild=GUILD_OBJ
+)
+@app_commands.describe(razlog="Razlog otvaranja ticketa")
+async def ticket(interaction: discord.Interaction, razlog: str):
+    await interaction.response.defer(ephemeral=True)
     try:
-        ticket_channel = await guild.create_text_channel(
-            name=ticket_name,
-            category=category,
-            overwrites=overwrites,
-            reason=f"Ticket by {interaction.user}"
-        )
-
-        # === Pingovi van embeda ===
-        mentions = [f"<@{interaction.user.id}>"]
-        
-        if supervisor_to_ping:
-            mentions.append(f"<@&{supervisor_to_ping}>")
-        
-        for rid in OTHER_SUPPORT_ROLES:
-            mentions.append(f"<@&{rid}>")
-        
-        await ticket_channel.send(" ".join(mentions))
-
-        # === Embed ===
-        embed = discord.Embed(
-            title="🎟️ Novi Ticket",
-            description=f"**Korisnik:** {interaction.user.mention}\n**Razlog:** {razlog}",
-            color=0x00b0f4,
-            timestamp=discord.utils.utcnow()
-        )
-        embed.set_footer(text="Koristite /close za zatvaranje sa transcriptom\n/delete za brisanje bez transcripta")
-
-        await ticket_channel.send(embed=embed)
-
+        ticket_channel = await create_ticket_channel(interaction.guild, interaction.user, razlog)
         await interaction.followup.send(
             f"✅ Ticket je uspešno otvoren! → {ticket_channel.mention}",
             ephemeral=True
         )
-
     except Exception as e:
         await interaction.followup.send(f"❌ Greška: {e}", ephemeral=True)
+
+
+# ========== AUTO ONBOARDING (novi član na serveru) ==========
+JOIN_ROLE_IDS = [1410962215770656768, 1438523502901592064]
+JOIN_TICKET_RAZLOG = "Onboarding — novi član"
+
+WELCOME_TEXT = """Hej, {mention}
+
+drago nam je da si prosao test obuke i da uskoro kreces sa radom
+
+Molimo te da budes strpljiv i da bez obzira da li imao ili nemao iskustva, pratis nase upute i radis kao sto si radio i na obukama
+
+Prvo polazis od pregledavanja svih kanala na telegramu u folderu LV start: 
+
+https://t.me/addlist/s2nHCQZUNXI0OTY0
+
+i zatim ces odraditi 2 kratka testa koja se ticu osnovnih i tehnickih pitanja.
+
+kratak rezime kanala:
+
+U kanalu #pravilnik ces naci sve o pravilima, uslovima koji se ticu setup-a bez kojih ne mozes kretati u koliko nemas mogucnost za stabilnom internet konekcijom, pc racunarom ili laptopom (pozeljno oba) i slusalicama sa mikrofonom uz sve pratece hardverske komponente. vise o role-ama koje su zastupljene na discord serveru i pravila komunikacije,
+
+Sekcija #zabranjeno i #zabranjeno primeri je prebitna i zato obrati paznju da predjes tu sekciju posle sekcije pravilno
+
+Sekcija schedules gde jasno stoji sve oko rasporeda, kako sta, day-a off itd
+
+Inspo je kanal gde saljemo ideje, iako smo sada presli na drugaciju taktiku tj da saljemo objasnjenja, ideje i primere za svaki segment u poseban kanal (sekcija IMPORTANT)
+
+New features - kanal gde smo objedinili obavestenja za AI alate koje ce ti pomoci da vremenom pravis bolje rezultate ali i da imas neke od informacija na dohvat ruke. Pazljivo procitaj sve jer je jako bitno razumevanje bas svega sto je u kanalu
+
+Announcements - kanal za obavestenja gde saljemo najbitnije stvari a ticu se performansi, upitnika za feedback, skretanje paznje na pojedinosti, greske koje se ponavljaju itd.
+
+svaki od ostalih kanala koji je pod sekcijom LV start sluzi za smernice koje ti mogu pomoci u laksem snalazenju, hendlovanju vise trafika, pravilima u odredjenim situacijama, primerima, detaljnim review-ovima farmi itd. Posveti paznju ovoj sekciji jer sto vise stvari pohvatas, pravices vise love
+
+Obavezno predji sve sekcije jer pre pocetka rada ces imati jos jedan "mini test" gde ces na osnovu prikupljenog znanja odgovoriti na par pitanja cisto da budemo sigurni da si sve procitao.
+
+Moze da zvuci dosadno, naporno itd ali znamo da neke od stvari su toliko detaljno objasnjene da ce ti ustedeli masu vremena i pomoci pri vecem broju prodaja pa samim tim i boljim prihodima.
+
+Za sva pitanja slobodno pisi nadleznima za to pitanje 
+
+Srecno!"""
+
+# "#ime" u tekstu -> pravi link na kanal, ako kanal sa tim imenom postoji
+WELCOME_CHANNEL_LINKS = {
+    "#zabranjeno primeri": "zabranjeno-primeri",
+    "#zabranjeno": "zabranjeno",
+    "#pravilnik": "pravilnik",
+}
+
+
+def _welcome_chunks(guild, member, limit=1900):
+    text = WELCOME_TEXT.replace("{mention}", member.mention)
+    for token, ch_name in WELCOME_CHANNEL_LINKS.items():
+        ch = discord.utils.find(lambda c: isinstance(c, discord.TextChannel) and c.name.lower() == ch_name, guild.channels)
+        if ch:
+            text = text.replace(token, ch.mention)
+    # Discord limit 2000 znakova po poruci -> seci po pasusima
+    chunks, cur = [], ""
+    for para in text.split("\n\n"):
+        piece = para if not cur else "\n\n" + para
+        if cur and len(cur) + len(piece) > limit:
+            chunks.append(cur)
+            cur = para
+        else:
+            cur += piece
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    if member.bot:
+        return
+    guild = member.guild
+    if GUILD_ID and guild.id != int(GUILD_ID):
+        return
+
+    # 1) role
+    roles = [guild.get_role(rid) for rid in JOIN_ROLE_IDS]
+    roles = [r for r in roles if r]
+    if roles:
+        try:
+            await member.add_roles(*roles, reason="Auto role na ulasku")
+        except Exception as e:
+            print(f"[JOIN] add_roles fail za {member}: {e}", flush=True)
+
+    # 2) ticket (preskoči ako već postoji, npr. rejoin)
+    ticket_name = f"ticket-{member.name}".lower()
+    existing = discord.utils.find(lambda c: isinstance(c, discord.TextChannel) and c.name == ticket_name, guild.channels)
+    try:
+        ch = existing or await create_ticket_channel(guild, member, JOIN_TICKET_RAZLOG)
+    except Exception as e:
+        print(f"[JOIN] ticket fail za {member}: {e}", flush=True)
+        return
+
+    # 3) welcome poruka
+    try:
+        for chunk in _welcome_chunks(guild, member):
+            await ch.send(chunk, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+    except Exception as e:
+        print(f"[JOIN] welcome fail za {member}: {e}", flush=True)
+    print(f"[JOIN] {member} → role={[r.name for r in roles]} ticket=#{ch.name}", flush=True)
+
 
 # ========== /close - Zatvara ticket + čuva transcript ==========
 @tree.command(
@@ -2624,8 +2725,6 @@ async def listr_date_autocomplete(interaction: discord.Interaction, current: str
     counts = {}
     try:
         for r in get_reassigns():
-            if r.get("user_id") != interaction.user.id:
-                continue
             d = parse_date_str(r["date"])
             if d:
                 counts[d] = counts.get(d, 0) + 1
@@ -2650,7 +2749,7 @@ async def listr_date_autocomplete(interaction: discord.Interaction, current: str
     return [choice(d) for d in matches[:25]]
 
 
-@tree.command(name="listr", description="Tvoji reassignovi u izabranom opsegu datuma", guild=GUILD_OBJ)
+@tree.command(name="listr", description="Team: svi nerešeni reassignovi u izabranom opsegu datuma", guild=GUILD_OBJ)
 @app_commands.rename(do_="do")
 @app_commands.describe(
     od="Od datuma — izaberi iz poslednjih 30 dana ili ukucaj (DD.MM.YYYY)",
@@ -2677,15 +2776,14 @@ async def listr(interaction: discord.Interaction, od: str, do_: str = ""):
     if not reassigns:
         return await interaction.followup.send("Nema reassignova.", ephemeral=True)
 
-    mine = [r for r in reassigns if r.get("user_id") == interaction.user.id]
     filtered = []
-    for r in mine:
+    for r in reassigns:
         d = parse_date_str(r["date"])
         if d and start <= d <= end:
             filtered.append(r)
     range_txt = f"{start.strftime('%d.%m.%Y')} – {end.strftime('%d.%m.%Y')}"
     if not filtered:
-        return await interaction.followup.send(f"Nema tvojih reassignova za {range_txt}.", ephemeral=True)
+        return await interaction.followup.send(f"Nema reassignova za {range_txt}.", ephemeral=True)
 
     groups = {}
     for r in filtered:
