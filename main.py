@@ -2415,6 +2415,9 @@ class ReassignModal(Modal, title="Reassign unos"):
         self.add_item(self.sale)
 
     async def on_submit(self, interaction: discord.Interaction):
+        _, err = _validate_sale(self.sale.value)
+        if err:
+            return await interaction.response.send_message(err, ephemeral=True)
         data = {
             "model": self.model,
             "date": self.date,
@@ -2444,6 +2447,9 @@ class AddFanModal(Modal, title="Dodaj fan-a"):
         if not data:
             await interaction.response.send_message("❌ Nema započetog reassign-a.", ephemeral=True)
             return
+        _, err = _validate_sale(self.sale.value)
+        if err:
+            return await interaction.response.send_message(err, ephemeral=True)
         data["fans"].append((self.fan.value.strip(), self.sale.value.strip()))
         await interaction.response.defer(ephemeral=True)
         preview_msg = data.get("preview_msg")
@@ -2724,7 +2730,7 @@ async def listr_date_autocomplete(interaction: discord.Interaction, current: str
     today = _local_now().date()
     counts = {}
     try:
-        for r in get_reassigns():
+        for r in get_reassigns(done=False) + get_reassigns(done=True):
             d = parse_date_str(r["date"])
             if d:
                 counts[d] = counts.get(d, 0) + 1
@@ -2772,7 +2778,13 @@ async def listr(interaction: discord.Interaction, od: str, do_: str = ""):
     if end > today:
         end = today
 
-    reassigns = get_reassigns()
+    open_reassigns = get_reassigns(done=False)
+    done_reassigns = get_reassigns(done=True)
+    for r in open_reassigns:
+        r["done"] = False
+    for r in done_reassigns:
+        r["done"] = True
+    reassigns = open_reassigns + done_reassigns
     if not reassigns:
         return await interaction.followup.send("Nema reassignova.", ephemeral=True)
 
@@ -2790,14 +2802,24 @@ async def listr(interaction: discord.Interaction, od: str, do_: str = ""):
         key = (r["model"], r["date"])
         groups.setdefault(key, []).append(r)
 
-    lines = [f"📅 {range_txt} — {len(filtered)} reassign(a)", ""]
+    open_count = sum(1 for r in filtered if not r.get("done"))
+    lines = [
+        f"📅 {range_txt} — {len(filtered)} reassign(a) "
+        f"({open_count} nerešeno, {len(filtered) - open_count} urađeno)",
+        "",
+    ]
     for (model, date), rs in sorted(groups.items(), key=lambda x: (x[0][0].lower(), _date_sort_key(x[0][1]))):
         lines.append(f"**{model} — {format_date_str(date)}**")
         for r in rs:
-            lines.append(_entry_lines(r, r["chatter"]))
+            prefix = "✅ " if r.get("done") else ""
+            lines.append(prefix + _entry_lines(r, r["chatter"]))
         lines.append("")
 
-    await _send_list_with_actions(interaction, lines, filtered)
+    still_open = [r for r in filtered if not r.get("done")]
+    if still_open:
+        await _send_list_with_actions(interaction, lines, still_open)
+    else:
+        await _send_chunks(interaction, lines)
 
 
 @tree.command(name="listch", description="Lista reassignova po chatteru + datumu", guild=GUILD_OBJ)
@@ -2844,6 +2866,27 @@ async def listundone(interaction: discord.Interaction, ceter: str):
         lines.append("")
 
     await _send_chunks(interaction, lines)
+
+
+MAX_SALE = 200.0
+
+
+def _validate_sale(raw):
+    """Vraća (iznos, greška). Iznos preko MAX_SALE se odbija da se unos proveri još jednom."""
+    txt = str(raw or "").strip()
+    cleaned = txt.replace("$", "").replace(",", ".").replace(" ", "")
+    try:
+        val = float(cleaned)
+    except Exception:
+        return None, f"❌ Iznos `{txt}` nije broj. Unesi npr. `120` ili `120.5`."
+    if val <= 0:
+        return None, f"❌ Iznos mora biti veći od 0 (uneo si `{txt}`)."
+    if val > MAX_SALE:
+        return None, (
+            f"⚠️ Uneo si **${val:,.2f}**, što je više od ${MAX_SALE:,.0f}.\n"
+            "Proveri još jednom unos pa probaj ponovo. Ako je iznos stvarno toliki, javi menadžeru."
+        )
+    return val, None
 
 
 def _parse_sale(s):
@@ -2912,6 +2955,7 @@ async def rtotaltotal(interaction: discord.Interaction, mesec: str = None):
     total_reassigns = 0
     total_fans = 0
     total_usd = 0.0
+    per_ceter = {}
     for r in reassigns:
         d = parse_date_str(r["date"])
         if not d or d.strftime("%Y-%m") != month:
@@ -2919,16 +2963,30 @@ async def rtotaltotal(interaction: discord.Interaction, mesec: str = None):
         total_reassigns += 1
         fans = r.get("fans") or []
         total_fans += len(fans)
+        ceter = (r.get("chatter") or "—").strip()
+        row = per_ceter.setdefault(ceter, {"reassigns": 0, "fans": 0, "usd": 0.0})
+        row["reassigns"] += 1
+        row["fans"] += len(fans)
         for name, sale in fans:
-            total_usd += _parse_sale(sale)
+            val = _parse_sale(sale)
+            total_usd += val
+            row["usd"] += val
 
-    await interaction.followup.send(
-        f"📊 **UKUPNO — {month}**\n"
-        f"Reassignova: {total_reassigns}\n"
-        f"Fanova: {total_fans}\n"
-        f"Ukupno: ${total_usd:,.0f}",
-        ephemeral=True,
-    )
+    if not per_ceter:
+        return await interaction.followup.send(f"📊 Nema reassignova za {month}.", ephemeral=True)
+
+    lines = [f"📊 **UKUPNO — {month}**", ""]
+    for ceter, row in sorted(per_ceter.items(), key=lambda x: (-x[1]["usd"], x[0].lower())):
+        lines.append(
+            f"• **{ceter}** — ${row['usd']:,.0f} "
+            f"({row['reassigns']} reassign, {row['fans']} fan)"
+        )
+    lines += [
+        "",
+        f"**TOTAL: ${total_usd:,.0f}**",
+        f"Cetera: {len(per_ceter)} | Reassignova: {total_reassigns} | Fanova: {total_fans}",
+    ]
+    await _send_chunks(interaction, lines)
 
 
 # ========== OFF DAYS ==========
