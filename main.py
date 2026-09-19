@@ -1006,7 +1006,9 @@ async def clean_multi(interaction: discord.Interaction, users: str, keep: str = 
 
 
 # ---------- /farm (modal forma) ----------
-FARM_REMINDER_TIMES = [3600, 7200, 10800]  # 1h, 2h, 3h
+# Maksimalan broj podsetnika sa tagom (off day potvrda i farm potvrda)
+MAX_TAG_REMINDERS = 6
+FARM_REMINDER_TIMES = [3600, 7200, 10800, 14400, 18000, 21600][:MAX_TAG_REMINDERS]  # 1h..6h
 farm_reminders = {}  # message_id -> {"user_id", "channel_id", "created_at", "sent":[b,b,b], "done": bool}
 
 
@@ -1074,7 +1076,7 @@ class FarmModal(Modal, title="Farm unos"):
                 "user_id": self.opener.id,
                 "channel_id": interaction.channel.id,
                 "created_at": time.time(),
-                "sent": [False, False, False],
+                "sent": [False] * len(FARM_REMINDER_TIMES),
                 "done": False,
             }
         except Exception as e:
@@ -3532,16 +3534,24 @@ async def off_confirm_reminder_loop():
             continue
         if d < today:
             continue
+        key = f"off_confirm_reminders:{e.get('user_id')}:{e.get('date')}"
+        sent = int(get_state(key) or 0)
+        if sent >= MAX_TAG_REMINDERS:
+            continue
         ch = bot.get_channel(e.get("channel_id")) if e.get("channel_id") else None
         if not ch:
             continue
         try:
+            left = MAX_TAG_REMINDERS - sent - 1
+            suffix = "" if left else " (poslednji podsetnik)"
             await ch.send(
                 f"⏳ <@{e.get('user_id')}> — nisi potvrdio/la svoj off day ({d.strftime('%d.%m.%Y')}). "
                 f"Klikni ✅ (potvrda) ili ❌ (otkazivanje) na svoju off-day poruku."
+                f"{suffix}"
             )
+            set_state(key, str(sent + 1))
         except Exception as ex:
-            print("[OFF] confirm reminder fail:", ex)
+            print("[OFF] confirm reminder fail:", ex, flush=True)
 
 
 @off_confirm_reminder_loop.before_loop
