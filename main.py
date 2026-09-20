@@ -301,8 +301,12 @@ def taken_dates_for_shift(shift):
     return out
 
 
-def count_month_off_days(user_id):
-    month = _local_now().strftime("%Y-%m")
+MAX_OFF_PER_MONTH = 4
+
+
+def count_month_off_days(user_id, month=None):
+    """Broj off dana korisnika u datom mesecu (YYYY-MM); podrazumevano tekući mesec."""
+    month = month or _local_now().strftime("%Y-%m")
     return sum(1 for e in off_days if e.get("user_id") == user_id and (e.get("date") or "").startswith(month))
 
 
@@ -3127,15 +3131,21 @@ async def book_off_days(interaction, start_date, end_date, shift):
         )
         return
 
-    # limit: maksimalno 4 off dana mesečno po chatteru
-    month_count = count_month_off_days(interaction.user.id)
-    if month_count + len(days) > 4:
-        remaining = 4 - month_count
-        await interaction.response.send_message(
-            f"❌ Maksimalno 4 off dana mesečno. Ovog meseca si već uzeo/la {month_count} — ostalo ti je {remaining}.",
-            ephemeral=True,
-        )
-        return
+    # limit: maksimalno MAX_OFF_PER_MONTH off dana po KALENDARSKOM mesecu u kom je off dan
+    per_month = {}
+    for day in days:
+        per_month[day.strftime("%Y-%m")] = per_month.get(day.strftime("%Y-%m"), 0) + 1
+    for month, cnt in sorted(per_month.items()):
+        used = count_month_off_days(interaction.user.id, month)
+        if used + cnt > MAX_OFF_PER_MONTH:
+            label = datetime.strptime(month, "%Y-%m").strftime("%m.%Y")
+            remaining = max(0, MAX_OFF_PER_MONTH - used)
+            await interaction.response.send_message(
+                f"❌ Maksimalno {MAX_OFF_PER_MONTH} off dana za mesec {label}. "
+                f"Za taj mesec već imaš {used} — ostalo ti je {remaining}, a tražiš {cnt}.",
+                ephemeral=True,
+            )
+            return
 
     group_id = f"{interaction.user.id}-{int(datetime.now().timestamp())}"
     for day in days:
