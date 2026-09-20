@@ -2288,6 +2288,21 @@ def mark_reassign_done(rid):
     conn.close()
 
 
+def mark_reassigns_done(ids):
+    """Označi listu ID-eva kao urađeno. Vraća (novo_označeno, ukupno_traženo)."""
+    conn = _db()
+    newly = 0
+    total = 0
+    for rid in ids:
+        cur = conn.execute("UPDATE reassigns SET done=1 WHERE id=? AND done=0", (rid,))
+        newly += cur.rowcount or 0
+        total += 1
+    conn.commit()
+    conn.close()
+    print(f"[REASSIGN] mark done: {newly}/{total} (ids={list(ids)[:20]})", flush=True)
+    return newly, total
+
+
 def delete_reassign(rid):
     conn = _db()
     conn.execute("DELETE FROM reassigns WHERE id=?", (rid,))
@@ -2665,6 +2680,9 @@ class ReassignListActions(discord.ui.View):
         super().__init__(timeout=1800)
         self.reassigns = reassigns
         self.all_reassigns = list(all_reassigns) if all_reassigns is not None else list(reassigns)
+        # ID-evi se pamte odmah, da dugmad rade i kad se lista u međuvremenu promeni
+        self.chunk_ids = [r["id"] for r in self.reassigns if r.get("id")]
+        self.all_ids = [r["id"] for r in self.all_reassigns if r.get("id")]
         self.selected_id = None
         if reassigns:
             self.add_item(ReassignListSelect(reassigns))
@@ -2704,22 +2722,28 @@ class ReassignListActions(discord.ui.View):
 
     @discord.ui.button(label="📦 Označi ovaj deo kao urađeno", style=discord.ButtonStyle.primary)
     async def chunk_done(self, interaction: discord.Interaction, button: discord.ui.Button):
-        n = 0
-        for r in self.reassigns:
-            mark_reassign_done(r["id"])
-            n += 1
+        if not self.chunk_ids:
+            await interaction.response.send_message(
+                "ℹ️ U ovom delu liste nema nijednog reassigna za označavanje.", ephemeral=True
+            )
+            return
+        newly, total = mark_reassigns_done(self.chunk_ids)
+        extra = f" ({total - newly} je već bilo urađeno)" if total > newly else ""
         await interaction.response.send_message(
-            f"✅ Označeno {n} reassign(a) iz ovog dela liste kao urađeno.", ephemeral=True
+            f"✅ Ovaj deo: označeno {newly} od {total} reassign(a){extra}.", ephemeral=True
         )
 
     @discord.ui.button(label="✔ Označi SVE izlistane kao urađeno", style=discord.ButtonStyle.secondary)
     async def all_done(self, interaction: discord.Interaction, button: discord.ui.Button):
-        n = 0
-        for r in self.all_reassigns:
-            mark_reassign_done(r["id"])
-            n += 1
+        if not self.all_ids:
+            await interaction.response.send_message(
+                "ℹ️ Nema izlistanih reassignova za označavanje.", ephemeral=True
+            )
+            return
+        newly, total = mark_reassigns_done(self.all_ids)
+        extra = f" ({total - newly} je već bilo urađeno)" if total > newly else ""
         await interaction.response.send_message(
-            f"✅ Svih {n} izlistanih reassignova označeno kao urađeno.", ephemeral=True
+            f"✅ Cela lista: označeno {newly} od {total} reassign(a){extra}.", ephemeral=True
         )
 
 
@@ -2762,18 +2786,19 @@ async def _send_items_with_actions(interaction, items, all_reassigns, limit=1900
             cur_lines, cur_rs, cur_len = [], [], 0
         cur_lines.append(text)
         cur_len += len(text) + 1
-        if r is not None and not r.get("done"):
+        if r is not None and r.get("id"):
             cur_rs.append(r)
     if cur_lines:
         chunks.append((cur_lines, cur_rs))
 
+    all_list = list(all_reassigns) if all_reassigns else [r for _, r in items if r is not None and r.get("id")]
     total = len(chunks)
     for i, (lines_, rs_) in enumerate(chunks, start=1):
         body = "\n".join(lines_)
         if total > 1:
             body = f"{body}\n*— deo {i}/{total} —*"
-        if all_reassigns:
-            view = ReassignListActions(rs_, all_reassigns=all_reassigns)
+        if rs_ or all_list:
+            view = ReassignListActions(rs_, all_reassigns=all_list)
             await interaction.followup.send(body, ephemeral=True, view=view)
         else:
             await interaction.followup.send(body, ephemeral=True)
@@ -2876,7 +2901,7 @@ async def listr(interaction: discord.Interaction, od: str, do_: str = ""):
             items.append((prefix + _entry_lines(r, label), r))
         items.append(("", None))
 
-    await _send_items_with_actions(interaction, items, still_open)
+    await _send_items_with_actions(interaction, items, filtered)
 
 
 @tree.command(name="listch", description="Lista reassignova po chatteru + datumu", guild=GUILD_OBJ)
