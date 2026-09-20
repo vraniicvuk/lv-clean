@@ -2657,11 +2657,13 @@ class ReassignListSelect(discord.ui.Select):
 
 
 class ReassignListActions(discord.ui.View):
-    def __init__(self, reassigns):
+    def __init__(self, reassigns, all_reassigns=None):
         super().__init__(timeout=1800)
         self.reassigns = reassigns
+        self.all_reassigns = list(all_reassigns) if all_reassigns is not None else list(reassigns)
         self.selected_id = None
-        self.add_item(ReassignListSelect(reassigns))
+        if reassigns:
+            self.add_item(ReassignListSelect(reassigns))
 
     async def _notify_ceter(self, interaction, r):
         if not r or not r.get("user_id"):
@@ -2696,11 +2698,25 @@ class ReassignListActions(discord.ui.View):
         await self._notify_ceter(interaction, r)
         await interaction.response.send_message("🗑 Reassign obrisan.", ephemeral=True)
 
-    @discord.ui.button(label="✔ Sve urađeno", style=discord.ButtonStyle.secondary)
-    async def all_done(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="📦 Označi ovaj deo kao urađeno", style=discord.ButtonStyle.primary)
+    async def chunk_done(self, interaction: discord.Interaction, button: discord.ui.Button):
+        n = 0
         for r in self.reassigns:
             mark_reassign_done(r["id"])
-        await interaction.response.send_message("✅ Svi reassignovi označeni kao urađeni.", ephemeral=True)
+            n += 1
+        await interaction.response.send_message(
+            f"✅ Označeno {n} reassign(a) iz ovog dela liste kao urađeno.", ephemeral=True
+        )
+
+    @discord.ui.button(label="✔ Označi SVE izlistane kao urađeno", style=discord.ButtonStyle.secondary)
+    async def all_done(self, interaction: discord.Interaction, button: discord.ui.Button):
+        n = 0
+        for r in self.all_reassigns:
+            mark_reassign_done(r["id"])
+            n += 1
+        await interaction.response.send_message(
+            f"✅ Svih {n} izlistanih reassignova označeno kao urađeno.", ephemeral=True
+        )
 
 
 async def _send_list_with_actions(interaction, lines, reassigns):
@@ -2723,6 +2739,40 @@ async def _send_list_with_actions(interaction, lines, reassigns):
             await interaction.followup.send(ch, ephemeral=True, view=view)
         else:
             await interaction.followup.send(ch, ephemeral=True)
+
+
+def _ceter_sort_key(name):
+    """y -> yy -> yyy -> ostali (abecedno unutar grupe)."""
+    n = (name or "").strip().lower()
+    m = re.match(r"^(y+)", n)
+    return (len(m.group(1)) if m else 99, n)
+
+
+async def _send_items_with_actions(interaction, items, all_reassigns, limit=1900):
+    """items = [(tekst_linije, reassign_ili_None)]. Svaki chunk dobija svoja dugmad."""
+    chunks = []
+    cur_lines, cur_rs, cur_len = [], [], 0
+    for text, r in items:
+        if cur_lines and cur_len + len(text) + 1 > limit:
+            chunks.append((cur_lines, cur_rs))
+            cur_lines, cur_rs, cur_len = [], [], 0
+        cur_lines.append(text)
+        cur_len += len(text) + 1
+        if r is not None and not r.get("done"):
+            cur_rs.append(r)
+    if cur_lines:
+        chunks.append((cur_lines, cur_rs))
+
+    total = len(chunks)
+    for i, (lines_, rs_) in enumerate(chunks, start=1):
+        body = "\n".join(lines_)
+        if total > 1:
+            body = f"{body}\n*— deo {i}/{total} —*"
+        if all_reassigns:
+            view = ReassignListActions(rs_, all_reassigns=all_reassigns)
+            await interaction.followup.send(body, ephemeral=True, view=view)
+        else:
+            await interaction.followup.send(body, ephemeral=True)
 
 
 async def listr_date_autocomplete(interaction: discord.Interaction, current: str):
@@ -2801,27 +2851,28 @@ async def listr(interaction: discord.Interaction, od: str, do_: str = ""):
 
     groups = {}
     for r in filtered:
-        key = (r["model"], r["date"])
-        groups.setdefault(key, []).append(r)
+        groups.setdefault((r.get("chatter") or "—").strip(), []).append(r)
 
     open_count = sum(1 for r in filtered if not r.get("done"))
-    lines = [
-        f"📅 {range_txt} — {len(filtered)} reassign(a) "
-        f"({open_count} nerešeno, {len(filtered) - open_count} urađeno)",
-        "",
+    still_open = [r for r in filtered if not r.get("done")]
+    items = [
+        (
+            f"📅 {range_txt} — {len(filtered)} reassign(a) "
+            f"({open_count} nerešeno, {len(filtered) - open_count} urađeno)",
+            None,
+        ),
+        ("", None),
     ]
-    for (model, date), rs in sorted(groups.items(), key=lambda x: (x[0][0].lower(), _date_sort_key(x[0][1]))):
-        lines.append(f"**{model} — {format_date_str(date)}**")
+    for ceter in sorted(groups, key=_ceter_sort_key):
+        rs = sorted(groups[ceter], key=lambda r: (_date_sort_key(r["date"]), (r["model"] or "").lower()))
+        items.append((f"**{ceter}**", None))
         for r in rs:
             prefix = "✅ " if r.get("done") else ""
-            lines.append(prefix + _entry_lines(r, r["chatter"]))
-        lines.append("")
+            label = f"{r['model']} — {format_date_str(r['date'])}"
+            items.append((prefix + _entry_lines(r, label), r))
+        items.append(("", None))
 
-    still_open = [r for r in filtered if not r.get("done")]
-    if still_open:
-        await _send_list_with_actions(interaction, lines, still_open)
-    else:
-        await _send_chunks(interaction, lines)
+    await _send_items_with_actions(interaction, items, still_open)
 
 
 @tree.command(name="listch", description="Lista reassignova po chatteru + datumu", guild=GUILD_OBJ)
