@@ -2888,17 +2888,19 @@ async def listch(interaction: discord.Interaction):
 
     groups = {}
     for r in reassigns:
-        key = (r["chatter"], r["date"])
+        key = ((r.get("chatter") or "—").strip(), r["date"])
         groups.setdefault(key, []).append(r)
 
-    lines = []
-    for (chatter, date), rs in sorted(groups.items(), key=lambda x: (_date_sort_key(x[0][1]), x[0][0].lower())):
-        lines.append(f"**{chatter} — {format_date_str(date)}**")
+    items = []
+    for (chatter, date), rs in sorted(
+        groups.items(), key=lambda x: (_ceter_sort_key(x[0][0]), _date_sort_key(x[0][1]))
+    ):
+        items.append((f"**{chatter} — {format_date_str(date)}**", None))
         for r in rs:
-            lines.append(_entry_lines(r, r["model"]))
-        lines.append("")
+            items.append((_entry_lines(r, r["model"]), r))
+        items.append(("", None))
 
-    await _send_list_with_actions(interaction, lines, reassigns)
+    await _send_items_with_actions(interaction, items, reassigns)
 
 
 @tree.command(name="listundone", description="Lista nerešenih reassignova za jednog cetera", guild=GUILD_OBJ)
@@ -2915,14 +2917,14 @@ async def listundone(interaction: discord.Interaction, ceter: str):
     for r in matched:
         groups.setdefault(r["date"], []).append(r)
 
-    lines = [f"Nerešeni reassignovi — {ceter}", ""]
+    items = [(f"Nerešeni reassignovi — {ceter}", None), ("", None)]
     for date, rs in sorted(groups.items(), key=lambda x: _date_sort_key(x[0])):
-        lines.append(f"{format_date_str(date)}")
+        items.append((f"{format_date_str(date)}", None))
         for r in rs:
-            lines.append(_entry_lines(r, r["model"]))
-        lines.append("")
+            items.append((_entry_lines(r, r["model"]), r))
+        items.append(("", None))
 
-    await _send_chunks(interaction, lines)
+    await _send_items_with_actions(interaction, items, matched)
 
 
 MAX_SALE = 200.0
