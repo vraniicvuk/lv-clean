@@ -2497,7 +2497,13 @@ class AddFanModal(Modal, title="Dodaj fan-a"):
         _, err = _validate_sale(self.sale.value)
         if err:
             return await interaction.response.send_message(err, ephemeral=True)
-        data["fans"].append((self.fan.value.strip(), self.sale.value.strip()))
+        fan_name = self.fan.value.strip()
+        if any((n or "").strip().lower() == fan_name.lower() for n, _ in data["fans"]):
+            return await interaction.response.send_message(
+                f"❌ Fan `{fan_name}` je već unet u ovaj reassign. Ako su dve različite osobe, dodaj nešto u ime (npr. `{fan_name} 2`).",
+                ephemeral=True,
+            )
+        data["fans"].append((fan_name, self.sale.value.strip()))
         await interaction.response.defer(ephemeral=True)
         preview_msg = data.get("preview_msg")
         if preview_msg:
@@ -2701,6 +2707,35 @@ class ReassignListSelect(discord.ui.Select):
         await interaction.response.defer()
 
 
+DONE_EMOJI = "☑️"
+
+
+async def add_done_reactions(reassigns, delay=0.3):
+    """Dodaje ☑️ na originalne reassign poruke (ticket + pregledni kanal)."""
+    ok = 0
+    for r in reassigns:
+        targets = [
+            (r.get("channel_id"), r.get("ticket_msg_id")),
+            (REASSIGN_CHANNEL_ID, r.get("overview_msg_id")),
+        ]
+        for chan_id, msg_id in targets:
+            if not chan_id or not msg_id:
+                continue
+            ch = bot.get_channel(chan_id)
+            if not ch:
+                continue
+            try:
+                msg = await ch.fetch_message(msg_id)
+                await msg.add_reaction(DONE_EMOJI)
+                ok += 1
+                reassign_msg_ids.discard(msg_id)
+            except Exception as e:
+                print(f"[REASSIGN] react fail (msg {msg_id}):", e, flush=True)
+            await asyncio.sleep(delay)
+    print(f"[REASSIGN] ☑️ dodato na {ok} poruka", flush=True)
+    return ok
+
+
 class ReassignListActions(discord.ui.View):
     def __init__(self, reassigns, all_reassigns=None):
         super().__init__(timeout=1800)
@@ -2734,6 +2769,9 @@ class ReassignListActions(discord.ui.View):
             await interaction.response.send_message("Prvo izaberi reassign iz liste.", ephemeral=True)
             return
         mark_reassign_done(self.selected_id)
+        picked = next((x for x in self.all_reassigns if x.get("id") == self.selected_id), None)
+        if picked:
+            asyncio.create_task(add_done_reactions([picked]))
         await interaction.response.send_message("✅ Označeno kao urađeno.", ephemeral=True)
 
     @discord.ui.button(label="🗑 Izbriši", style=discord.ButtonStyle.danger)
@@ -2754,9 +2792,10 @@ class ReassignListActions(discord.ui.View):
             )
             return
         newly, total, confirmed = mark_reassigns_done(self.chunk_ids)
+        asyncio.create_task(add_done_reactions(list(self.reassigns)))
         await interaction.response.send_message(
             f"✅ Ovaj deo: sada je urađeno {confirmed}/{total} "
-            f"(novo označeno: {newly}).",
+            f"(novo označeno: {newly}). ☑️ reakcije se dodaju u pozadini.",
             ephemeral=True,
         )
 
@@ -2778,9 +2817,10 @@ class ReassignListActions(discord.ui.View):
             )
             return
         newly, total, confirmed = mark_reassigns_done(self.all_ids)
+        asyncio.create_task(add_done_reactions(list(self.all_reassigns)))
         await interaction.response.send_message(
             f"✅ Cela lista: sada je urađeno {confirmed}/{total} "
-            f"(novo označeno: {newly}).",
+            f"(novo označeno: {newly}). ☑️ reakcije se dodaju u pozadini.",
             ephemeral=True,
         )
 
@@ -3467,8 +3507,6 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
                 reassign_msg_ids.discard(info["ticket_msg_id"])
             if info.get("overview_msg_id"):
                 reassign_msg_ids.discard(info["overview_msg_id"])
-            DONE_EMOJI = "☑️"
-
             ticket_channel = bot.get_channel(info["channel_id"])
             ticket_msg_id = info.get("ticket_msg_id")
             if ticket_channel and ticket_msg_id:
