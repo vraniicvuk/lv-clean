@@ -2303,6 +2303,21 @@ def mark_reassigns_done(ids):
     return newly, total
 
 
+def mark_reassigns_undone(ids):
+    """Vrati listu ID-eva u nerešeno. Vraća (vraćeno, ukupno_traženo)."""
+    conn = _db()
+    newly = 0
+    total = 0
+    for rid in ids:
+        cur = conn.execute("UPDATE reassigns SET done=0 WHERE id=? AND done=1", (rid,))
+        newly += cur.rowcount or 0
+        total += 1
+    conn.commit()
+    conn.close()
+    print(f"[REASSIGN] mark undone: {newly}/{total}", flush=True)
+    return newly, total
+
+
 def delete_reassign(rid):
     conn = _db()
     conn.execute("DELETE FROM reassigns WHERE id=?", (rid,))
@@ -2733,6 +2748,16 @@ class ReassignListActions(discord.ui.View):
             f"✅ Ovaj deo: označeno {newly} od {total} reassign(a){extra}.", ephemeral=True
         )
 
+    @discord.ui.button(label="↩ Vrati SVE izlistane u nerešeno", style=discord.ButtonStyle.secondary)
+    async def all_undone(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.all_ids:
+            await interaction.response.send_message("ℹ️ Nema izlistanih reassignova.", ephemeral=True)
+            return
+        newly, total = mark_reassigns_undone(self.all_ids)
+        await interaction.response.send_message(
+            f"↩ Vraćeno u nerešeno: {newly} od {total} reassign(a).", ephemeral=True
+        )
+
     @discord.ui.button(label="✔ Označi SVE izlistane kao urađeno", style=discord.ButtonStyle.secondary)
     async def all_done(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.all_ids:
@@ -2842,8 +2867,13 @@ async def listr_date_autocomplete(interaction: discord.Interaction, current: str
     od="Od datuma — izaberi iz poslednjih 30 dana ili ukucaj (DD.MM.YYYY)",
     do_="Do datuma — prazno = danas",
 )
+@app_commands.choices(status=[
+    app_commands.Choice(name="Samo nerešeni", value="open"),
+    app_commands.Choice(name="Svi (nerešeni + urađeni)", value="all"),
+    app_commands.Choice(name="Samo urađeni", value="done"),
+])
 @app_commands.autocomplete(od=listr_date_autocomplete, do_=listr_date_autocomplete)
-async def listr(interaction: discord.Interaction, od: str, do_: str = ""):
+async def listr(interaction: discord.Interaction, od: str, do_: str = "", status: str = "open"):
     await interaction.response.defer(ephemeral=True)
     today = _local_now().date()
     start = parse_date_str(od)
@@ -2871,10 +2901,15 @@ async def listr(interaction: discord.Interaction, od: str, do_: str = ""):
 
     filtered = []
     for r in reassigns:
+        if status == "open" and r.get("done"):
+            continue
+        if status == "done" and not r.get("done"):
+            continue
         d = parse_date_str(r["date"])
         if d and start <= d <= end:
             filtered.append(r)
-    range_txt = f"{start.strftime('%d.%m.%Y')} – {end.strftime('%d.%m.%Y')}"
+    status_txt = {"open": "nerešeni", "done": "urađeni", "all": "svi"}.get(status, "nerešeni")
+    range_txt = f"{start.strftime('%d.%m.%Y')} – {end.strftime('%d.%m.%Y')} ({status_txt})"
     if not filtered:
         return await interaction.followup.send(f"Nema reassignova za {range_txt}.", ephemeral=True)
 
