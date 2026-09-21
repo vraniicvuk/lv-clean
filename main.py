@@ -2289,18 +2289,29 @@ def mark_reassign_done(rid):
 
 
 def mark_reassigns_done(ids):
-    """Označi listu ID-eva kao urađeno. Vraća (novo_označeno, ukupno_traženo)."""
+    """Označi listu ID-eva kao urađeno. Vraća (novo_označeno, ukupno_traženo, potvrđeno_u_bazi)."""
+    ids = [int(i) for i in ids if i is not None]
     conn = _db()
     newly = 0
-    total = 0
     for rid in ids:
         cur = conn.execute("UPDATE reassigns SET done=1 WHERE id=? AND done=0", (rid,))
         newly += cur.rowcount or 0
-        total += 1
     conn.commit()
+    # provera posle commita: koliko ih baza zaista vidi kao done
+    confirmed = 0
+    missing = 0
+    for rid in ids:
+        row = conn.execute("SELECT done FROM reassigns WHERE id=?", (rid,)).fetchone()
+        if row is None:
+            missing += 1
+        elif row["done"]:
+            confirmed += 1
     conn.close()
-    print(f"[REASSIGN] mark done: {newly}/{total} (ids={list(ids)[:20]})", flush=True)
-    return newly, total
+    print(
+        f"[REASSIGN] done: update={newly} confirmed={confirmed}/{len(ids)} missing={missing} ids={ids[:20]}",
+        flush=True,
+    )
+    return newly, len(ids), confirmed
 
 
 def mark_reassigns_undone(ids):
@@ -2742,10 +2753,11 @@ class ReassignListActions(discord.ui.View):
                 "ℹ️ U ovom delu liste nema nijednog reassigna za označavanje.", ephemeral=True
             )
             return
-        newly, total = mark_reassigns_done(self.chunk_ids)
-        extra = f" ({total - newly} je već bilo urađeno)" if total > newly else ""
+        newly, total, confirmed = mark_reassigns_done(self.chunk_ids)
         await interaction.response.send_message(
-            f"✅ Ovaj deo: označeno {newly} od {total} reassign(a){extra}.", ephemeral=True
+            f"✅ Ovaj deo: sada je urađeno {confirmed}/{total} "
+            f"(novo označeno: {newly}).",
+            ephemeral=True,
         )
 
     @discord.ui.button(label="↩ Vrati SVE izlistane u nerešeno", style=discord.ButtonStyle.secondary)
@@ -2765,10 +2777,11 @@ class ReassignListActions(discord.ui.View):
                 "ℹ️ Nema izlistanih reassignova za označavanje.", ephemeral=True
             )
             return
-        newly, total = mark_reassigns_done(self.all_ids)
-        extra = f" ({total - newly} je već bilo urađeno)" if total > newly else ""
+        newly, total, confirmed = mark_reassigns_done(self.all_ids)
         await interaction.response.send_message(
-            f"✅ Cela lista: označeno {newly} od {total} reassign(a){extra}.", ephemeral=True
+            f"✅ Cela lista: sada je urađeno {confirmed}/{total} "
+            f"(novo označeno: {newly}).",
+            ephemeral=True,
         )
 
 
