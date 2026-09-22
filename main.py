@@ -2437,8 +2437,10 @@ class ReassignActionsView(discord.ui.View):
             except Exception as e:
                 print("[REASSIGN] ticket send fail:", e)
 
-        # 2) info u preglednom kanalu
+        # 2) info u preglednom kanalu (preskoči ako je komanda već pokrenuta u njemu)
         overview = bot.get_channel(REASSIGN_CHANNEL_ID)
+        if overview and original_channel and overview.id == original_channel.id:
+            overview = None
         if overview:
             try:
                 m2 = await overview.send(info_text)
