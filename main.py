@@ -3531,6 +3531,108 @@ async def loff(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed)
 
 
+class DelOffSelect(discord.ui.Select):
+    def __init__(self, entries):
+        options = []
+        for i, e in enumerate(entries[:25]):
+            try:
+                d = datetime.strptime(e["date"], "%Y-%m-%d").date()
+                date_txt = d.strftime("%d.%m.%Y")
+            except Exception:
+                date_txt = str(e.get("date"))
+            mark = "✅" if e.get("confirmed") else "⏳"
+            label = f"{mark} {date_txt} — {e.get('username') or e.get('user_id')}"
+            options.append(
+                discord.SelectOption(label=label[:100], value=str(i), description=str(e.get("shift"))[:50])
+            )
+        super().__init__(placeholder="Izaberi off dan(e) za brisanje", min_values=1, max_values=min(25, len(options)), options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.picked = [int(v) for v in self.values]
+        await interaction.response.send_message(
+            f"Izabrano: {len(self.view.picked)}. Sada klikni 🗑 Obriši.", ephemeral=True
+        )
+
+
+class DelOffView(discord.ui.View):
+    def __init__(self, entries):
+        super().__init__(timeout=600)
+        self.entries = entries[:25]
+        self.picked = []
+        self.add_item(DelOffSelect(self.entries))
+
+    @discord.ui.button(label="🗑 Obriši izabrano", style=discord.ButtonStyle.danger)
+    async def do_delete(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.picked:
+            return await interaction.response.send_message("Prvo izaberi iz liste.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        targets = [self.entries[i] for i in self.picked if i < len(self.entries)]
+        removed = []
+        for t in targets:
+            for e in list(off_days):
+                if (
+                    e.get("user_id") == t.get("user_id")
+                    and e.get("date") == t.get("date")
+                    and e.get("shift") == t.get("shift")
+                ):
+                    off_days.remove(e)
+                    removed.append(e)
+        if removed:
+            await asyncio.to_thread(save_off_days)
+        # probaj da obrišeš i poruku o off danu
+        for e in removed:
+            ch = bot.get_channel(e.get("channel_id")) if e.get("channel_id") else None
+            if ch and e.get("message_id"):
+                try:
+                    m = await ch.fetch_message(e["message_id"])
+                    await m.delete()
+                except Exception as ex:
+                    print("[OFF] brisanje poruke nije uspelo:", ex, flush=True)
+        names = ", ".join(
+            f"{e.get('username')} {format_date_str(e.get('date'))}" for e in removed
+        ) or "—"
+        print(f"[OFF] obrisano {len(removed)} off dana ({interaction.user})", flush=True)
+        await interaction.followup.send(
+            f"🗑 Obrisano {len(removed)} off dan(a): {names}", ephemeral=True
+        )
+
+
+@tree.command(name="deloff", description="Obriši off dan(e) — npr. greškom unete", guild=GUILD_OBJ)
+@app_commands.describe(
+    ceter="Ime chattera (opciono, filter)",
+    samo_nepotvrdjeni="Prikaži samo one koji čekaju potvrdu (podrazumevano da)",
+)
+@need_off_manager()
+async def deloff(interaction: discord.Interaction, ceter: str = "", samo_nepotvrdjeni: bool = True):
+    await interaction.response.defer(ephemeral=True)
+    today = _local_now().date()
+    q = (ceter or "").strip().lower()
+    entries = []
+    for e in off_days:
+        try:
+            d = datetime.strptime(e["date"], "%Y-%m-%d").date()
+        except Exception:
+            continue
+        if d < today:
+            continue
+        if samo_nepotvrdjeni and e.get("confirmed"):
+            continue
+        if q and q not in str(e.get("username", "")).lower():
+            continue
+        entries.append(e)
+
+    if not entries:
+        return await interaction.followup.send(
+            "Nema off dana koji odgovaraju filteru.", ephemeral=True
+        )
+
+    entries.sort(key=lambda e: (e.get("date") or "", str(e.get("username") or "")))
+    head = f"Nađeno {len(entries)} off dan(a)"
+    if len(entries) > 25:
+        head += " — prikazano prvih 25 (suzi filterom)"
+    await interaction.followup.send(head, view=DelOffView(entries), ephemeral=True)
+
+
 @bot.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     guild = bot.get_guild(payload.guild_id) if payload.guild_id else None
