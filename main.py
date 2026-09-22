@@ -3300,6 +3300,12 @@ async def book_off_days(interaction, start_date, end_date, shift):
             return
 
     group_id = f"{interaction.user.id}-{int(datetime.now().timestamp())}"
+    # potvrdi interakciju odmah (Discord daje 3s), posao ide posle
+    try:
+        await interaction.response.defer(thinking=True)
+    except Exception as e:
+        print("[OFF] defer fail:", e, flush=True)
+
     for day in days:
         off_days.append({
             "user_id": interaction.user.id,
@@ -3311,7 +3317,7 @@ async def book_off_days(interaction, start_date, end_date, shift):
             "group_id": group_id,
             "channel_id": interaction.channel.id,
         })
-    save_off_days()
+    await asyncio.to_thread(save_off_days)
 
     if len(days) == 1:
         date_str = f"{days[0].strftime('%d.%m.%Y')} ({SR_WEEKDAYS[days[0].weekday()]})"
@@ -3330,25 +3336,30 @@ async def book_off_days(interaction, start_date, end_date, shift):
                 f"**Smena:** {shift}"
             )
         except Exception as e:
-            print("[OFF] slanje u management kanal nije uspelo:", e)
+            print("[OFF] slanje u management kanal nije uspelo:", e, flush=True)
 
-    await interaction.response.send_message(
-        f"📅 **{interaction.user.mention} je rezervisao/la off day**\n"
-        f"**Datum:** {date_str}\n"
-        f"**Smena:** {shift}\n"
-        f"**Preostalo off dana ovog meseca:** {4 - (month_count + len(days))}\n"
-        f"Potvrdi klikom na ✅ da si video/la, ili klikni ❌ da obrišeš."
+    month_key = days[0].strftime("%Y-%m")
+    left = max(0, MAX_OFF_PER_MONTH - count_month_off_days(interaction.user.id, month_key))
+    month_label = days[0].strftime("%m.%Y")
+
+    msg = await interaction.edit_original_response(
+        content=(
+            f"📅 **{interaction.user.mention} je rezervisao/la off day**\n"
+            f"**Datum:** {date_str}\n"
+            f"**Smena:** {shift}\n"
+            f"**Preostalo off dana za {month_label}:** {left}\n"
+            f"Potvrdi klikom na ✅ da si video/la, ili klikni ❌ da obrišeš."
+        )
     )
-    msg = await interaction.original_response()
     for e in off_days:
         if e.get("group_id") == group_id:
             e["message_id"] = msg.id
-    save_off_days()
+    await asyncio.to_thread(save_off_days)
     try:
         await msg.add_reaction("✅")
         await msg.add_reaction("❌")
     except Exception as e:
-        print("[OFF] dodavanje reakcija nije uspelo:", e)
+        print("[OFF] dodavanje reakcija nije uspelo:", e, flush=True)
 
 
 async def _require_shift(interaction):
