@@ -1497,6 +1497,9 @@ SHIFT_SUPERVISOR_MAP = {
     # 1410962407454675047: 9876543210,         # Main Shift → Supervisor
 }
 
+# ko sme da zatvori reassign reakcijom ✅ (popuni se odmah ispod)
+REASSIGN_DONE_ROLE_IDS = set()
+
 OTHER_SUPPORT_ROLES = [
     1410962105749995591,
     1410958063824801802,
@@ -1557,6 +1560,9 @@ async def create_ticket_channel(guild, member, razlog):
     embed.set_footer(text="Koristite /close za zatvaranje sa transcriptom\n/delete za brisanje bez transcripta")
     await ticket_channel.send(embed=embed)
     return ticket_channel
+
+
+REASSIGN_DONE_ROLE_IDS = set(OTHER_SUPPORT_ROLES) | {OFF_CANCEL_ROLE_ID}
 
 
 @tree.command(
@@ -2334,7 +2340,7 @@ def mark_reassigns_undone(ids):
         conn.commit()
     conn.close()
     print(f"[REASSIGN] undone: {len(target)}/{len(ids)}", flush=True)
-    return len(target), len(ids)
+    return target, len(ids)
 
 
 def delete_reassign(rid):
@@ -2720,6 +2726,29 @@ class ReassignListSelect(discord.ui.Select):
 DONE_EMOJI = "☑️"
 
 
+async def remove_done_reactions(reassigns, delay=0.3):
+    """Skida ☑️ sa poruka i vraća ih u listu onih koje ✅ može da zatvori."""
+    for r in reassigns:
+        targets = [
+            (r.get("channel_id"), r.get("ticket_msg_id")),
+            (REASSIGN_CHANNEL_ID, r.get("overview_msg_id")),
+        ]
+        for chan_id, msg_id in targets:
+            if not msg_id:
+                continue
+            reassign_msg_ids.add(msg_id)
+            ch = bot.get_channel(chan_id) if chan_id else None
+            if not ch:
+                continue
+            try:
+                msg = await ch.fetch_message(msg_id)
+                await msg.remove_reaction(DONE_EMOJI, bot.user)
+            except Exception as e:
+                print(f"[REASSIGN] skidanje ☑️ (msg {msg_id}) nije uspelo:", e, flush=True)
+            await asyncio.sleep(delay)
+    print(f"[REASSIGN] ☑️ skinuto za {len(reassigns)} reassign(a)", flush=True)
+
+
 async def add_done_reactions(reassigns, delay=0.3):
     """Dodaje ☑️ na originalne reassign poruke (ticket + pregledni kanal)."""
     ok = 0
@@ -2744,6 +2773,24 @@ async def add_done_reactions(reassigns, delay=0.3):
             await asyncio.sleep(delay)
     print(f"[REASSIGN] ☑️ dodato na {ok} poruka", flush=True)
     return ok
+
+
+class ConfirmAllDoneView(discord.ui.View):
+    def __init__(self, parent):
+        super().__init__(timeout=120)
+        self.parent = parent
+
+    @discord.ui.button(label="✅ Da, označi sve", style=discord.ButtonStyle.danger)
+    async def yes(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for item in self.children:
+            item.disabled = True
+        await self.parent._run_all_done(interaction)
+
+    @discord.ui.button(label="↩ Otkaži", style=discord.ButtonStyle.secondary)
+    async def no(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(content="Otkazano, ništa nije promenjeno.", view=None)
 
 
 class ReassignListActions(discord.ui.View):
@@ -2822,9 +2869,15 @@ class ReassignListActions(discord.ui.View):
             await interaction.response.send_message("ℹ️ Nema izlistanih reassignova.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
-        newly, total = await asyncio.to_thread(mark_reassigns_undone, self.all_ids)
+        back_ids, total = await asyncio.to_thread(mark_reassigns_undone, self.all_ids)
+        back_set = set(back_ids)
+        back = [r for r in self.all_reassigns if r.get("id") in back_set]
+        if back:
+            asyncio.create_task(remove_done_reactions(back))
         await interaction.followup.send(
-            f"↩ Vraćeno u nerešeno: {newly} od {total} reassign(a).", ephemeral=True
+            f"↩ Vraćeno u nerešeno: {len(back_ids)} od {total} reassign(a). "
+            "☑️ se skida, a ✅ ponovo radi na tim porukama.",
+            ephemeral=True,
         )
 
     @discord.ui.button(label="✔ Označi SVE izlistane kao urađeno", style=discord.ButtonStyle.secondary)
@@ -2834,7 +2887,14 @@ class ReassignListActions(discord.ui.View):
                 "ℹ️ Nema izlistanih reassignova za označavanje.", ephemeral=True
             )
             return
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.send_message(
+            f"⚠️ Označiće **{len(self.all_ids)}** reassign(a) iz cele liste kao urađeno. Jesi siguran/na?",
+            view=ConfirmAllDoneView(self),
+            ephemeral=True,
+        )
+
+    async def _run_all_done(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(content="⏳ Označavam...", view=None)
         newly_ids, total, confirmed = await asyncio.to_thread(mark_reassigns_done, self.all_ids)
         new_set = set(newly_ids)
         fresh = [r for r in self.all_reassigns if r.get("id") in new_set]
@@ -3651,6 +3711,16 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     if payload.message_id in reassign_msg_ids:
         info = get_reassign_by_message(payload.message_id)
         if info is not None and str(payload.emoji) == "✅" and not info["done"]:
+            if not any(r.id in REASSIGN_DONE_ROLE_IDS for r in getattr(member, "roles", [])):
+                print(f"[REASSIGN] ✅ bez prava: {member} (msg {payload.message_id})", flush=True)
+                try:
+                    ch = bot.get_channel(payload.channel_id)
+                    msg_obj = await ch.fetch_message(payload.message_id) if ch else None
+                    if msg_obj:
+                        await msg_obj.remove_reaction("✅", member)
+                except Exception as ex:
+                    print("[REASSIGN] skidanje reakcije nije uspelo:", ex, flush=True)
+                return
             mark_reassign_done(info["id"])
             reassign_msg_ids.discard(payload.message_id)
             if info.get("ticket_msg_id"):
