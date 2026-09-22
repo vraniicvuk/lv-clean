@@ -2289,13 +2289,14 @@ def mark_reassign_done(rid):
 
 
 def mark_reassigns_done(ids):
-    """Označi listu ID-eva kao urađeno. Vraća (novo_označeno, ukupno_traženo, potvrđeno_u_bazi)."""
+    """Označi listu ID-eva kao urađeno. Vraća (novi_id_evi, ukupno_traženo, potvrđeno_u_bazi)."""
     ids = [int(i) for i in ids if i is not None]
     conn = _db()
-    newly = 0
+    newly_ids = []
     for rid in ids:
         cur = conn.execute("UPDATE reassigns SET done=1 WHERE id=? AND done=0", (rid,))
-        newly += cur.rowcount or 0
+        if cur.rowcount:
+            newly_ids.append(rid)
     conn.commit()
     # provera posle commita: koliko ih baza zaista vidi kao done
     confirmed = 0
@@ -2308,10 +2309,10 @@ def mark_reassigns_done(ids):
             confirmed += 1
     conn.close()
     print(
-        f"[REASSIGN] done: update={newly} confirmed={confirmed}/{len(ids)} missing={missing} ids={ids[:20]}",
+        f"[REASSIGN] done: novo={len(newly_ids)} confirmed={confirmed}/{len(ids)} missing={missing} novi_ids={newly_ids[:20]}",
         flush=True,
     )
-    return newly, len(ids), confirmed
+    return newly_ids, len(ids), confirmed
 
 
 def mark_reassigns_undone(ids):
@@ -2768,11 +2769,12 @@ class ReassignListActions(discord.ui.View):
         if not self.selected_id:
             await interaction.response.send_message("Prvo izaberi reassign iz liste.", ephemeral=True)
             return
-        mark_reassign_done(self.selected_id)
+        newly_ids, _total, _conf = mark_reassigns_done([self.selected_id])
         picked = next((x for x in self.all_reassigns if x.get("id") == self.selected_id), None)
-        if picked:
+        if picked and newly_ids:
             asyncio.create_task(add_done_reactions([picked]))
-        await interaction.response.send_message("✅ Označeno kao urađeno.", ephemeral=True)
+        msg = "✅ Označeno kao urađeno." if newly_ids else "ℹ️ Taj reassign je već bio označen kao urađen."
+        await interaction.response.send_message(msg, ephemeral=True)
 
     @discord.ui.button(label="🗑 Izbriši", style=discord.ButtonStyle.danger)
     async def delete(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -2791,11 +2793,14 @@ class ReassignListActions(discord.ui.View):
                 "ℹ️ U ovom delu liste nema nijednog reassigna za označavanje.", ephemeral=True
             )
             return
-        newly, total, confirmed = mark_reassigns_done(self.chunk_ids)
-        asyncio.create_task(add_done_reactions(list(self.reassigns)))
+        newly_ids, total, confirmed = mark_reassigns_done(self.chunk_ids)
+        new_set = set(newly_ids)
+        fresh = [r for r in self.reassigns if r.get("id") in new_set]
+        if fresh:
+            asyncio.create_task(add_done_reactions(fresh))
         await interaction.response.send_message(
             f"✅ Ovaj deo: sada je urađeno {confirmed}/{total} "
-            f"(novo označeno: {newly}). ☑️ reakcije se dodaju u pozadini.",
+            f"(novo označeno: {len(newly_ids)}). ☑️ reakcija ide samo na te nove.",
             ephemeral=True,
         )
 
@@ -2816,11 +2821,14 @@ class ReassignListActions(discord.ui.View):
                 "ℹ️ Nema izlistanih reassignova za označavanje.", ephemeral=True
             )
             return
-        newly, total, confirmed = mark_reassigns_done(self.all_ids)
-        asyncio.create_task(add_done_reactions(list(self.all_reassigns)))
+        newly_ids, total, confirmed = mark_reassigns_done(self.all_ids)
+        new_set = set(newly_ids)
+        fresh = [r for r in self.all_reassigns if r.get("id") in new_set]
+        if fresh:
+            asyncio.create_task(add_done_reactions(fresh))
         await interaction.response.send_message(
             f"✅ Cela lista: sada je urađeno {confirmed}/{total} "
-            f"(novo označeno: {newly}). ☑️ reakcije se dodaju u pozadini.",
+            f"(novo označeno: {len(newly_ids)}). ☑️ reakcija ide samo na te nove.",
             ephemeral=True,
         )
 
@@ -3815,6 +3823,11 @@ def _bridge_not_ready():
     return None
 
 
+TEAM_ANNOUNCE_CHANNELS = {f"t{i}": f"announcements-team-{i}" for i in range(1, 11)}
+TEAM_ANNOUNCE_CHANNELS["ct"] = "announcements-cover-team"
+ALL_ANNOUNCE_ROLE_ID = 1410962215770656768
+
+
 def normalize_shift(s):
     s = (s or "").strip().lower()
     if s in ("after", "afternoon"):
@@ -3855,22 +3868,53 @@ async def _bridge_announcement_impl(request):
         return web.json_response({"ok": False, "error": "guild not found"}, status=500)
 
     lines = text.splitlines()
-    shift = normalize_shift(lines[0].strip()) if lines else None
+    head = lines[0].strip().lower() if lines else ""
     body = "\n".join(lines[1:]).strip()
-    if not shift:
-        return web.json_response({"ok": False, "error": "Prva linija mora biti smena (afternoon/grave/main)."}, status=400)
     if not body:
         return web.json_response({"ok": False, "error": "Nema teksta poruke."}, status=400)
 
-    role_id = SHIFT_ROLES.get(shift)
-    mention = f"<@&{role_id}>" if role_id else f"@{shift}"
+    all_announce = [
+        ch for ch in guild.channels
+        if isinstance(ch, discord.TextChannel) and "announcement" in ch.name.lower()
+    ]
+    shift = normalize_shift(head)
+    mention = ""
+    targets = []
 
-    targets = [ch for ch in guild.channels if isinstance(ch, discord.TextChannel) and "announcement" in ch.name.lower()]
+    if shift:
+        role_id = SHIFT_ROLES.get(shift)
+        mention = f"<@&{role_id}>" if role_id else f"@{shift}"
+        targets = all_announce
+        mode = f"shift={shift}"
+    elif head in ("all", "svi", "sve"):
+        mention = f"<@&{ALL_ANNOUNCE_ROLE_ID}>"
+        targets = all_announce
+        mode = "all"
+    elif head in TEAM_ANNOUNCE_CHANNELS:
+        want = TEAM_ANNOUNCE_CHANNELS[head]
+        targets = [ch for ch in all_announce if ch.name.lower() == want]
+        if not targets:
+            return web.json_response(
+                {"ok": False, "error": f"Nema kanala '{want}' na serveru."}, status=400
+            )
+        mode = f"team={head}"
+    else:
+        return web.json_response(
+            {
+                "ok": False,
+                "error": (
+                    "Prva linija mora biti: smena (main/afternoon/grave), "
+                    "tim (t1-t10, ct) ili all."
+                ),
+            },
+            status=400,
+        )
+
     if not targets:
         return web.json_response({"ok": False, "error": "Nema announcement kanala."}, status=400)
 
-    full_text = f"{mention}\n{body}"
-    print(f"[ANNOUNCE] shift={shift} kanali={[c.name for c in targets]}")
+    full_text = f"{mention}\n{body}" if mention else body
+    print(f"[ANNOUNCE] {mode} kanali={[c.name for c in targets]}", flush=True)
     sent = []
     skipped = []
     for ch in targets:
