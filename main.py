@@ -2289,45 +2289,52 @@ def mark_reassign_done(rid):
 
 
 def mark_reassigns_done(ids):
-    """Označi listu ID-eva kao urađeno. Vraća (novi_id_evi, ukupno_traženo, potvrđeno_u_bazi)."""
+    """Označi ID-eve kao urađeno (batch). Vraća (novi_id_evi, ukupno_traženo, potvrđeno_u_bazi)."""
     ids = [int(i) for i in ids if i is not None]
+    if not ids:
+        return [], 0, 0
+    marks = ",".join("?" * len(ids))
     conn = _db()
-    newly_ids = []
-    for rid in ids:
-        cur = conn.execute("UPDATE reassigns SET done=1 WHERE id=? AND done=0", (rid,))
-        if cur.rowcount:
-            newly_ids.append(rid)
-    conn.commit()
-    # provera posle commita: koliko ih baza zaista vidi kao done
-    confirmed = 0
-    missing = 0
-    for rid in ids:
-        row = conn.execute("SELECT done FROM reassigns WHERE id=?", (rid,)).fetchone()
-        if row is None:
-            missing += 1
-        elif row["done"]:
-            confirmed += 1
+    newly_ids = [r["id"] for r in conn.execute(
+        f"SELECT id FROM reassigns WHERE id IN ({marks}) AND done=0", ids
+    ).fetchall()]
+    if newly_ids:
+        conn.execute(
+            f"UPDATE reassigns SET done=1 WHERE id IN ({','.join('?' * len(newly_ids))})",
+            newly_ids,
+        )
+        conn.commit()
+    row = conn.execute(
+        f"SELECT COUNT(*) AS n FROM reassigns WHERE id IN ({marks}) AND done=1", ids
+    ).fetchone()
+    confirmed = row["n"] if row else 0
     conn.close()
     print(
-        f"[REASSIGN] done: novo={len(newly_ids)} confirmed={confirmed}/{len(ids)} missing={missing} novi_ids={newly_ids[:20]}",
+        f"[REASSIGN] done: novo={len(newly_ids)} confirmed={confirmed}/{len(ids)}",
         flush=True,
     )
     return newly_ids, len(ids), confirmed
 
 
 def mark_reassigns_undone(ids):
-    """Vrati listu ID-eva u nerešeno. Vraća (vraćeno, ukupno_traženo)."""
+    """Vrati ID-eve u nerešeno (batch). Vraća (vraćeno, ukupno_traženo)."""
+    ids = [int(i) for i in ids if i is not None]
+    if not ids:
+        return 0, 0
+    marks = ",".join("?" * len(ids))
     conn = _db()
-    newly = 0
-    total = 0
-    for rid in ids:
-        cur = conn.execute("UPDATE reassigns SET done=0 WHERE id=? AND done=1", (rid,))
-        newly += cur.rowcount or 0
-        total += 1
-    conn.commit()
+    target = [r["id"] for r in conn.execute(
+        f"SELECT id FROM reassigns WHERE id IN ({marks}) AND done=1", ids
+    ).fetchall()]
+    if target:
+        conn.execute(
+            f"UPDATE reassigns SET done=0 WHERE id IN ({','.join('?' * len(target))})",
+            target,
+        )
+        conn.commit()
     conn.close()
-    print(f"[REASSIGN] mark undone: {newly}/{total}", flush=True)
-    return newly, total
+    print(f"[REASSIGN] undone: {len(target)}/{len(ids)}", flush=True)
+    return len(target), len(ids)
 
 
 def delete_reassign(rid):
@@ -2771,22 +2778,24 @@ class ReassignListActions(discord.ui.View):
         if not self.selected_id:
             await interaction.response.send_message("Prvo izaberi reassign iz liste.", ephemeral=True)
             return
-        newly_ids, _total, _conf = mark_reassigns_done([self.selected_id])
+        await interaction.response.defer(ephemeral=True)
+        newly_ids, _total, _conf = await asyncio.to_thread(mark_reassigns_done, [self.selected_id])
         picked = next((x for x in self.all_reassigns if x.get("id") == self.selected_id), None)
         if picked and newly_ids:
             asyncio.create_task(add_done_reactions([picked]))
         msg = "✅ Označeno kao urađeno." if newly_ids else "ℹ️ Taj reassign je već bio označen kao urađen."
-        await interaction.response.send_message(msg, ephemeral=True)
+        await interaction.followup.send(msg, ephemeral=True)
 
     @discord.ui.button(label="🗑 Izbriši", style=discord.ButtonStyle.danger)
     async def delete(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.selected_id:
             await interaction.response.send_message("Prvo izaberi reassign iz liste.", ephemeral=True)
             return
+        await interaction.response.defer(ephemeral=True)
         r = next((x for x in self.reassigns if x["id"] == self.selected_id), None)
-        delete_reassign(self.selected_id)
+        await asyncio.to_thread(delete_reassign, self.selected_id)
         await self._notify_ceter(interaction, r)
-        await interaction.response.send_message("🗑 Reassign obrisan.", ephemeral=True)
+        await interaction.followup.send("🗑 Reassign obrisan.", ephemeral=True)
 
     @discord.ui.button(label="📦 Označi ovaj deo kao urađeno", style=discord.ButtonStyle.primary)
     async def chunk_done(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -2795,12 +2804,13 @@ class ReassignListActions(discord.ui.View):
                 "ℹ️ U ovom delu liste nema nijednog reassigna za označavanje.", ephemeral=True
             )
             return
-        newly_ids, total, confirmed = mark_reassigns_done(self.chunk_ids)
+        await interaction.response.defer(ephemeral=True)
+        newly_ids, total, confirmed = await asyncio.to_thread(mark_reassigns_done, self.chunk_ids)
         new_set = set(newly_ids)
         fresh = [r for r in self.reassigns if r.get("id") in new_set]
         if fresh:
             asyncio.create_task(add_done_reactions(fresh))
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"✅ Ovaj deo: sada je urađeno {confirmed}/{total} "
             f"(novo označeno: {len(newly_ids)}). ☑️ reakcija ide samo na te nove.",
             ephemeral=True,
@@ -2811,8 +2821,9 @@ class ReassignListActions(discord.ui.View):
         if not self.all_ids:
             await interaction.response.send_message("ℹ️ Nema izlistanih reassignova.", ephemeral=True)
             return
-        newly, total = mark_reassigns_undone(self.all_ids)
-        await interaction.response.send_message(
+        await interaction.response.defer(ephemeral=True)
+        newly, total = await asyncio.to_thread(mark_reassigns_undone, self.all_ids)
+        await interaction.followup.send(
             f"↩ Vraćeno u nerešeno: {newly} od {total} reassign(a).", ephemeral=True
         )
 
@@ -2823,12 +2834,13 @@ class ReassignListActions(discord.ui.View):
                 "ℹ️ Nema izlistanih reassignova za označavanje.", ephemeral=True
             )
             return
-        newly_ids, total, confirmed = mark_reassigns_done(self.all_ids)
+        await interaction.response.defer(ephemeral=True)
+        newly_ids, total, confirmed = await asyncio.to_thread(mark_reassigns_done, self.all_ids)
         new_set = set(newly_ids)
         fresh = [r for r in self.all_reassigns if r.get("id") in new_set]
         if fresh:
             asyncio.create_task(add_done_reactions(fresh))
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"✅ Cela lista: sada je urađeno {confirmed}/{total} "
             f"(novo označeno: {len(newly_ids)}). ☑️ reakcija ide samo na te nove.",
             ephemeral=True,
@@ -2892,11 +2904,14 @@ async def _send_items_with_actions(interaction, items, all_reassigns, limit=1900
             await interaction.followup.send(body, ephemeral=True)
 
 
-async def listr_date_autocomplete(interaction: discord.Interaction, current: str):
-    """Predlozi: poslednjih 30 dana (danas -> unazad), bez budućnosti. Discord max 25 — kucanjem se filtrira ostatak."""
-    current = (current or "").strip()
-    q = current.lower()
-    today = _local_now().date()
+_listr_counts_cache = {"t": 0.0, "data": {}}
+
+
+def _listr_counts():
+    """Broj reassignova po datumu; keš 30s da autocomplete ne obara bazu."""
+    now = time.time()
+    if now - _listr_counts_cache["t"] < 30 and _listr_counts_cache["data"]:
+        return _listr_counts_cache["data"]
     counts = {}
     try:
         for r in get_reassigns(done=False) + get_reassigns(done=True):
@@ -2904,7 +2919,19 @@ async def listr_date_autocomplete(interaction: discord.Interaction, current: str
             if d:
                 counts[d] = counts.get(d, 0) + 1
     except Exception as e:
-        print("[LISTR] autocomplete fail:", e)
+        print("[LISTR] counts fail:", e, flush=True)
+        return _listr_counts_cache["data"]
+    _listr_counts_cache["t"] = now
+    _listr_counts_cache["data"] = counts
+    return counts
+
+
+async def listr_date_autocomplete(interaction: discord.Interaction, current: str):
+    """Predlozi: poslednjih 30 dana (danas -> unazad), bez budućnosti. Discord max 25 — kucanjem se filtrira ostatak."""
+    current = (current or "").strip()
+    q = current.lower()
+    today = _local_now().date()
+    counts = _listr_counts()
 
     def label(d):
         delta = (today - d).days
