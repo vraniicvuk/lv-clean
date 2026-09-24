@@ -3550,6 +3550,101 @@ async def approvedoff(interaction: discord.Interaction, ceter: discord.Member, d
     )
 
 
+@tree.command(
+    name="approvedmultioff",
+    description="Manager override: odobri više off dana zaredom (bez limita i zauzeća)",
+    guild=GUILD_OBJ,
+)
+@app_commands.describe(
+    ceter="Chatter",
+    od="Prvi dan (YYYY-MM-DD ili DD.MM.YYYY)",
+    do="Poslednji dan (YYYY-MM-DD ili DD.MM.YYYY)",
+)
+@need_off_manager()
+async def approvedmultioff(interaction: discord.Interaction, ceter: discord.Member, od: str, do: str):
+    shift = get_user_shift(ceter)
+    if shift is None:
+        return await interaction.response.send_message("❌ Taj član nema tačno jednu smensku rolu.", ephemeral=True)
+    if shift == "multiple":
+        return await interaction.response.send_message("❌ Član ima više smenskih rola.", ephemeral=True)
+
+    start = parse_date_str(od)
+    end = parse_date_str(do)
+    if not start or not end:
+        return await interaction.response.send_message(
+            "❌ Loš format datuma. Koristi YYYY-MM-DD ili DD.MM.YYYY.", ephemeral=True
+        )
+    if start > end:
+        start, end = end, start
+    days = []
+    d = start
+    while d <= end:
+        days.append(d)
+        d += timedelta(days=1)
+    if len(days) > 31:
+        return await interaction.response.send_message(
+            f"❌ Opseg je {len(days)} dana — maksimum je 31.", ephemeral=True
+        )
+
+    await interaction.response.defer(ephemeral=True)
+
+    group_id = f"{ceter.id}-{int(datetime.now().timestamp())}"
+    existing = {
+        e.get("date") for e in off_days if e.get("user_id") == ceter.id
+    }
+    added = []
+    skipped = []
+    for day in days:
+        iso = day.isoformat()
+        if iso in existing:
+            skipped.append(day)
+            continue
+        off_days.append({
+            "user_id": ceter.id,
+            "username": ceter.display_name,
+            "date": iso,
+            "shift": shift,
+            "message_id": None,
+            "confirmed": True,
+            "group_id": group_id,
+            "channel_id": interaction.channel.id,
+            "approved_by": interaction.user.id,
+            "needs_cover": 1,
+            "cover_reminder_due": (day - timedelta(days=3)).isoformat(),
+        })
+        added.append(day)
+    if added:
+        await asyncio.to_thread(save_off_days)
+
+    range_txt = (
+        f"{start.strftime('%d.%m.%Y')} → {end.strftime('%d.%m.%Y')} ({len(added)} dana)"
+        if len(added) != 1
+        else f"{added[0].strftime('%d.%m.%Y')} ({SR_WEEKDAYS[added[0].weekday()]})"
+    )
+
+    channel = bot.get_channel(OFF_DAY_CHANNEL_ID)
+    if channel and added:
+        try:
+            await channel.send(
+                f"🛡 **MANAGER OVERRIDE — OFF DANI**\n"
+                f"**Datum:** {range_txt}\n"
+                f"**Chatter:** {ceter.mention} ({ceter.display_name})\n"
+                f"**Smena:** {shift}\n"
+                f"**Odobrio:** {interaction.user.mention}\n"
+                f"⚠️ Treba cover"
+            )
+        except Exception as e:
+            print("[OFF] MANAGER OVERRIDE (multi) slanje nije uspelo:", e, flush=True)
+
+    msg = f"🛡 Upisano {len(added)} off dan(a) za {ceter.mention} ({shift})."
+    if added:
+        msg += "\n" + ", ".join(x.strftime("%d.%m.%Y") for x in added)
+    if skipped:
+        msg += "\nPreskočeno (već postoji): " + ", ".join(x.strftime("%d.%m.%Y") for x in skipped)
+    print(f"[OFF] approvedmultioff {ceter} +{len(added)} (skip {len(skipped)})", flush=True)
+    await interaction.followup.send(msg, ephemeral=True)
+
+
 @tree.command(name="loff", description="Pregled svih off dana po datumima", guild=GUILD_OBJ)
 async def loff(interaction: discord.Interaction):
     await interaction.response.defer()
