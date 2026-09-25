@@ -1603,7 +1603,7 @@ kratak rezime kanala:
 
 U kanalu #pravilnik ces naci sve o pravilima, uslovima koji se ticu setup-a bez kojih ne mozes kretati u koliko nemas mogucnost za stabilnom internet konekcijom, pc racunarom ili laptopom (pozeljno oba) i slusalicama sa mikrofonom uz sve pratece hardverske komponente. vise o role-ama koje su zastupljene na discord serveru i pravila komunikacije,
 
-Sekcija #zabranjeno i #zabranjeno primeri je prebitna i zato obrati paznju da predjes tu sekciju posle sekcije pravilno
+Sekcija zabranjeno i zabranjeno primeri je prebitna i zato obrati paznju da predjes tu sekciju posle sekcije pravilno
 
 Sekcija schedules gde jasno stoji sve oko rasporeda, kako sta, day-a off itd
 
