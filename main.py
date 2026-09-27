@@ -1,6 +1,7 @@
 # main.py — lv-clean
 # Role/channel management + ticket sistem + farm/ratio/qc + !mm AI/FU + off days
 import os
+import io
 import re
 import json
 import sqlite3
@@ -2775,6 +2776,59 @@ async def add_done_reactions(reassigns, delay=0.3):
     return ok
 
 
+def build_reassign_xlsx(reassigns):
+    """Vraća (bytes, broj_redova). Kolone: creator / fan / date / sale amount ($)."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Reassigns"
+    ws.append(["creator", "fan", "date", "sale amount ($)"])
+    rows = 0
+    ordered = sorted(
+        reassigns,
+        key=lambda x: (_date_sort_key(x.get("date")), (x.get("model") or "").lower()),
+    )
+    for r in ordered:
+        d = parse_date_str(r.get("date"))
+        date_txt = d.strftime("%d.%m.%Y") if d else (r.get("date") or "")
+        for fan in (r.get("fans") or []):
+            try:
+                name, sale = fan
+            except Exception:
+                name, sale = str(fan), 0
+            ws.append([r.get("model") or "", name or "", date_txt, _parse_sale(sale)])
+            rows += 1
+    for col, width in (("A", 28), ("B", 30), ("C", 14), ("D", 16)):
+        ws.column_dimensions[col].width = width
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+    for row in ws.iter_rows(min_row=2, min_col=4, max_col=4):
+        for cell in row:
+            cell.number_format = "#,##0.00"
+    ws.freeze_panes = "A2"
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.getvalue(), rows
+
+
+async def send_reassign_xlsx(interaction, reassigns, label="reassigns"):
+    """Napravi i pošalji .xlsx (ephemeral)."""
+    if not reassigns:
+        return await interaction.followup.send("Nema reassignova za export.", ephemeral=True)
+    data, rows = await asyncio.to_thread(build_reassign_xlsx, reassigns)
+    if not rows:
+        return await interaction.followup.send("Nema nijednog fan zapisa za export.", ephemeral=True)
+    fname = f"{label}-{_local_now().strftime('%Y%m%d-%H%M')}.xlsx"
+    await interaction.followup.send(
+        f"📄 Export: {rows} red(ova) iz {len(reassigns)} reassign(a).",
+        file=discord.File(io.BytesIO(data), filename=fname),
+        ephemeral=True,
+    )
+
+
 class ConfirmAllDoneView(discord.ui.View):
     def __init__(self, parent):
         super().__init__(timeout=120)
@@ -2862,6 +2916,15 @@ class ReassignListActions(discord.ui.View):
             f"(novo označeno: {len(newly_ids)}). ☑️ reakcija ide samo na te nove.",
             ephemeral=True,
         )
+
+    @discord.ui.button(label="📄 Export .xlsx", style=discord.ButtonStyle.secondary)
+    async def export_xlsx(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            await send_reassign_xlsx(interaction, self.all_reassigns, "reassigns")
+        except Exception as e:
+            print("[EXPORT] fail:", e, flush=True)
+            await interaction.followup.send(f"❌ Export nije uspeo: {e}", ephemeral=True)
 
     @discord.ui.button(label="↩ Vrati SVE izlistane u nerešeno", style=discord.ButtonStyle.secondary)
     async def all_undone(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -3087,6 +3150,59 @@ async def listr(interaction: discord.Interaction, od: str, do_: str = "", status
         items.append(("", None))
 
     await _send_items_with_actions(interaction, items, filtered)
+
+
+@tree.command(name="exportr", description="Export reassignova u .xlsx (creator/fan/date/sale)", guild=GUILD_OBJ)
+@app_commands.rename(do_="do")
+@app_commands.describe(
+    od="Od datuma (opciono, DD.MM.YYYY)",
+    do_="Do datuma (opciono, prazno = danas)",
+)
+@app_commands.choices(status=[
+    app_commands.Choice(name="Samo nerešeni", value="open"),
+    app_commands.Choice(name="Svi (nerešeni + urađeni)", value="all"),
+    app_commands.Choice(name="Samo urađeni", value="done"),
+])
+@app_commands.autocomplete(od=listr_date_autocomplete, do_=listr_date_autocomplete)
+async def exportr(interaction: discord.Interaction, od: str = "", do_: str = "", status: str = "open"):
+    await interaction.response.defer(ephemeral=True)
+    today = _local_now().date()
+    start = parse_date_str(od) if (od or "").strip() else None
+    end = parse_date_str(do_) if (do_ or "").strip() else (today if start else None)
+    if (od or "").strip() and not start:
+        return await interaction.followup.send(f"❌ Neispravan datum 'od': `{od}`.", ephemeral=True)
+    if (do_ or "").strip() and not end:
+        return await interaction.followup.send(f"❌ Neispravan datum 'do': `{do_}`.", ephemeral=True)
+    if start and end and start > end:
+        start, end = end, start
+
+    open_reassigns = get_reassigns(done=False)
+    done_reassigns = get_reassigns(done=True)
+    for r in open_reassigns:
+        r["done"] = False
+    for r in done_reassigns:
+        r["done"] = True
+    if status == "open":
+        pool = open_reassigns
+    elif status == "done":
+        pool = done_reassigns
+    else:
+        pool = open_reassigns + done_reassigns
+
+    selected = []
+    for r in pool:
+        if start:
+            d = parse_date_str(r.get("date"))
+            if not d or d < start or (end and d > end):
+                continue
+        selected.append(r)
+
+    label = "reassigns-" + {"open": "neresen", "done": "uradjen", "all": "svi"}.get(status, "neresen")
+    try:
+        await send_reassign_xlsx(interaction, selected, label)
+    except Exception as e:
+        print("[EXPORT] fail:", e, flush=True)
+        await interaction.followup.send(f"❌ Export nije uspeo: {e}", ephemeral=True)
 
 
 @tree.command(name="listch", description="Lista reassignova po chatteru + datumu", guild=GUILD_OBJ)
