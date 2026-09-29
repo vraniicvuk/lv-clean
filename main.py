@@ -2217,6 +2217,8 @@ async def as_cmd(interaction: discord.Interaction):
 
 
 # ========== REASSIGN ==========
+# /reassign radi samo u kanalima čije ime počinje ovim prefiksom (npr. reassigns-team-3)
+REASSIGN_CHANNEL_PREFIX = os.getenv("REASSIGN_CHANNEL_PREFIX", "reassigns-")
 REASSIGN_CHANNEL_ID = 1543240286615117925
 pending_reassigns = {}  # user_id -> {"model","date","reassign_to","fans":[(name,sale),...],"preview_msg": Message}
 reassign_msg_ids = set()  # cache id-jeva poruka (pending) da ne querijemo DB na svaku reakciju
@@ -2599,6 +2601,13 @@ async def model_autocomplete(interaction: discord.Interaction, current: str):
 @tree.command(name="reassign", description="Prijavi reassign prodaje", guild=GUILD_OBJ)
 @app_commands.autocomplete(model=model_autocomplete)
 async def reassign_cmd(interaction: discord.Interaction, model: str):
+    ch_name = (getattr(interaction.channel, "name", "") or "").lower()
+    if not ch_name.startswith(REASSIGN_CHANNEL_PREFIX):
+        return await interaction.response.send_message(
+            f"❌ /reassign se koristi samo u kanalima koji počinju sa "
+            f"`{REASSIGN_CHANNEL_PREFIX}` (npr. #{REASSIGN_CHANNEL_PREFIX}team-1).",
+            ephemeral=True,
+        )
     dates = build_reassign_dates()
     await interaction.response.send_message(
         f"🗓 Izaberi datum za **{model}**:",
