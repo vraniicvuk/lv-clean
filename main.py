@@ -2226,6 +2226,28 @@ REASSIGN_CHANNEL_PREFIXES = tuple(
     ).split(",") if x.strip()
 )
 REASSIGN_CHANNEL_ID = 1543240286615117925
+# dodatno dozvoljeni kanali po ID-u (zarezom odvojeno u env-u)
+REASSIGN_ALLOWED_CHANNEL_IDS = {
+    int(x) for x in os.getenv(
+        "REASSIGN_ALLOWED_CHANNEL_IDS", "1549009721984290866"
+    ).split(",") if x.strip().isdigit()
+}
+
+
+def _is_reassign_channel(ch) -> bool:
+    """True ako je kanal (ili parent kanal threada) reassign kanal — po ID-u ili po imenu."""
+    import unicodedata
+    for c in (ch, getattr(ch, "parent", None)):
+        if c is None:
+            continue
+        if getattr(c, "id", None) in REASSIGN_ALLOWED_CHANNEL_IDS:
+            return True
+        raw = unicodedata.normalize("NFKD", getattr(c, "name", "") or "").lower()
+        name = "".join(x for x in raw if x.isascii() and (x.isalnum() or x == "-"))
+        name = name.lstrip("-")
+        if name.startswith(REASSIGN_CHANNEL_PREFIXES) or "reass" in name:
+            return True
+    return False
 pending_reassigns = {}  # user_id -> {"model","date","reassign_to","fans":[(name,sale),...],"preview_msg": Message}
 reassign_msg_ids = set()  # cache id-jeva poruka (pending) da ne querijemo DB na svaku reakciju
 
@@ -2607,11 +2629,12 @@ async def model_autocomplete(interaction: discord.Interaction, current: str):
 @tree.command(name="reassign", description="Prijavi reassign prodaje", guild=GUILD_OBJ)
 @app_commands.autocomplete(model=model_autocomplete)
 async def reassign_cmd(interaction: discord.Interaction, model: str):
-    ch_name = (getattr(interaction.channel, "name", "") or "").lower()
-    if not ch_name.startswith(REASSIGN_CHANNEL_PREFIXES):
+    if not _is_reassign_channel(interaction.channel):
+        ch = interaction.channel
         return await interaction.response.send_message(
-            f"❌ /reassign se koristi samo u kanalima koji počinju sa "
-            f"`{REASSIGN_CHANNEL_PREFIX}` (npr. #{REASSIGN_CHANNEL_PREFIX}team-1).",
+            f"❌ /reassign se koristi samo u reassigns kanalima "
+            f"(npr. #{REASSIGN_CHANNEL_PREFIX}team-1).\n"
+            f"-# kanal: `{getattr(ch, 'name', '?')}` / id `{getattr(ch, 'id', '?')}`",
             ephemeral=True,
         )
     dates = build_reassign_dates()
