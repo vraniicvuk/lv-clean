@@ -3112,19 +3112,8 @@ async def listr_date_autocomplete(interaction: discord.Interaction, current: str
     return [choice(d) for d in matches[:25]]
 
 
-@tree.command(name="listr", description="Team: svi nerešeni reassignovi u izabranom opsegu datuma", guild=GUILD_OBJ)
-@app_commands.rename(do_="do")
-@app_commands.describe(
-    od="Od datuma — izaberi iz poslednjih 30 dana ili ukucaj (DD.MM.YYYY)",
-    do_="Do datuma — prazno = danas",
-)
-@app_commands.choices(status=[
-    app_commands.Choice(name="Samo nerešeni", value="open"),
-    app_commands.Choice(name="Svi (nerešeni + urađeni)", value="all"),
-    app_commands.Choice(name="Samo urađeni", value="done"),
-])
-@app_commands.autocomplete(od=listr_date_autocomplete, do_=listr_date_autocomplete)
-async def listr(interaction: discord.Interaction, od: str, do_: str = "", status: str = "open"):
+async def _list_reassigns_range(interaction, od, do_, status, group_by, model_q=""):
+    """Zajednička logika za /listr (po modelu) i /listch (po chatteru) u opsegu datuma."""
     await interaction.response.defer(ephemeral=True)
     today = _local_now().date()
     start = parse_date_str(od)
@@ -3150,26 +3139,26 @@ async def listr(interaction: discord.Interaction, od: str, do_: str = "", status
     if not reassigns:
         return await interaction.followup.send("Nema reassignova.", ephemeral=True)
 
+    mq = (model_q or "").strip().lower()
     filtered = []
     for r in reassigns:
         if status == "open" and r.get("done"):
             continue
         if status == "done" and not r.get("done"):
             continue
+        if mq and (r.get("model") or "").strip().lower() != mq:
+            continue
         d = parse_date_str(r["date"])
         if d and start <= d <= end:
             filtered.append(r)
     status_txt = {"open": "nerešeni", "done": "urađeni", "all": "svi"}.get(status, "nerešeni")
     range_txt = f"{start.strftime('%d.%m.%Y')} – {end.strftime('%d.%m.%Y')} ({status_txt})"
+    if mq:
+        range_txt += f" • model: {model_q.strip()}"
     if not filtered:
         return await interaction.followup.send(f"Nema reassignova za {range_txt}.", ephemeral=True)
 
-    groups = {}
-    for r in filtered:
-        groups.setdefault((r.get("chatter") or "—").strip(), []).append(r)
-
     open_count = sum(1 for r in filtered if not r.get("done"))
-    still_open = [r for r in filtered if not r.get("done")]
     items = [
         (
             f"📅 {range_txt} — {len(filtered)} reassign(a) "
@@ -3178,16 +3167,48 @@ async def listr(interaction: discord.Interaction, od: str, do_: str = "", status
         ),
         ("", None),
     ]
-    for ceter in sorted(groups, key=_ceter_sort_key):
-        rs = sorted(groups[ceter], key=lambda r: (_date_sort_key(r["date"]), (r["model"] or "").lower()))
-        items.append((f"**{ceter}**", None))
-        for r in rs:
-            prefix = "✅ " if r.get("done") else ""
-            label = f"{r['model']} — {format_date_str(r['date'])}"
-            items.append((prefix + _entry_lines(r, label), r))
-        items.append(("", None))
+    groups = {}
+    if group_by == "model":
+        for r in filtered:
+            groups.setdefault((r.get("model") or "—").strip(), []).append(r)
+        for model in sorted(groups, key=lambda m: m.lower()):
+            rs = sorted(groups[model], key=lambda r: (_date_sort_key(r["date"]), _ceter_sort_key((r.get("chatter") or "").strip())))
+            items.append((f"**{model}** ({len(rs)})", None))
+            for r in rs:
+                prefix = "✅ " if r.get("done") else ""
+                label = f"{(r.get('chatter') or '—').strip()} — {format_date_str(r['date'])}"
+                items.append((prefix + _entry_lines(r, label), r))
+            items.append(("", None))
+    else:
+        for r in filtered:
+            groups.setdefault((r.get("chatter") or "—").strip(), []).append(r)
+        for ceter in sorted(groups, key=_ceter_sort_key):
+            rs = sorted(groups[ceter], key=lambda r: (_date_sort_key(r["date"]), (r["model"] or "").lower()))
+            items.append((f"**{ceter}**", None))
+            for r in rs:
+                prefix = "✅ " if r.get("done") else ""
+                label = f"{r['model']} — {format_date_str(r['date'])}"
+                items.append((prefix + _entry_lines(r, label), r))
+            items.append(("", None))
 
     await _send_items_with_actions(interaction, items, filtered)
+
+
+@tree.command(name="listr", description="Team: reassignovi po MODELU u izabranom opsegu datuma", guild=GUILD_OBJ)
+@app_commands.rename(do_="do")
+@app_commands.describe(
+    od="Od datuma — izaberi iz poslednjih 30 dana ili ukucaj (DD.MM.YYYY)",
+    do_="Do datuma — prazno = danas",
+    model="Samo jedan model (prazno = svi modeli)",
+)
+@app_commands.choices(status=[
+    app_commands.Choice(name="Samo nerešeni", value="open"),
+    app_commands.Choice(name="Svi (nerešeni + urađeni)", value="all"),
+    app_commands.Choice(name="Samo urađeni", value="done"),
+])
+@app_commands.autocomplete(od=listr_date_autocomplete, do_=listr_date_autocomplete, model=model_autocomplete)
+async def listr(interaction: discord.Interaction, od: str, do_: str = "", model: str = "", status: str = "open"):
+    await _list_reassigns_range(interaction, od, do_, status, "model", model)
 
 
 @tree.command(name="exportr", description="Export reassignova u .xlsx (creator/fan/date/sale)", guild=GUILD_OBJ)
@@ -3243,28 +3264,20 @@ async def exportr(interaction: discord.Interaction, od: str = "", do_: str = "",
         await interaction.followup.send(f"❌ Export nije uspeo: {e}", ephemeral=True)
 
 
-@tree.command(name="listch", description="Lista reassignova po chatteru + datumu", guild=GUILD_OBJ)
-async def listch(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    reassigns = get_reassigns()
-    if not reassigns:
-        return await interaction.followup.send("Nema reassignova.", ephemeral=True)
-
-    groups = {}
-    for r in reassigns:
-        key = ((r.get("chatter") or "—").strip(), r["date"])
-        groups.setdefault(key, []).append(r)
-
-    items = []
-    for (chatter, date), rs in sorted(
-        groups.items(), key=lambda x: (_ceter_sort_key(x[0][0]), _date_sort_key(x[0][1]))
-    ):
-        items.append((f"**{chatter} — {format_date_str(date)}**", None))
-        for r in rs:
-            items.append((_entry_lines(r, r["model"]), r))
-        items.append(("", None))
-
-    await _send_items_with_actions(interaction, items, reassigns)
+@tree.command(name="listch", description="Team: reassignovi po CHATTERU u izabranom opsegu datuma", guild=GUILD_OBJ)
+@app_commands.rename(do_="do")
+@app_commands.describe(
+    od="Od datuma — izaberi iz poslednjih 30 dana ili ukucaj (DD.MM.YYYY)",
+    do_="Do datuma — prazno = danas",
+)
+@app_commands.choices(status=[
+    app_commands.Choice(name="Samo nerešeni", value="open"),
+    app_commands.Choice(name="Svi (nerešeni + urađeni)", value="all"),
+    app_commands.Choice(name="Samo urađeni", value="done"),
+])
+@app_commands.autocomplete(od=listr_date_autocomplete, do_=listr_date_autocomplete)
+async def listch(interaction: discord.Interaction, od: str, do_: str = "", status: str = "open"):
+    await _list_reassigns_range(interaction, od, do_, status, "chatter")
 
 
 @tree.command(name="listundone", description="Lista nerešenih reassignova za jednog cetera", guild=GUILD_OBJ)
