@@ -3666,6 +3666,22 @@ async def multioff(interaction: discord.Interaction):
     )
 
 
+async def _announce_override_in_channel(interaction, ceter, when_txt, shift):
+    """Javna poruka u kanalu gde je override urađen — da je chatter vidi (taguje ga)."""
+    ch = interaction.channel
+    if ch is None or getattr(ch, "id", None) == OFF_DAY_CHANNEL_ID:
+        return  # u off-day kanalu je već poslata poruka sa tagom
+    try:
+        await ch.send(
+            f"🛡 **OFF ODOBREN (manager override)**\n"
+            f"{ceter.mention} — tvoj off je upisan: **{when_txt}** ({shift})\n"
+            f"Odobrio: {interaction.user.mention}",
+            allowed_mentions=discord.AllowedMentions(users=[ceter], roles=False, everyone=False),
+        )
+    except Exception as e:
+        print("[OFF] override javna poruka nije uspela:", e, flush=True)
+
+
 @tree.command(name="approvedoff", description="Manager override: odobri off dan (bez limita i zauzeća)", guild=GUILD_OBJ)
 @app_commands.describe(ceter="Chatter", datum="Datum (YYYY-MM-DD ili DD.MM.YYYY)")
 @need_off_manager()
@@ -3713,6 +3729,9 @@ async def approvedoff(interaction: discord.Interaction, ceter: discord.Member, d
     await interaction.response.send_message(
         f"🛡 Manager override off dan upisan za {ceter.mention} ({d.strftime('%d.%m.%Y')}, {shift}).",
         ephemeral=True,
+    )
+    await _announce_override_in_channel(
+        interaction, ceter, f"{d.strftime('%d.%m.%Y')} ({SR_WEEKDAYS[d.weekday()]})", shift
     )
 
 
@@ -3809,13 +3828,15 @@ async def approvedmultioff(interaction: discord.Interaction, ceter: discord.Memb
         msg += "\nPreskočeno (već postoji): " + ", ".join(x.strftime("%d.%m.%Y") for x in skipped)
     print(f"[OFF] approvedmultioff {ceter} +{len(added)} (skip {len(skipped)})", flush=True)
     await interaction.followup.send(msg, ephemeral=True)
+    if added:
+        await _announce_override_in_channel(interaction, ceter, range_txt, shift)
 
 
 @tree.command(name="loff", description="Pregled svih off dana po datumima", guild=GUILD_OBJ)
 async def loff(interaction: discord.Interaction):
-    await interaction.response.defer()
+    await interaction.response.defer(ephemeral=True)
     if not off_days:
-        return await interaction.followup.send("Nema nijednog off dana.")
+        return await interaction.followup.send("Nema nijednog off dana.", ephemeral=True)
 
     by_date = defaultdict(list)
     for e in off_days:
@@ -3841,7 +3862,7 @@ async def loff(interaction: discord.Interaction):
         lines.append(f"**{d.strftime('%d.%m.%Y')}** ({wd})\n" + "\n".join(names))
 
     if not lines:
-        return await interaction.followup.send("Nema nijednog budućeg off dana.")
+        return await interaction.followup.send("Nema nijednog budućeg off dana.", ephemeral=True)
 
     embed = discord.Embed(
         title="📅 Off dani",
@@ -3849,7 +3870,7 @@ async def loff(interaction: discord.Interaction):
         color=0x00b0f4,
     )
     embed.set_footer(text=f"Ukupno: {len(off_days)} off dana")
-    await interaction.followup.send(embed=embed)
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 @tree.command(name="checkoff", description="Proveri ko je off izabranog dana", guild=GUILD_OBJ)
