@@ -3840,6 +3840,45 @@ async def loff(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed)
 
 
+@tree.command(name="checkoff", description="Proveri ko je off izabranog dana", guild=GUILD_OBJ)
+async def checkoff(interaction: discord.Interaction):
+    today = _local_now().date()
+    dates = [today + timedelta(days=i) for i in range(62)]
+    busy = set()
+    for e in off_days:
+        try:
+            busy.add(datetime.strptime(e.get("date") or "", "%Y-%m-%d").date())
+        except Exception:
+            pass
+
+    async def on_pick(i, d):
+        iso = d.isoformat()
+        entries = sorted(
+            (e for e in off_days if e.get("date") == iso),
+            key=lambda x: (str(x.get("shift") or ""), str(x.get("username") or "")),
+        )
+        title = f"📅 {d.strftime('%d.%m.%Y')} ({SR_WEEKDAYS[d.weekday()]})"
+        if not entries:
+            return await i.response.send_message(f"{title}\nNiko nije off tog dana. ✅", ephemeral=True)
+        lines = []
+        for e in entries:
+            mark = "✅" if e.get("confirmed") else "⏳"
+            if e.get("approved_by"):
+                mark = "🛡"
+            extra = " ⚠️ treba cover" if e.get("needs_cover") else ""
+            lines.append(f"{mark} <@{e.get('user_id')}> — {e.get('username') or ''} ({e.get('shift')}){extra}")
+        embed = discord.Embed(title=title, description="\n".join(lines), color=0x00b0f4)
+        embed.set_footer(text=f"Off: {len(entries)}  •  ✅ potvrđen  ⏳ čeka  🛡 odobren")
+        await i.response.send_message(embed=embed, ephemeral=True)
+
+    view = OffDayPickerView(busy, dates, on_pick)
+    await interaction.response.send_message(
+        "🔎 **Check off** — izaberi datum (\"zauzeto\" = neko je off tog dana):",
+        view=view,
+        ephemeral=True,
+    )
+
+
 class DelOffSelect(discord.ui.Select):
     def __init__(self, entries):
         options = []
