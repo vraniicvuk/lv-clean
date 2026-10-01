@@ -3194,21 +3194,20 @@ async def _list_reassigns_range(interaction, od, do_, status, group_by, model_q=
     await _send_items_with_actions(interaction, items, filtered)
 
 
-@tree.command(name="listr", description="Team: reassignovi po MODELU u izabranom opsegu datuma", guild=GUILD_OBJ)
+@tree.command(name="listr", description="Team: svi reassignovi poređani po modelu (A–Z) u opsegu datuma", guild=GUILD_OBJ)
 @app_commands.rename(do_="do")
 @app_commands.describe(
     od="Od datuma — izaberi iz poslednjih 30 dana ili ukucaj (DD.MM.YYYY)",
     do_="Do datuma — prazno = danas",
-    model="Samo jedan model (prazno = svi modeli)",
 )
 @app_commands.choices(status=[
     app_commands.Choice(name="Samo nerešeni", value="open"),
     app_commands.Choice(name="Svi (nerešeni + urađeni)", value="all"),
     app_commands.Choice(name="Samo urađeni", value="done"),
 ])
-@app_commands.autocomplete(od=listr_date_autocomplete, do_=listr_date_autocomplete, model=model_autocomplete)
-async def listr(interaction: discord.Interaction, od: str, do_: str = "", model: str = "", status: str = "open"):
-    await _list_reassigns_range(interaction, od, do_, status, "model", model)
+@app_commands.autocomplete(od=listr_date_autocomplete, do_=listr_date_autocomplete)
+async def listr(interaction: discord.Interaction, od: str, do_: str = "", status: str = "open"):
+    await _list_reassigns_range(interaction, od, do_, status, "model")
 
 
 @tree.command(name="exportr", description="Export reassignova u .xlsx (creator/fan/date/sale)", guild=GUILD_OBJ)
