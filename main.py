@@ -1932,6 +1932,7 @@ AS_CHANNELS = {
     "8": 1520415611522515055,
     "9": 1520415630296092682,
     "10": 1520415659089985566,
+    "11": 1520415681802141847,
 }
 COVER_CATEGORY_ID = 1520385768214888530
 
@@ -4356,7 +4357,7 @@ def _bridge_not_ready():
     return None
 
 
-TEAM_ANNOUNCE_CHANNELS = {f"t{i}": f"announcements-team-{i}" for i in range(1, 11)}
+TEAM_ANNOUNCE_CHANNELS = {f"t{i}": f"announcements-team-{i}" for i in range(1, 12)}
 TEAM_ANNOUNCE_CHANNELS["ct"] = "announcements-cover-team"
 ALL_ANNOUNCE_ROLE_ID = 1410962215770656768
 
