@@ -5145,9 +5145,23 @@ async def reqoff(interaction: discord.Interaction):
     )
 
 
+async def reqcover_date_autocomplete(interaction: discord.Interaction, current: str):
+    """Samo 3 datuma: danas, sutra, prekosutra."""
+    today = _local_now().date()
+    labels = ["DANAS", "SUTRA", "PREKOSUTRA"]
+    out = []
+    for i, lab in enumerate(labels):
+        d = today + timedelta(days=i)
+        out.append(app_commands.Choice(
+            name=f"{lab} — {d.strftime('%d.%m.%Y')} ({SR_WEEKDAYS[d.weekday()]})",
+            value=d.isoformat(),
+        ))
+    return out
+
+
 @tree.command(name="reqcover", description="Zahtev za cover do 2h (kasniji ulazak / raniji izlazak) — samo u tiketu", guild=GUILD_OBJ)
 @app_commands.describe(
-    datum="Datum (DD.MM.YYYY)",
+    datum="Izaberi: danas, sutra ili prekosutra",
     tip="Kasniji ulazak ili raniji izlazak",
     trajanje="Koliko (max 2h)",
     razlog="Kratko objašnjenje (opciono)",
@@ -5164,6 +5178,7 @@ async def reqoff(interaction: discord.Interaction):
         app_commands.Choice(name="2h", value=120),
     ],
 )
+@app_commands.autocomplete(datum=reqcover_date_autocomplete)
 async def reqcover(interaction: discord.Interaction, datum: str, tip: str, trajanje: int, razlog: str = ""):
     if not _in_ticket(interaction):
         return await _deny_outside_ticket(interaction)
@@ -5173,8 +5188,9 @@ async def reqcover(interaction: discord.Interaction, datum: str, tip: str, traja
     d = parse_date_str(datum)
     if not d:
         return await interaction.response.send_message("❌ Loš datum. Koristi DD.MM.YYYY.", ephemeral=True)
-    if d < _local_now().date():
-        return await interaction.response.send_message("❌ Datum je u prošlosti.", ephemeral=True)
+    _today = _local_now().date()
+    if not (_today <= d <= _today + timedelta(days=2)):
+        return await interaction.response.send_message("❌ Cover može samo za danas, sutra ili prekosutra — izaberi iz menija.", ephemeral=True)
     trajanje = max(1, min(int(trajanje), 120))
     await interaction.response.defer(ephemeral=True)
     req_id = await asyncio.to_thread(
