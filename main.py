@@ -4543,6 +4543,328 @@ async def seed_off_days(guild):
         print(f"[SEED] upozorenje: nije nađen member za: {', '.join(missing)}")
 
 
+# ========== /test — test posle obuke (osnovni + tehnički) ==========
+TEST_DURATION_MIN = 45
+TEST_REVIEW_ROLE_IDS = [1410962105749995591, 1504564869569970196]
+TEST_REVIEW_REMIND_HOURS = 5
+
+TEST_TITLES = {
+    "osnovni": "Nakon zavrsenih obuka - Test potrebno uraditi pre polaska sa radom (osnovni deo)",
+    "tehnicki": "Nakon zavrsenih obuka - Test potrebno uraditi pre polaska sa radom (tehnicki deo)",
+}
+TEST_QUESTIONS = {
+    "osnovni": [
+        "1. Za koje stvari su propisani penali? (najvise napisi o tos-u, sta je itd.)",
+        "2. Kada usledjuje direktan otkaz?",
+        "3. Koja su tvoja glavna zaduzenja?",
+        "4. Sta radis pre ulaska u smenu? (pored pripreme za smenu)",
+        "5. Sta ti je ukljuceno u toku smene?",
+        "6. Sta znaci kada pored kreatorke imas inb 1/inb2/inb3? Kako postupas ako nemas da selectujes neki od inboxa na kreatorci?",
+        "7. Sta je potrebno uraditi kada dobijes down time report za kreatorku za koju si assignovan/a?",
+        "8. Sta radis ako primetis da konstatno imas 7+ minuta down time-a na nalozima?",
+        "9. Koja komanda se koristi za vise informacija o custom request-u, kako se salje upit, koga i u kojoj formi pitas za custom?",
+        "10. Kako i gde se prijavljuje farm i koji je prag?",
+        "11. Za sta pitas VA tim na telegramu a za sta pitas menadzere u tiketu?",
+        "12. Sem dvojice menadzera, tu su jos neke bitne role - ukratko napisi za sta njih kontaktiras i kada su dostupni?",
+        "13. Za sta je namenjen tiket?",
+        "14. Kako funkcionise raspored?",
+        "15. Navedi neke od komandi koje koristis na telegramu i discordu (npr za day off, cover, info modela, custom request itd.)",
+        "16. Kako funkcionise isplata?",
+    ],
+    "tehnicki": [
+        "1. Kada ti pustas mm?",
+        "1.1 Kome se uvek salju mmovi a ko se uvek excluduje?",
+        "2. Kada pitchujemo secret? (hint - 3 situacije)",
+        "3. Sta je small talk? Navedi primenu small talk-a",
+        "4. Sta je ppv i sta se sve moze svesti pod ppv-em?",
+        "5. Za sta sluze followupovi ispod ppv-a?",
+        "6. Za sta koristimo objectione?",
+        "6.1 Iskucaj 3 objectiona.",
+        "6.2 Kada dajemo discount za ppv?",
+        "7. Na cemu insistiramo posle kupovine mmppv-a?",
+        "7.1 Kako upsellujemo mmppv?",
+        "8. Kako se razlikuje ulazak u intro skriptu nakon kupljenog welcome ppv-a?",
+    ],
+}
+TEST_LABELS = {"osnovni": "Osnovni", "tehnicki": "Tehnički"}
+
+
+def _test_db_init():
+    conn = _db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lv_tests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            channel_id INTEGER NOT NULL,
+            first_kind TEXT NOT NULL,
+            stage INTEGER DEFAULT 1,
+            msg1_id INTEGER,
+            msg2_id INTEGER,
+            review_msg_id INTEGER,
+            started1 TEXT,
+            done1 TEXT,
+            started2 TEXT,
+            done2 TEXT,
+            expired_notified INTEGER DEFAULT 0,
+            reviewed_by INTEGER,
+            reviewed_at TEXT,
+            last_reminder TEXT
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def _test_other(kind):
+    return "tehnicki" if kind == "osnovni" else "osnovni"
+
+
+def _test_text(kind, member_mention, deadline, part_no):
+    qs = "\n".join(TEST_QUESTIONS[kind])
+    ts = int(deadline.timestamp())
+    return (
+        f"📝 **TEST {part_no}/2 — {TEST_LABELS[kind].upper()}**\n"
+        f"{member_mention}\n"
+        f"**{TEST_TITLES[kind]}**\n\n"
+        f"{qs}\n\n"
+        f"⏱ Imaš **{TEST_DURATION_MIN} min** — rok: <t:{ts}:t> (<t:{ts}:R>)\n"
+        f"Odgovore piši ovde u kanalu, pa klikni **✅ Završio/la sam test**."
+    )
+
+
+def _test_get(where, val):
+    conn = _db()
+    row = conn.execute(f"SELECT * FROM lv_tests WHERE {where}=?", (val,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def _test_update(test_id, **fields):
+    if not fields:
+        return
+    cols = ", ".join(f"{k}=?" for k in fields)
+    conn = _db()
+    conn.execute(f"UPDATE lv_tests SET {cols} WHERE id=?", (*fields.values(), test_id))
+    conn.commit()
+    conn.close()
+
+
+def _test_find_by_message(message_id):
+    conn = _db()
+    row = conn.execute(
+        "SELECT * FROM lv_tests WHERE msg1_id=? OR msg2_id=? OR review_msg_id=?",
+        (message_id, message_id, message_id),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def _test_review_mentions():
+    return " ".join(f"<@&{r}>" for r in TEST_REVIEW_ROLE_IDS)
+
+
+def _disabled_view(label, emoji, style):
+    v = discord.ui.View(timeout=None)
+    v.add_item(discord.ui.Button(label=label, emoji=emoji, style=style, disabled=True))
+    return v
+
+
+class TestDoneView(discord.ui.View):
+    """Persistentno dugme ispod svakog testa (radi i posle restarta)."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Završio/la sam test", emoji="✅", style=discord.ButtonStyle.success, custom_id="lvtest_done")
+    async def done(self, interaction: discord.Interaction, button: discord.ui.Button):
+        t = await asyncio.to_thread(_test_find_by_message, interaction.message.id)
+        if not t:
+            return await interaction.response.send_message("❌ Ne nalazim ovaj test u bazi.", ephemeral=True)
+        if interaction.user.id != t["user_id"]:
+            return await interaction.response.send_message("❌ Samo osoba koja radi test može da ga završi.", ephemeral=True)
+
+        now = _local_now()
+        is_first = interaction.message.id == t["msg1_id"]
+        if (is_first and t["done1"]) or (not is_first and t["done2"]):
+            return await interaction.response.send_message("Ovaj test je već označen kao završen.", ephemeral=True)
+
+        await interaction.response.defer()
+        try:
+            await interaction.message.edit(view=_disabled_view("Završeno", "✅", discord.ButtonStyle.success))
+        except Exception:
+            pass
+        channel = interaction.channel
+        member_mention = interaction.user.mention
+
+        if is_first:
+            second = _test_other(t["first_kind"])
+            deadline = now + timedelta(minutes=TEST_DURATION_MIN)
+            msg2 = await channel.send(
+                _test_text(second, member_mention, deadline, 2),
+                view=TestDoneView(),
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+            )
+            await asyncio.to_thread(
+                _test_update, t["id"],
+                done1=now.isoformat(), started2=now.isoformat(), msg2_id=msg2.id, stage=2, expired_notified=0,
+            )
+        else:
+            review = await channel.send(
+                f"📋 **TEST ZAVRŠEN — čeka pregled**\n"
+                f"{member_mention} je završio/la oba testa (osnovni + tehnički).\n"
+                f"{_test_review_mentions()} — pregledajte odgovore u ovom kanalu i kliknite **👀 Test pregledan**.",
+                view=TestReviewView(),
+                allowed_mentions=discord.AllowedMentions(users=False, roles=True, everyone=False),
+            )
+            await asyncio.to_thread(
+                _test_update, t["id"],
+                done2=now.isoformat(), review_msg_id=review.id, stage=3, last_reminder=now.isoformat(),
+            )
+
+
+class TestReviewView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Test pregledan", emoji="👀", style=discord.ButtonStyle.primary, custom_id="lvtest_reviewed")
+    async def reviewed(self, interaction: discord.Interaction, button: discord.ui.Button):
+        roles = {r.id for r in getattr(interaction.user, "roles", [])}
+        if not roles.intersection(TEST_REVIEW_ROLE_IDS):
+            return await interaction.response.send_message("❌ Samo menadžeri mogu da označe test kao pregledan.", ephemeral=True)
+        t = await asyncio.to_thread(_test_find_by_message, interaction.message.id)
+        if not t:
+            return await interaction.response.send_message("❌ Ne nalazim ovaj test u bazi.", ephemeral=True)
+        if t["reviewed_by"]:
+            return await interaction.response.send_message("Test je već označen kao pregledan.", ephemeral=True)
+        now = _local_now()
+        await asyncio.to_thread(_test_update, t["id"], reviewed_by=interaction.user.id, reviewed_at=now.isoformat(), stage=4)
+        await interaction.response.edit_message(
+            view=_disabled_view(f"Pregledao/la: {interaction.user.display_name}"[:80], "👀", discord.ButtonStyle.primary)
+        )
+        await interaction.followup.send(f"✅ Test za <@{t['user_id']}> je pregledan ({interaction.user.mention}).")
+
+
+class TestKindSelect(discord.ui.Select):
+    def __init__(self):
+        super().__init__(
+            placeholder="Izaberi test",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(label="Osnovni", value="osnovni", description="Preporučeno da se radi prvo", emoji="📘"),
+                discord.SelectOption(label="Tehnički", value="tehnicki", description="Drugi deo testa", emoji="🛠"),
+            ],
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        kind = self.values[0]
+        now = _local_now()
+        deadline = now + timedelta(minutes=TEST_DURATION_MIN)
+        await interaction.response.edit_message(
+            content=f"✅ Pokrenut test: **{TEST_LABELS[kind]}**. Tajmer od {TEST_DURATION_MIN} min je krenuo.",
+            view=None,
+        )
+        msg = await interaction.channel.send(
+            _test_text(kind, interaction.user.mention, deadline, 1),
+            view=TestDoneView(),
+            allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+        )
+
+        def _insert():
+            conn = _db()
+            conn.execute(
+                "INSERT INTO lv_tests (user_id, channel_id, first_kind, stage, msg1_id, started1) VALUES (?,?,?,?,?,?)",
+                (interaction.user.id, interaction.channel.id, kind, 1, msg.id, now.isoformat()),
+            )
+            conn.commit()
+            conn.close()
+
+        await asyncio.to_thread(_insert)
+
+
+class TestKindView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+        self.add_item(TestKindSelect())
+
+
+@tree.command(name="test", description="Pokreni test posle obuke (osnovni + tehnički, 45 min po testu)", guild=GUILD_OBJ)
+async def test_cmd(interaction: discord.Interaction):
+    def _active():
+        conn = _db()
+        row = conn.execute(
+            "SELECT id FROM lv_tests WHERE user_id=? AND stage IN (1,2)", (interaction.user.id,)
+        ).fetchone()
+        conn.close()
+        return row
+
+    if await asyncio.to_thread(_active):
+        return await interaction.response.send_message(
+            "❌ Već imaš test u toku — završi ga klikom na ✅ ispod testa.", ephemeral=True
+        )
+    await interaction.response.send_message(
+        "📝 **Test posle obuke** — izaberi koji radiš prvo.\n"
+        "Preporučeno: prvo **Osnovni**. Kad završiš prvi, drugi stiže automatski.\n"
+        f"Svaki test traje **{TEST_DURATION_MIN} min**.",
+        view=TestKindView(),
+        ephemeral=True,
+    )
+
+
+@tasks.loop(minutes=1)
+async def test_timer_loop():
+    """Isteklo vreme (45 min) + podsetnik menadžerima na 5h dok test nije pregledan."""
+    try:
+        now = _local_now()
+
+        def _rows():
+            conn = _db()
+            rows = conn.execute("SELECT * FROM lv_tests WHERE stage IN (1,2,3)").fetchall()
+            conn.close()
+            return [dict(r) for r in rows]
+
+        for t in await asyncio.to_thread(_rows):
+            ch = bot.get_channel(t["channel_id"])
+            if ch is None:
+                continue
+            if t["stage"] in (1, 2) and not t["expired_notified"]:
+                started = t["started1"] if t["stage"] == 1 else t["started2"]
+                try:
+                    st = datetime.fromisoformat(started)
+                except Exception:
+                    continue
+                if now >= st + timedelta(minutes=TEST_DURATION_MIN):
+                    kind = t["first_kind"] if t["stage"] == 1 else _test_other(t["first_kind"])
+                    await ch.send(
+                        f"⏰ <@{t['user_id']}> — isteklo je {TEST_DURATION_MIN} min za **{TEST_LABELS[kind]}** test. "
+                        f"Završi odgovore i klikni ✅ ispod testa.",
+                        allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+                    )
+                    await asyncio.to_thread(_test_update, t["id"], expired_notified=1)
+            elif t["stage"] == 3 and not t["reviewed_by"]:
+                try:
+                    last = datetime.fromisoformat(t["last_reminder"] or t["done2"])
+                except Exception:
+                    last = now
+                if now >= last + timedelta(hours=TEST_REVIEW_REMIND_HOURS):
+                    link = ""
+                    if t["review_msg_id"] and getattr(ch, "guild", None):
+                        link = f"\nhttps://discord.com/channels/{ch.guild.id}/{ch.id}/{t['review_msg_id']}"
+                    await ch.send(
+                        f"🔔 {_test_review_mentions()} — test od <@{t['user_id']}> još nije pregledan. "
+                        f"Kliknite **👀 Test pregledan** kad ga pregledate.{link}",
+                        allowed_mentions=discord.AllowedMentions(users=False, roles=True, everyone=False),
+                    )
+                    await asyncio.to_thread(_test_update, t["id"], last_reminder=now.isoformat())
+    except Exception as e:
+        print("[TEST] loop greška:", e, flush=True)
+
+
+_test_db_init()
+
+
 # ---------- on_ready ----------
 @bot.event
 async def on_ready():
@@ -4566,6 +4888,9 @@ async def on_ready():
         if not cover_reminder_loop.is_running():
             cover_reminder_loop.start()
             print("✅ Cover reminder task pokrenut")
+        if not test_timer_loop.is_running():
+            test_timer_loop.start()
+            print("✅ Test timer task pokrenut")
         guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
         if guild:
             await seed_off_days(guild)
@@ -4594,6 +4919,9 @@ async def _setup_hook():
     # bridge (HTTP port) se diže PRE Discord logina, da Render odmah vidi port
     # i da /as i /announcement vrate jasnu grešku (503) umesto 502 dok bot nije spreman
     await start_bridge_server()
+    # persistentna dugmad za /test (rade i posle restarta)
+    bot.add_view(TestDoneView())
+    bot.add_view(TestReviewView())
 
 bot.setup_hook = _setup_hook
 bot.run(TOKEN)
