@@ -3836,12 +3836,15 @@ async def approvedmultioff(interaction: discord.Interaction, ceter: discord.Memb
 @tree.command(name="loff", description="Pregled svih off dana po datumima", guild=GUILD_OBJ)
 async def loff(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
-    if not off_days:
+    covers = await asyncio.to_thread(approved_covers)
+    if not off_days and not covers:
         return await interaction.followup.send("Nema nijednog off dana.", ephemeral=True)
 
     by_date = defaultdict(list)
     for e in off_days:
         by_date[e.get("date")].append(e)
+    for r in covers:
+        by_date[r["date"]].append({"_cover": r, "username": r.get("username")})
 
     today = _local_now().date()
     lines = []
@@ -3855,6 +3858,9 @@ async def loff(interaction: discord.Interaction):
         wd = SR_WEEKDAYS[d.weekday()]
         names = []
         for e in sorted(by_date[date_iso], key=lambda x: str(x.get("username", ""))):
+            if e.get("_cover"):
+                names.append(cover_line(e["_cover"]))
+                continue
             mark = "✅" if e.get("confirmed") else "⏳"
             if e.get("approved_by"):
                 mark = "🛡"
@@ -3892,7 +3898,8 @@ async def checkoff(interaction: discord.Interaction):
             key=lambda x: (str(x.get("shift") or ""), str(x.get("username") or "")),
         )
         title = f"📅 {d.strftime('%d.%m.%Y')} ({SR_WEEKDAYS[d.weekday()]})"
-        if not entries:
+        covers = await asyncio.to_thread(approved_covers, iso, iso)
+        if not entries and not covers:
             return await i.response.send_message(f"{title}\nNiko nije off tog dana. ✅", ephemeral=True)
         lines = []
         for e in entries:
@@ -3901,6 +3908,7 @@ async def checkoff(interaction: discord.Interaction):
                 mark = "🛡"
             extra = " ⚠️ treba cover" if e.get("needs_cover") else ""
             lines.append(f"{mark} <@{e.get('user_id')}> — {e.get('username') or ''} ({e.get('shift')}){extra}")
+        lines += [cover_line(r, with_tag=True) for r in covers]
         embed = discord.Embed(title=title, description="\n".join(lines), color=0x00b0f4)
         embed.set_footer(text=f"Off: {len(entries)}  •  ✅ potvrđen  ⏳ čeka  🛡 odobren")
         await i.response.send_message(embed=embed, ephemeral=True)
@@ -4183,10 +4191,12 @@ async def off_day_reminder_loop():
     tomorrow = now.date() + timedelta(days=1)
     tomorrow_iso = tomorrow.isoformat()
     entries = [e for e in off_days if e.get("date") == tomorrow_iso]
-    if entries:
+    covers = approved_covers(tomorrow_iso, tomorrow_iso)
+    if entries or covers:
         lines = []
         for e in sorted(entries, key=lambda x: str(x.get("username", ""))):
             lines.append(f"• <@{e.get('user_id')}> — {e.get('shift')}")
+        lines += ["• " + cover_line(r, with_tag=True) for r in covers]
         date_str = tomorrow.strftime("%d.%m.%Y")
         try:
             await channel.send(
@@ -4865,6 +4875,330 @@ async def test_timer_loop():
 _test_db_init()
 
 
+# ========== /reqoff + /reqcover (samo u tiketu, odobrava manager) ==========
+REQ_MANAGER_ROLE_ID = OFF_CANCEL_ROLE_ID
+COVER_TYPES = {"late": "kasniji ulazak u smenu", "early": "raniji izlazak iz smene"}
+
+
+def _req_db_init():
+    conn = _db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lv_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
+            username TEXT,
+            shift TEXT,
+            date TEXT NOT NULL,
+            cover_type TEXT,
+            minutes INTEGER,
+            reason TEXT,
+            status TEXT DEFAULT 'pending',
+            channel_id INTEGER,
+            msg_id INTEGER,
+            decided_by INTEGER,
+            created_at TEXT
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def _req_get_by_msg(msg_id):
+    conn = _db()
+    row = conn.execute("SELECT * FROM lv_requests WHERE msg_id=?", (msg_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def _req_set(req_id, **fields):
+    cols = ", ".join(f"{k}=?" for k in fields)
+    conn = _db()
+    conn.execute(f"UPDATE lv_requests SET {cols} WHERE id=?", (*fields.values(), req_id))
+    conn.commit()
+    conn.close()
+
+
+def _req_insert(**fields):
+    cols = ", ".join(fields)
+    marks = ", ".join("?" * len(fields))
+    conn = _db()
+    cur = conn.execute(f"INSERT INTO lv_requests ({cols}) VALUES ({marks})", tuple(fields.values()))
+    conn.commit()
+    rid = cur.lastrowid
+    conn.close()
+    return rid
+
+
+def approved_covers(date_from=None, date_to=None):
+    """Odobreni cover zahtevi (za /loff, /checkoff i dnevni podsetnik)."""
+    conn = _db()
+    rows = conn.execute(
+        "SELECT * FROM lv_requests WHERE kind='cover' AND status='approved' ORDER BY date"
+    ).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        r = dict(r)
+        if date_from and r["date"] < date_from:
+            continue
+        if date_to and r["date"] > date_to:
+            continue
+        out.append(r)
+    return out
+
+
+def cover_line(r, with_tag=False):
+    who = f"<@{r['user_id']}>" if with_tag else (r.get("username") or str(r["user_id"]))
+    typ = COVER_TYPES.get(r.get("cover_type"), r.get("cover_type") or "")
+    return f"🔁 {who} ({r.get('shift')}) — cover {r.get('minutes')} min, {typ}"
+
+
+def _in_ticket(interaction):
+    ch = interaction.channel
+    name = (getattr(ch, "name", "") or "").lower()
+    parent = getattr(ch, "parent", None)
+    pname = (getattr(parent, "name", "") or "").lower() if parent else ""
+    return name.startswith("ticket-") or pname.startswith("ticket-")
+
+
+async def _deny_outside_ticket(interaction):
+    await interaction.response.send_message(
+        "❌ Ova komanda može da se koristi **samo u tvom tiketu**. Otvori tiket sa `/ticket` pa probaj tamo.",
+        ephemeral=True,
+    )
+
+
+class ReqDecisionView(discord.ui.View):
+    """Persistentna dugmad za odobravanje zahteva (rade i posle restarta)."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _check(self, interaction):
+        if not any(r.id == REQ_MANAGER_ROLE_ID for r in getattr(interaction.user, "roles", [])):
+            await interaction.response.send_message("❌ Samo manager rola može da odobri/odbije.", ephemeral=True)
+            return None
+        req = await asyncio.to_thread(_req_get_by_msg, interaction.message.id)
+        if not req:
+            await interaction.response.send_message("❌ Ne nalazim zahtev u bazi.", ephemeral=True)
+            return None
+        if req["status"] != "pending":
+            await interaction.response.send_message(f"Zahtev je već rešen ({req['status']}).", ephemeral=True)
+            return None
+        return req
+
+    @discord.ui.button(label="Odobri", emoji="✅", style=discord.ButtonStyle.success, custom_id="lvreq_ok")
+    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+        req = await self._check(interaction)
+        if not req:
+            return
+        d = datetime.strptime(req["date"], "%Y-%m-%d").date()
+        when = f"{d.strftime('%d.%m.%Y')} ({SR_WEEKDAYS[d.weekday()]})"
+
+        if req["kind"] == "off":
+            # ponovna provera — u međuvremenu je neko drugi možda odobren
+            if any(
+                e.get("date") == req["date"] and e.get("shift") == req["shift"]
+                and e.get("user_id") != req["user_id"] and e.get("approved_by")
+                for e in off_days
+            ):
+                await asyncio.to_thread(_req_set, req["id"], status="denied", decided_by=interaction.user.id)
+                await interaction.response.edit_message(
+                    content=interaction.message.content + "\n\n❌ **Automatski odbijeno** — taj dan je u međuvremenu odobren drugom kolegi.",
+                    view=None,
+                )
+                return
+            if not any(e.get("user_id") == req["user_id"] and e.get("date") == req["date"] for e in off_days):
+                off_days.append({
+                    "user_id": req["user_id"],
+                    "username": req["username"],
+                    "date": req["date"],
+                    "shift": req["shift"],
+                    "message_id": None,
+                    "confirmed": True,
+                    "group_id": f"req-{req['id']}",
+                    "channel_id": req["channel_id"],
+                    "approved_by": interaction.user.id,
+                    "needs_cover": 1,
+                    "cover_reminder_due": (d - timedelta(days=3)).isoformat(),
+                })
+                await asyncio.to_thread(save_off_days)
+            title = "OFF DAY (zahtev odobren)"
+            detail = f"**Datum:** {when}\n**Smena:** {req['shift']}\n⚠️ Treba cover"
+        else:
+            typ = COVER_TYPES.get(req["cover_type"], req["cover_type"])
+            title = "COVER (zahtev odobren)"
+            detail = f"**Datum:** {when}\n**Smena:** {req['shift']}\n**Cover:** {req['minutes']} min — {typ}"
+            if req.get("reason"):
+                detail += f"\n**Razlog:** {req['reason']}"
+
+        await asyncio.to_thread(_req_set, req["id"], status="approved", decided_by=interaction.user.id)
+        await interaction.response.edit_message(
+            content=interaction.message.content + f"\n\n✅ **Odobreno** — {interaction.user.mention}",
+            view=None,
+        )
+        try:
+            await interaction.channel.send(
+                f"✅ <@{req['user_id']}> tvoj zahtev je **odobren**: {when}.",
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+            )
+        except Exception:
+            pass
+        channel = bot.get_channel(OFF_DAY_CHANNEL_ID)
+        if channel:
+            try:
+                await channel.send(
+                    f"🛡 **{title}**\n{detail}\n"
+                    f"**Chatter:** <@{req['user_id']}> ({req['username']})\n"
+                    f"**Odobrio:** {interaction.user.mention}"
+                )
+            except Exception as e:
+                print("[REQ] overview send fail:", e, flush=True)
+
+    @discord.ui.button(label="Odbij", emoji="❌", style=discord.ButtonStyle.danger, custom_id="lvreq_no")
+    async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
+        req = await self._check(interaction)
+        if not req:
+            return
+        await asyncio.to_thread(_req_set, req["id"], status="denied", decided_by=interaction.user.id)
+        await interaction.response.edit_message(
+            content=interaction.message.content + f"\n\n❌ **Odbijeno** — {interaction.user.mention}",
+            view=None,
+        )
+        try:
+            await interaction.channel.send(
+                f"❌ <@{req['user_id']}> tvoj zahtev je **odbijen**.",
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+            )
+        except Exception:
+            pass
+
+
+async def _post_request(interaction, req_id, text):
+    msg = await interaction.channel.send(
+        text + f"\n\n<@&{REQ_MANAGER_ROLE_ID}> — odobri ili odbij:",
+        view=ReqDecisionView(),
+        allowed_mentions=discord.AllowedMentions(users=False, roles=True, everyone=False),
+    )
+    await asyncio.to_thread(_req_set, req_id, msg_id=msg.id)
+
+
+@tree.command(name="reqoff", description="Zahtev za off dan (i kad je dan zauzet) — samo u tiketu", guild=GUILD_OBJ)
+async def reqoff(interaction: discord.Interaction):
+    if not _in_ticket(interaction):
+        return await _deny_outside_ticket(interaction)
+    shift = await _require_shift(interaction)
+    if not shift:
+        return
+    taken = taken_dates_for_shift(shift)
+    dates = build_date_range()
+
+    async def on_pick(i, d):
+        iso = d.isoformat()
+        if any(e.get("user_id") == i.user.id and e.get("date") == iso for e in off_days):
+            return await i.response.send_message("❌ Već imaš off taj dan.", ephemeral=True)
+        others = [
+            e for e in off_days
+            if e.get("date") == iso and e.get("shift") == shift and e.get("user_id") != i.user.id
+        ]
+        approved_other = [e for e in others if e.get("approved_by")]
+        if approved_other:
+            return await i.response.send_message(
+                f"❌ Zahtev odbijen — {d.strftime('%d.%m.%Y')} je već **odobren** kolegi "
+                f"({', '.join(str(e.get('username')) for e in approved_other)}). Izaberi drugi dan.",
+                ephemeral=True,
+            )
+        if len(others) > 1:
+            return await i.response.send_message(
+                f"❌ Zahtev odbijen — {d.strftime('%d.%m.%Y')} je off već {len(others)} kolega u tvojoj smeni.",
+                ephemeral=True,
+            )
+        await i.response.edit_message(content="⏳ Šaljem zahtev menadžerima...", view=None)
+        used = count_month_off_days(i.user.id, d.strftime("%Y-%m"))
+        req_id = await asyncio.to_thread(
+            _req_insert,
+            kind="off", user_id=i.user.id, username=i.user.display_name, shift=shift,
+            date=iso, status="pending", channel_id=i.channel.id, created_at=_local_now().isoformat(),
+        )
+        busy = f"{others[0].get('username')} je već off taj dan" if others else "dan je slobodan"
+        await _post_request(
+            i, req_id,
+            f"📨 **ZAHTEV ZA OFF DAN**\n"
+            f"**Chatter:** {i.user.mention} ({i.user.display_name})\n"
+            f"**Datum:** {d.strftime('%d.%m.%Y')} ({SR_WEEKDAYS[d.weekday()]})\n"
+            f"**Smena:** {shift}\n"
+            f"**Stanje:** {busy}\n"
+            f"**Off dana u tom mesecu:** {used}/{MAX_OFF_PER_MONTH}",
+        )
+        await i.edit_original_response(content="✅ Zahtev poslat — čeka odobrenje menadžera.")
+
+    note = ""
+    if taken:
+        note = "\n\nZauzeti dani u tvojoj smeni su označeni sa „zauzeto” — i njih možeš da tražiš (ako nisu već odobreni drugom)."
+    await interaction.response.send_message(
+        f"📨 **Zahtev za off** — izaberi datum:{note}",
+        view=OffDayPickerView(taken, dates, on_pick),
+        ephemeral=True,
+    )
+
+
+@tree.command(name="reqcover", description="Zahtev za cover do 2h (kasniji ulazak / raniji izlazak) — samo u tiketu", guild=GUILD_OBJ)
+@app_commands.describe(
+    datum="Datum (DD.MM.YYYY)",
+    tip="Kasniji ulazak ili raniji izlazak",
+    trajanje="Koliko (max 2h)",
+    razlog="Kratko objašnjenje (opciono)",
+)
+@app_commands.choices(
+    tip=[
+        app_commands.Choice(name="Kasniji ulazak u smenu", value="late"),
+        app_commands.Choice(name="Raniji izlazak iz smene", value="early"),
+    ],
+    trajanje=[
+        app_commands.Choice(name="30 min", value=30),
+        app_commands.Choice(name="1h", value=60),
+        app_commands.Choice(name="1h 30min", value=90),
+        app_commands.Choice(name="2h", value=120),
+    ],
+)
+async def reqcover(interaction: discord.Interaction, datum: str, tip: str, trajanje: int, razlog: str = ""):
+    if not _in_ticket(interaction):
+        return await _deny_outside_ticket(interaction)
+    shift = await _require_shift(interaction)
+    if not shift:
+        return
+    d = parse_date_str(datum)
+    if not d:
+        return await interaction.response.send_message("❌ Loš datum. Koristi DD.MM.YYYY.", ephemeral=True)
+    if d < _local_now().date():
+        return await interaction.response.send_message("❌ Datum je u prošlosti.", ephemeral=True)
+    trajanje = max(1, min(int(trajanje), 120))
+    await interaction.response.defer(ephemeral=True)
+    req_id = await asyncio.to_thread(
+        _req_insert,
+        kind="cover", user_id=interaction.user.id, username=interaction.user.display_name, shift=shift,
+        date=d.isoformat(), cover_type=tip, minutes=trajanje, reason=(razlog or "").strip()[:300],
+        status="pending", channel_id=interaction.channel.id, created_at=_local_now().isoformat(),
+    )
+    text = (
+        f"📨 **ZAHTEV ZA COVER**\n"
+        f"**Chatter:** {interaction.user.mention} ({interaction.user.display_name})\n"
+        f"**Datum:** {d.strftime('%d.%m.%Y')} ({SR_WEEKDAYS[d.weekday()]})\n"
+        f"**Smena:** {shift}\n"
+        f"**Cover:** {trajanje} min — {COVER_TYPES[tip]}"
+    )
+    if (razlog or "").strip():
+        text += f"\n**Razlog:** {razlog.strip()[:300]}"
+    await _post_request(interaction, req_id, text)
+    await interaction.followup.send("✅ Zahtev za cover poslat — čeka odobrenje menadžera.", ephemeral=True)
+
+
+_req_db_init()
+
+
 # ---------- on_ready ----------
 @bot.event
 async def on_ready():
@@ -4922,6 +5256,7 @@ async def _setup_hook():
     # persistentna dugmad za /test (rade i posle restarta)
     bot.add_view(TestDoneView())
     bot.add_view(TestReviewView())
+    bot.add_view(ReqDecisionView())
 
 bot.setup_hook = _setup_hook
 bot.run(TOKEN)
