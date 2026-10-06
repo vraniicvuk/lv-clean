@@ -5159,11 +5159,11 @@ async def reqcover_date_autocomplete(interaction: discord.Interaction, current: 
     return out
 
 
-@tree.command(name="reqcover", description="Zahtev za cover do 2h (kasniji ulazak / raniji izlazak) — samo u tiketu", guild=GUILD_OBJ)
+@tree.command(name="reqcover", description="Zahtev za cover do 4h (kasniji ulazak / raniji izlazak) — samo u tiketu", guild=GUILD_OBJ)
 @app_commands.describe(
     datum="Izaberi: danas, sutra ili prekosutra",
     tip="Kasniji ulazak ili raniji izlazak",
-    trajanje="Koliko (max 2h)",
+    trajanje="Koliko (max 4h)",
     razlog="Kratko objašnjenje (opciono)",
 )
 @app_commands.choices(
@@ -5176,6 +5176,10 @@ async def reqcover_date_autocomplete(interaction: discord.Interaction, current: 
         app_commands.Choice(name="1h", value=60),
         app_commands.Choice(name="1h 30min", value=90),
         app_commands.Choice(name="2h", value=120),
+        app_commands.Choice(name="2h 30min", value=150),
+        app_commands.Choice(name="3h", value=180),
+        app_commands.Choice(name="3h 30min", value=210),
+        app_commands.Choice(name="4h", value=240),
     ],
 )
 @app_commands.autocomplete(datum=reqcover_date_autocomplete)
@@ -5191,7 +5195,7 @@ async def reqcover(interaction: discord.Interaction, datum: str, tip: str, traja
     _today = _local_now().date()
     if not (_today <= d <= _today + timedelta(days=2)):
         return await interaction.response.send_message("❌ Cover može samo za danas, sutra ili prekosutra — izaberi iz menija.", ephemeral=True)
-    trajanje = max(1, min(int(trajanje), 120))
+    trajanje = max(1, min(int(trajanje), 240))
     await interaction.response.defer(ephemeral=True)
     req_id = await asyncio.to_thread(
         _req_insert,
