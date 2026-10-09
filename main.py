@@ -4508,6 +4508,8 @@ async def start_bridge_server():
     app.router.add_get("/", handle_health)
     app.router.add_post("/as", handle_bridge_as)
     app.router.add_post("/announcement", handle_bridge_announcement)
+    app.router.add_get("/qc_inbox", handle_qc_inbox)
+    app.router.add_post("/qc_inbox/ack", handle_qc_ack)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", BRIDGE_PORT)
@@ -5217,6 +5219,156 @@ async def reqcover(interaction: discord.Interaction, datum: str, tip: str, traja
 
 
 _req_db_init()
+
+
+# ========== QC report inbox (desni klik → Apps → "Pošalji u QC") ==========
+def _qc_db_init():
+    conn = _db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS qc_inbox (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            message_id INTEGER UNIQUE,
+            channel_id INTEGER,
+            chatter TEXT,
+            chatter_id INTEGER,
+            qc TEXT,
+            qc_id INTEGER,
+            date TEXT,
+            text TEXT,
+            sent_by INTEGER,
+            created_at TEXT,
+            synced INTEGER DEFAULT 0,
+            synced_at TEXT
+        )
+        """
+    )
+    # ID-evi poruka koje su već prebačene (report se briše, ID ostaje da se ne pošalje opet)
+    conn.execute("CREATE TABLE IF NOT EXISTS qc_sent (message_id INTEGER PRIMARY KEY, sent_at TEXT)")
+    conn.commit()
+    conn.close()
+
+
+def _qc_guess_chatter(message):
+    """Chatter = prvi tagovan član koji nije bot i nije autor; inače prazno (AI prepoznaje iz teksta)."""
+    for m in getattr(message, "mentions", []) or []:
+        if not m.bot and m.id != message.author.id:
+            return (m.display_name or m.name), m.id
+    return "", None
+
+
+@tree.context_menu(name="Pošalji u QC", guild=GUILD_OBJ)
+async def qc_send_ctx(interaction: discord.Interaction, message: discord.Message):
+    text = (message.content or "").strip()
+    if message.attachments:
+        text += "\n" + "\n".join(a.url for a in message.attachments)
+    if len(text) < 20:
+        return await interaction.response.send_message(
+            "❌ Poruka je prekratka za QC report (min 20 znakova).", ephemeral=True
+        )
+    await interaction.response.defer(ephemeral=True)
+    chatter, chatter_id = _qc_guess_chatter(message)
+    created = message.created_at.astimezone(ZoneInfo("Europe/Belgrade"))
+
+    def _save():
+        conn = _db()
+        if conn.execute("SELECT 1 FROM qc_sent WHERE message_id=?", (message.id,)).fetchone():
+            conn.close()
+            return 0
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO qc_inbox (message_id, channel_id, chatter, chatter_id, qc, qc_id, date, text, sent_by, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                message.id, message.channel.id, chatter, chatter_id,
+                message.author.display_name, message.author.id,
+                created.date().isoformat(), text[:20000], interaction.user.id,
+                _local_now().isoformat(),
+            ),
+        )
+        conn.commit()
+        n = cur.rowcount
+        conn.close()
+        return n
+
+    added = await asyncio.to_thread(_save)
+    if not added:
+        return await interaction.followup.send("ℹ️ Ova poruka je već poslata u QC.", ephemeral=True)
+    try:
+        await message.add_reaction("📋")
+    except Exception:
+        pass
+    who = f" • chatter: **{chatter}**" if chatter else " • chatter: AI prepoznaje iz teksta"
+    await interaction.followup.send(
+        f"✅ QC report sačuvan (QC: **{message.author.display_name}**, {created.strftime('%d.%m.%Y')}{who}).\n"
+        "Prebacuje se u QC tabelu pri sledećoj sinhronizaciji (na svakih 12h).",
+        ephemeral=True,
+    )
+
+
+def _qc_token_ok(request, data=None):
+    tok = request.query.get("token") or (data or {}).get("token") or request.headers.get("X-Bridge-Token")
+    return bool(BRIDGE_TOKEN) and tok == BRIDGE_TOKEN
+
+
+async def handle_qc_inbox(request):
+    """GET /qc_inbox?token=...&limit=50 → nesinhronizovani QC reporti."""
+    if not _qc_token_ok(request):
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    try:
+        limit = max(1, min(int(request.query.get("limit", "50")), 200))
+    except Exception:
+        limit = 50
+
+    def _rows():
+        conn = _db()
+        rows = conn.execute(
+            "SELECT id, message_id, channel_id, chatter, chatter_id, qc, qc_id, date, text, created_at "
+            "FROM qc_inbox WHERE synced=0 ORDER BY id LIMIT ?",
+            (limit,),
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    items = await asyncio.to_thread(_rows)
+    for it in items:
+        it["message_id"] = str(it["message_id"])
+        it["channel_id"] = str(it["channel_id"])
+        it["chatter_id"] = str(it["chatter_id"]) if it["chatter_id"] else None
+        it["qc_id"] = str(it["qc_id"]) if it["qc_id"] else None
+        if GUILD_ID:
+            it["jump_url"] = f"https://discord.com/channels/{GUILD_ID}/{it['channel_id']}/{it['message_id']}"
+    return web.json_response({"ok": True, "items": items})
+
+
+async def handle_qc_ack(request):
+    """POST /qc_inbox/ack {token, ids:[...]} → prebačeni reporti se brišu (ID poruke se pamti da se ne pošalje ponovo)."""
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    if not _qc_token_ok(request, data):
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    ids = [int(i) for i in (data.get("ids") or []) if str(i).isdigit()]
+    if not ids:
+        return web.json_response({"ok": False, "error": "no ids"}, status=400)
+
+    def _ack():
+        conn = _db()
+        marks = ",".join("?" * len(ids))
+        now = _local_now().isoformat()
+        for r in conn.execute(f"SELECT message_id FROM qc_inbox WHERE id IN ({marks})", ids).fetchall():
+            conn.execute("INSERT OR IGNORE INTO qc_sent (message_id, sent_at) VALUES (?, ?)", (r["message_id"], now))
+        cur = conn.execute(f"DELETE FROM qc_inbox WHERE id IN ({marks})", ids)
+        conn.commit()
+        n = cur.rowcount
+        conn.close()
+        return n
+
+    n = await asyncio.to_thread(_ack)
+    return web.json_response({"ok": True, "acked": n})
+
+
+_qc_db_init()
 
 
 # ---------- on_ready ----------
