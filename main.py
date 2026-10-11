@@ -5371,6 +5371,142 @@ async def handle_qc_ack(request):
 _qc_db_init()
 
 
+# ========== /reqfeature → Notion "Feature requests" ==========
+FEATURE_PARENT_PAGE_ID = os.getenv("FEATURE_PARENT_PAGE_ID", "3f6476bd-965e-8095-a4be-e5096f708abb")
+FEATURE_DB_TITLE = "Feature requests"
+FEATURE_TEAMS = [f"t{i}" for i in range(1, 12)] + ["ct"]
+FEATURE_STATUSES = ["Novo", "U razmatranju", "Urađeno", "Odbijeno"]
+
+
+def _feat_headers():
+    return {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json",
+    }
+
+
+def _feat_find_existing_db():
+    """Traži već napravljenu bazu u parent stranici (da se ne pravi duplikat)."""
+    cursor = None
+    while True:
+        url = f"https://api.notion.com/v1/blocks/{FEATURE_PARENT_PAGE_ID}/children?page_size=100"
+        if cursor:
+            url += f"&start_cursor={cursor}"
+        r = requests.get(url, headers=_feat_headers(), timeout=30)
+        r.raise_for_status()
+        data = r.json()
+        for b in data.get("results", []):
+            if b.get("type") == "child_database" and (b.get("child_database") or {}).get("title") == FEATURE_DB_TITLE:
+                return b["id"]
+        if data.get("has_more") and data.get("next_cursor"):
+            cursor = data["next_cursor"]
+        else:
+            return None
+
+
+def ensure_feature_db():
+    """Vrati ID Notion baze; napravi je ako ne postoji. Vraća (db_id, greška)."""
+    if not NOTION_TOKEN:
+        return None, "NOTION_TOKEN nije podešen."
+    db_id = get_state("feature_db_id")
+    if db_id:
+        return db_id, None
+    try:
+        db_id = _feat_find_existing_db()
+        if not db_id:
+            payload = {
+                "parent": {"type": "page_id", "page_id": FEATURE_PARENT_PAGE_ID},
+                "title": [{"type": "text", "text": {"content": FEATURE_DB_TITLE}}],
+                "properties": {
+                    "Feature": {"title": {}},
+                    "Opis": {"rich_text": {}},
+                    "Chatter": {"rich_text": {}},
+                    "Team": {"select": {"options": [{"name": t} for t in FEATURE_TEAMS]}},
+                    "Datum": {"date": {}},
+                    "Status": {"select": {"options": [{"name": s} for s in FEATURE_STATUSES]}},
+                    "Discord ID": {"rich_text": {}},
+                },
+            }
+            r = requests.post("https://api.notion.com/v1/databases", headers=_feat_headers(), json=payload, timeout=30)
+            if r.status_code >= 400:
+                return None, f"Notion {r.status_code}: {r.text[:300]}"
+            db_id = r.json()["id"]
+            print(f"[FEATURE] napravljena Notion baza {db_id}", flush=True)
+    except Exception as e:
+        return None, f"Notion greška: {e}"
+    set_state("feature_db_id", db_id)
+    return db_id, None
+
+
+def create_feature_request(chatter, user_id, team, text):
+    db_id, err = ensure_feature_db()
+    if err:
+        return False, err
+    title = " ".join(text.split())
+    if len(title) > 80:
+        title = title[:77] + "..."
+    props = {
+        "Feature": {"title": [{"text": {"content": title}}]},
+        "Opis": {"rich_text": [{"text": {"content": text[:1900]}}]},
+        "Chatter": {"rich_text": [{"text": {"content": chatter[:200]}}]},
+        "Team": {"select": {"name": team}},
+        "Datum": {"date": {"start": _local_now().date().isoformat()}},
+        "Status": {"select": {"name": "Novo"}},
+        "Discord ID": {"rich_text": [{"text": {"content": str(user_id)}}]},
+    }
+    try:
+        r = requests.post(
+            "https://api.notion.com/v1/pages",
+            headers=_feat_headers(),
+            json={"parent": {"database_id": db_id}, "properties": props},
+            timeout=30,
+        )
+    except Exception as e:
+        return False, f"Notion greška: {e}"
+    if r.status_code == 404:
+        # baza obrisana/premeštena → zaboravi ID, sledeći put napravi novu
+        set_state("feature_db_id", "")
+        return False, "Notion baza nije nađena — pokušaj ponovo za minut."
+    if r.status_code >= 400:
+        return False, f"Notion {r.status_code}: {r.text[:300]}"
+    return True, None
+
+
+class FeatureModal(Modal, title="Predlog za novi feature"):
+    def __init__(self, team):
+        super().__init__(timeout=None)
+        self.team = team
+        self.feature = TextInput(
+            label="Šta bi voleo/la da dodamo ili promenimo?",
+            style=TextStyle.paragraph,
+            placeholder="Opiši ideju što jasnije (šta, zašto, kako bi pomoglo)...",
+            required=True,
+            min_length=10,
+            max_length=1000,
+        )
+        self.add_item(self.feature)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        chatter = f"{interaction.user.display_name} (@{interaction.user.name})"
+        ok, err = await asyncio.to_thread(
+            create_feature_request, chatter, interaction.user.id, self.team, self.feature.value.strip()
+        )
+        if ok:
+            await interaction.followup.send("✅ Hvala! Predlog je prijavljen.", ephemeral=True)
+        else:
+            print(f"[FEATURE] fail: {err}", flush=True)
+            await interaction.followup.send(f"❌ Predlog nije sačuvan: {err}", ephemeral=True)
+
+
+@tree.command(name="reqfeature", description="Predloži novi feature / poboljšanje", guild=GUILD_OBJ)
+@app_commands.describe(team="Tvoj tim")
+@app_commands.choices(team=[app_commands.Choice(name=t.upper(), value=t) for t in FEATURE_TEAMS])
+async def reqfeature(interaction: discord.Interaction, team: str):
+    await interaction.response.send_modal(FeatureModal(team))
+
+
 # ---------- on_ready ----------
 @bot.event
 async def on_ready():
