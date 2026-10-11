@@ -5375,7 +5375,9 @@ _qc_db_init()
 FEATURE_PARENT_PAGE_ID = os.getenv("FEATURE_PARENT_PAGE_ID", "3f6476bd-965e-8095-a4be-e5096f708abb")
 FEATURE_DB_TITLE = "Feature requests"
 FEATURE_TEAMS = [f"t{i}" for i in range(1, 12)] + ["ct"]
-FEATURE_STATUSES = ["Novo", "U razmatranju", "Urađeno", "Odbijeno"]
+FEATURE_STATUSES = ["Request queue", "Requested"]
+FEATURE_DEFAULT_STATUS = "Request queue"
+_feature_schema_ok = False
 
 
 def _feat_headers():
@@ -5411,6 +5413,7 @@ def ensure_feature_db():
         return None, "NOTION_TOKEN nije podešen."
     db_id = get_state("feature_db_id")
     if db_id:
+        _feature_migrate_schema(db_id)
         return db_id, None
     try:
         db_id = _feat_find_existing_db()
@@ -5425,7 +5428,6 @@ def ensure_feature_db():
                     "Team": {"select": {"options": [{"name": t} for t in FEATURE_TEAMS]}},
                     "Datum": {"date": {}},
                     "Status": {"select": {"options": [{"name": s} for s in FEATURE_STATUSES]}},
-                    "Discord ID": {"rich_text": {}},
                 },
             }
             r = requests.post("https://api.notion.com/v1/databases", headers=_feat_headers(), json=payload, timeout=30)
@@ -5436,13 +5438,89 @@ def ensure_feature_db():
     except Exception as e:
         return None, f"Notion greška: {e}"
     set_state("feature_db_id", db_id)
+    _feature_migrate_schema(db_id)
     return db_id, None
+
+
+def _feature_migrate_schema(db_id):
+    """Jednom po startu: Status opcije Request queue/Requested, ukloni staru kolonu Discord ID."""
+    global _feature_schema_ok
+    if _feature_schema_ok:
+        return
+    for props in (
+        {"Discord ID": None},
+        {"Status": {"select": {"options": [{"name": s} for s in FEATURE_STATUSES]}}},
+    ):
+        try:
+            r = requests.patch(
+                f"https://api.notion.com/v1/databases/{db_id}",
+                headers=_feat_headers(), json={"properties": props}, timeout=30,
+            )
+            if r.status_code >= 400:
+                print(f"[FEATURE] schema update ({list(props)[0]}): {r.status_code} {r.text[:200]}", flush=True)
+        except Exception as e:
+            print(f"[FEATURE] schema update fail: {e}", flush=True)
+    _feature_schema_ok = True
+
+
+_FEAT_STOP = {"the", "and", "for", "that", "with", "this", "kad", "kada", "koji", "koja", "koje",
+              "bude", "biti", "neka", "moze", "mozes", "treba", "bi", "da", "se", "na", "za", "od",
+              "je", "su", "sto", "kako", "ili", "ali", "ako", "jos", "vise", "nam", "mi", "nas"}
+
+
+def _feat_words(text):
+    import unicodedata
+    t = unicodedata.normalize("NFKD", (text or "").lower())
+    t = "".join(ch for ch in t if not unicodedata.combining(ch)).replace("đ", "dj")
+    return {w for w in re.findall(r"[a-z0-9]+", t) if len(w) >= 3 and w not in _FEAT_STOP}
+
+
+def _feat_similar(a, b):
+    import difflib
+    wa, wb = _feat_words(a), _feat_words(b)
+    if not wa or not wb:
+        return 0.0
+    jac = len(wa & wb) / len(wa | wb)
+    cover = len(wa & wb) / min(len(wa), len(wb))
+    ratio = difflib.SequenceMatcher(None, " ".join(sorted(wa)), " ".join(sorted(wb))).ratio()
+    return max(jac, ratio * 0.9, cover * 0.85 if min(len(wa), len(wb)) >= 3 else 0)
+
+
+def find_requested_feature(db_id, text, threshold=0.6):
+    """Vrati naslov već 'Requested' feature-a koji liči na novi predlog, ili None."""
+    payload = {"page_size": 100, "filter": {"property": "Status", "select": {"equals": "Requested"}}}
+    best, best_score = None, 0.0
+    while True:
+        r = requests.post(f"https://api.notion.com/v1/databases/{db_id}/query",
+                          headers=_feat_headers(), json=payload, timeout=30)
+        if r.status_code >= 400:
+            return None
+        data = r.json()
+        for page in data.get("results", []):
+            props = page.get("properties", {})
+            title = "".join(t.get("plain_text", "") for t in props.get("Feature", {}).get("title", []))
+            opis = "".join(t.get("plain_text", "") for t in props.get("Opis", {}).get("rich_text", []))
+            score = max(_feat_similar(text, opis or title), _feat_similar(text, title))
+            if score > best_score:
+                best, best_score = (title or opis[:80]), score
+        if data.get("has_more") and data.get("next_cursor"):
+            payload["start_cursor"] = data["next_cursor"]
+        else:
+            break
+    return best if best_score >= threshold else None
 
 
 def create_feature_request(chatter, user_id, team, text):
     db_id, err = ensure_feature_db()
     if err:
         return False, err
+    try:
+        dup = find_requested_feature(db_id, text)
+    except Exception as e:
+        print(f"[FEATURE] dup check fail: {e}", flush=True)
+        dup = None
+    if dup:
+        return "dup", dup
     title = " ".join(text.split())
     if len(title) > 80:
         title = title[:77] + "..."
@@ -5452,8 +5530,7 @@ def create_feature_request(chatter, user_id, team, text):
         "Chatter": {"rich_text": [{"text": {"content": chatter[:200]}}]},
         "Team": {"select": {"name": team}},
         "Datum": {"date": {"start": _local_now().date().isoformat()}},
-        "Status": {"select": {"name": "Novo"}},
-        "Discord ID": {"rich_text": [{"text": {"content": str(user_id)}}]},
+        "Status": {"select": {"name": FEATURE_DEFAULT_STATUS}},
     }
     try:
         r = requests.post(
@@ -5493,7 +5570,12 @@ class FeatureModal(Modal, title="Predlog za novi feature"):
         ok, err = await asyncio.to_thread(
             create_feature_request, chatter, interaction.user.id, self.team, self.feature.value.strip()
         )
-        if ok:
+        if ok == "dup":
+            await interaction.followup.send(
+                f"ℹ️ Ovaj feature je **već zatražen**: „{err}”.\nHvala na feedbacku — već radimo na tome!",
+                ephemeral=True,
+            )
+        elif ok:
             await interaction.followup.send("✅ Hvala! Predlog je prijavljen.", ephemeral=True)
         else:
             print(f"[FEATURE] fail: {err}", flush=True)
