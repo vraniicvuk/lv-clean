@@ -5544,6 +5544,42 @@ def _feat_upload_image(data, filename, content_type):
         return None
 
 
+FEATURE_SHEET_URL = os.getenv(
+    "FEATURE_SHEET_URL",
+    "https://script.google.com/macros/s/AKfycby7wttog07dXZ6zsszYvt3Fq_oCT5SXM3X76vX6ln8pgQGZn-g8yV2lTm-CUBIXw24G-A/exec",
+)
+FEATURE_SHEET_SECRET = os.getenv("FEATURE_SHEET_SECRET", "ACkpXmZNkUEJcNLPtsYWSqI5FebPhRHC")
+
+
+def _feat_send_sheet(chatter, team, text, image=None):
+    """Best-effort kopija u Google Sheet (tab po danu, slika u Drive). Greška ne blokira Notion."""
+    if not FEATURE_SHEET_URL:
+        return
+    import base64
+    payload = {
+        "secret": FEATURE_SHEET_SECRET,
+        "chatter": chatter,
+        "team": team,
+        "feature": text,
+        "status": FEATURE_DEFAULT_STATUS,
+    }
+    if image and image[0]:
+        payload["image_b64"] = base64.b64encode(image[0]).decode()
+        payload["image_name"] = image[1]
+        payload["image_type"] = image[2]
+    try:
+        r = requests.post(FEATURE_SHEET_URL, json=payload, timeout=60)
+        ok = False
+        try:
+            ok = bool(r.json().get("ok"))
+        except Exception:
+            pass
+        if not ok:
+            print(f"[FEATURE] sheet: HTTP {r.status_code} {r.text[:200]}", flush=True)
+    except Exception as e:
+        print(f"[FEATURE] sheet fail: {e}", flush=True)
+
+
 def create_feature_request(chatter, user_id, team, text, image=None):
     db_id, err = ensure_feature_db()
     if err:
@@ -5555,6 +5591,7 @@ def create_feature_request(chatter, user_id, team, text, image=None):
         dup = None
     if dup:
         return "dup", dup
+    _feat_send_sheet(chatter, team, text, image)
     title = " ".join(text.split())
     if len(title) > 80:
         title = title[:77] + "..."
