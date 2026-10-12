@@ -5428,6 +5428,7 @@ def ensure_feature_db():
                     "Team": {"select": {"options": [{"name": t} for t in FEATURE_TEAMS]}},
                     "Datum": {"date": {}},
                     "Status": {"select": {"options": [{"name": s} for s in FEATURE_STATUSES]}},
+                    "Slika": {"files": {}},
                 },
             }
             r = requests.post("https://api.notion.com/v1/databases", headers=_feat_headers(), json=payload, timeout=30)
@@ -5449,6 +5450,7 @@ def _feature_migrate_schema(db_id):
         return
     for props in (
         {"Discord ID": None},
+        {"Slika": {"files": {}}},
         {"Status": {"select": {"options": [{"name": s} for s in FEATURE_STATUSES]}}},
     ):
         try:
@@ -5510,7 +5512,39 @@ def find_requested_feature(db_id, text, threshold=0.6):
     return best if best_score >= threshold else None
 
 
-def create_feature_request(chatter, user_id, team, text):
+FEATURE_MAX_IMAGE = 5 * 1024 * 1024
+
+
+def _feat_upload_image(data, filename, content_type):
+    """Notion File Upload API (single part, ≤5MB). Vraća file_upload id ili None."""
+    try:
+        r = requests.post(
+            "https://api.notion.com/v1/file_uploads",
+            headers=_feat_headers(),
+            json={"filename": filename, "content_type": content_type},
+            timeout=30,
+        )
+        if r.status_code >= 400:
+            print(f"[FEATURE] file_upload create: {r.status_code} {r.text[:200]}", flush=True)
+            return None
+        up_id = r.json()["id"]
+        h = {"Authorization": f"Bearer {NOTION_TOKEN}", "Notion-Version": "2022-06-28"}
+        r = requests.post(
+            f"https://api.notion.com/v1/file_uploads/{up_id}/send",
+            headers=h,
+            files={"file": (filename, data, content_type)},
+            timeout=60,
+        )
+        if r.status_code >= 400:
+            print(f"[FEATURE] file_upload send: {r.status_code} {r.text[:200]}", flush=True)
+            return None
+        return up_id
+    except Exception as e:
+        print(f"[FEATURE] file_upload fail: {e}", flush=True)
+        return None
+
+
+def create_feature_request(chatter, user_id, team, text, image=None):
     db_id, err = ensure_feature_db()
     if err:
         return False, err
@@ -5532,11 +5566,24 @@ def create_feature_request(chatter, user_id, team, text):
         "Datum": {"date": {"start": _local_now().date().isoformat()}},
         "Status": {"select": {"name": FEATURE_DEFAULT_STATUS}},
     }
+    children = []
+    if image:
+        data, filename, ctype, url = image
+        up_id = _feat_upload_image(data, filename, ctype)
+        if up_id:
+            props["Slika"] = {"files": [{"type": "file_upload", "file_upload": {"id": up_id}, "name": filename[:100]}]}
+            children.append({"object": "block", "type": "image", "image": {"type": "file_upload", "file_upload": {"id": up_id}}})
+        elif url:
+            # rezerva: Discord link (može da istekne posle nekog vremena)
+            props["Slika"] = {"files": [{"type": "external", "external": {"url": url}, "name": filename[:100]}]}
+    body = {"parent": {"database_id": db_id}, "properties": props}
+    if children:
+        body["children"] = children
     try:
         r = requests.post(
             "https://api.notion.com/v1/pages",
             headers=_feat_headers(),
-            json={"parent": {"database_id": db_id}, "properties": props},
+            json=body,
             timeout=30,
         )
     except Exception as e:
@@ -5551,9 +5598,10 @@ def create_feature_request(chatter, user_id, team, text):
 
 
 class FeatureModal(Modal, title="Predlog za novi feature"):
-    def __init__(self, team):
+    def __init__(self, team, image=None):
         super().__init__(timeout=None)
         self.team = team
+        self.image = image
         self.feature = TextInput(
             label="Šta bi voleo/la da dodamo ili promenimo?",
             style=TextStyle.paragraph,
@@ -5567,8 +5615,15 @@ class FeatureModal(Modal, title="Predlog za novi feature"):
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         chatter = f"{interaction.user.display_name} (@{interaction.user.name})"
+        img = None
+        if self.image is not None:
+            try:
+                img = (await self.image.read(), self.image.filename, self.image.content_type or "image/png", self.image.url)
+            except Exception as e:
+                print(f"[FEATURE] attachment read fail: {e}", flush=True)
+                img = (b"", self.image.filename, self.image.content_type or "image/png", self.image.url)
         ok, err = await asyncio.to_thread(
-            create_feature_request, chatter, interaction.user.id, self.team, self.feature.value.strip()
+            create_feature_request, chatter, interaction.user.id, self.team, self.feature.value.strip(), img
         )
         if ok == "dup":
             await interaction.followup.send(
@@ -5583,10 +5638,15 @@ class FeatureModal(Modal, title="Predlog za novi feature"):
 
 
 @tree.command(name="reqfeature", description="Predloži novi feature / poboljšanje", guild=GUILD_OBJ)
-@app_commands.describe(team="Tvoj tim")
+@app_commands.describe(team="Tvoj tim", slika="Slika / screenshot (opciono, max 5MB)")
 @app_commands.choices(team=[app_commands.Choice(name=t.upper(), value=t) for t in FEATURE_TEAMS])
-async def reqfeature(interaction: discord.Interaction, team: str):
-    await interaction.response.send_modal(FeatureModal(team))
+async def reqfeature(interaction: discord.Interaction, team: str, slika: discord.Attachment = None):
+    if slika is not None:
+        if not (slika.content_type or "").startswith("image/"):
+            return await interaction.response.send_message("❌ Prilog mora biti slika (png, jpg, gif, webp).", ephemeral=True)
+        if slika.size > FEATURE_MAX_IMAGE:
+            return await interaction.response.send_message("❌ Slika je veća od 5MB — smanji je pa probaj ponovo.", ephemeral=True)
+    await interaction.response.send_modal(FeatureModal(team, slika))
 
 
 # ---------- on_ready ----------
