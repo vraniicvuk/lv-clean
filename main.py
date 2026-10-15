@@ -5096,7 +5096,8 @@ async def reqoff(interaction: discord.Interaction):
     if not shift:
         return
     taken = taken_dates_for_shift(shift)
-    dates = build_date_range()
+    # /reqoff dozvoljava i sutrašnji dan (/off kreće od prekosutra)
+    dates = [_local_now().date() + timedelta(days=1)] + build_date_range()
 
     async def on_pick(i, d):
         iso = d.isoformat()
@@ -5686,6 +5687,70 @@ async def reqfeature(interaction: discord.Interaction, team: str, slika: discord
     await interaction.response.send_modal(FeatureModal(team, slika))
 
 
+# ========== slobodni off dani — #day-off-team-N, ponedeljak i četvrtak u 12h ==========
+DAYOFF_WEEKLY_DAYS = (0, 3)  # ponedeljak, četvrtak
+DAYOFF_WEEKLY_HOUR = 12
+DAYOFF_CHANNEL_RE = re.compile(r"^day-?off-team-?\d+$")
+SHIFT_ORDER = [("graveyard", "GRAVEYARD"), ("afternoon", "AFTERNOON"), ("main", "MAIN")]
+
+
+def build_free_days_text(today):
+    """Slobodni off dani po smeni: od sutra do kraja nedelje (nedelja)."""
+    days_left = 6 - today.weekday()
+    if days_left < 1:
+        days_left = 7
+    days = [today + timedelta(days=i) for i in range(1, days_left + 1)]
+    first_off = today + timedelta(days=2)  # /off radi od prekosutra
+    lines = [
+        f"📅 **Slobodni day off dani — {days[0].strftime('%d.%m.')} – {days[-1].strftime('%d.%m.%Y')}**",
+        "",
+    ]
+    for code, label in SHIFT_ORDER:
+        taken = taken_dates_for_shift(code)
+        free = [d for d in days if d not in taken]
+        if free:
+            parts = []
+            for d in free:
+                tag = f"{SR_WEEKDAYS[d.weekday()]} {d.strftime('%d.%m.')}"
+                if d < first_off:
+                    tag += " (samo /reqoff)"
+                parts.append(tag)
+            lines.append(f"**{label}:** " + ", ".join(parts))
+        else:
+            lines.append(f"**{label}:** nema slobodnih dana")
+    lines += ["", "Rezervacija: `/off` (od prekosutra) ili `/reqoff` u tiketu (i za sutra)."]
+    return "\n".join(lines)
+
+
+@tasks.loop(minutes=1)
+async def dayoff_weekly_loop():
+    now = _local_now()
+    if now.weekday() not in DAYOFF_WEEKLY_DAYS or now.hour != DAYOFF_WEEKLY_HOUR:
+        return
+    key = f"dayoff_weekly_{now.date().isoformat()}"
+    if get_state(key):
+        return
+    set_state(key, "1")
+    guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
+    if not guild:
+        return
+    text = build_free_days_text(now.date())
+    sent = 0
+    for ch in guild.text_channels:
+        if DAYOFF_CHANNEL_RE.match(ch.name.lower()):
+            try:
+                await ch.send(text)
+                sent += 1
+            except Exception as e:
+                print(f"[DAYOFF-WEEKLY] {ch.name} fail: {e}", flush=True)
+    print(f"[DAYOFF-WEEKLY] poslato u {sent} kanala", flush=True)
+
+
+@dayoff_weekly_loop.before_loop
+async def _before_dayoff_weekly():
+    await bot.wait_until_ready()
+
+
 # ---------- on_ready ----------
 @bot.event
 async def on_ready():
@@ -5711,6 +5776,8 @@ async def on_ready():
             print("✅ Cover reminder task pokrenut")
         if not test_timer_loop.is_running():
             test_timer_loop.start()
+        if not dayoff_weekly_loop.is_running():
+            dayoff_weekly_loop.start()
             print("✅ Test timer task pokrenut")
         guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
         if guild:
