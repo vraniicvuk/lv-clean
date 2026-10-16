@@ -1616,6 +1616,5861 @@ Announcements - kanal za obavestenja gde saljemo najbitnije stvari a ticu se per
 
 svaki od ostalih kanala koji je pod sekcijom LV start sluzi za smernice koje ti mogu pomoci u laksem snalazenju, hendlovanju vise trafika, pravilima u odredjenim situacijama, primerima, detaljnim review-ovima farmi itd. Posveti paznju ovoj sekciji jer sto vise stvari pohvatas, pravices vise love
 
+Na discordu (vec sad u tiketu) mozes probati neke od komandi kako bi kasnije prilikom odgovaranja na pitanja iz testa, znao cemu sluze osnovne komande!
+
+https://t.me/addlist/s2nHCQZUNXI0OTY0
+
+Obavezno predji sve sekcije jer pre pocetka rada ces imati jos jedan "mini test" gde ces na osnovu prikupljenog znanja odgovoriti na par pitanja cisto da budemo sigurni da si sve procitao.
+
+Moze da zvuci dosadno, naporno itd ali znamo da neke od stvari su toliko detaljno objasnjene da ce ti ustedeli masu vremena i pomoci pri vecem broju prodaja pa samim tim i boljim prihodima.
+
+Za sva pitanja slobodno pisi nadleznima za to pitanje 
+
+Gore pomenuti mini test pokreces komandom /test kada si spreman da ga radis (traje 45 min i mora da se uradi odmah nakon komande)
+
+Srecno!"""
+
+# "#ime" u tekstu -> pravi link na kanal, ako kanal sa tim imenom postoji
+WELCOME_CHANNEL_LINKS = {
+    "#zabranjeno primeri": "zabranjeno-primeri",
+    "#zabranjeno": "zabranjeno",
+    "#pravilnik": "pravilnik",
+}
+
+
+def _welcome_chunks(guild, member, limit=1900):
+    text = WELCOME_TEXT.replace("{mention}", member.mention)
+    for token, ch_name in WELCOME_CHANNEL_LINKS.items():
+        ch = discord.utils.find(lambda c: isinstance(c, discord.TextChannel) and c.name.lower() == ch_name, guild.channels)
+        if ch:
+            text = text.replace(token, ch.mention)
+    # Discord limit 2000 znakova po poruci -> seci po pasusima
+    chunks, cur = [], ""
+    for para in text.split("\n\n"):
+        piece = para if not cur else "\n\n" + para
+        if cur and len(cur) + len(piece) > limit:
+            chunks.append(cur)
+            cur = para
+        else:
+            cur += piece
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    if member.bot:
+        return
+    guild = member.guild
+    if GUILD_ID and guild.id != int(GUILD_ID):
+        return
+
+    # 1) role
+    roles = [guild.get_role(rid) for rid in JOIN_ROLE_IDS]
+    roles = [r for r in roles if r]
+    if roles:
+        try:
+            await member.add_roles(*roles, reason="Auto role na ulasku")
+        except Exception as e:
+            print(f"[JOIN] add_roles fail za {member}: {e}", flush=True)
+
+    # 2) ticket (preskoči ako već postoji, npr. rejoin)
+    ticket_name = f"ticket-{member.name}".lower()
+    existing = discord.utils.find(lambda c: isinstance(c, discord.TextChannel) and c.name == ticket_name, guild.channels)
+    try:
+        ch = existing or await create_ticket_channel(guild, member, JOIN_TICKET_RAZLOG)
+    except Exception as e:
+        print(f"[JOIN] ticket fail za {member}: {e}", flush=True)
+        return
+
+    # 3) welcome poruka
+    try:
+        for chunk in _welcome_chunks(guild, member):
+            await ch.send(chunk, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+    except Exception as e:
+        print(f"[JOIN] welcome fail za {member}: {e}", flush=True)
+    print(f"[JOIN] {member} → role={[r.name for r in roles]} ticket=#{ch.name}", flush=True)
+
+
+# ========== /close - Zatvara ticket + čuva transcript ==========
+@tree.command(
+    name="close",
+    description="Zatvori ticket i sačuva transcript",
+    guild=GUILD_OBJ
+)
+async def close_ticket(interaction: discord.Interaction):
+    if not interaction.channel.name.startswith("ticket-"):
+        return await interaction.response.send_message(
+            "❌ Ova komanda radi samo unutar ticketa.", 
+            ephemeral=True
+        )
+
+    await interaction.response.send_message("**Zatvaram ticket i čuvam transcript...**", ephemeral=False)
+
+    transcript_cat = interaction.guild.get_channel(1504739040706953228)
+
+    # Čuvanje transcripta
+    if transcript_cat:
+        try:
+            messages = [msg async for msg in interaction.channel.history(limit=1000, oldest_first=True)]
+            transcript_text = f"**Transcript ticketa:** {interaction.channel.name}\n"
+            transcript_text += f"**Vreme zatvaranja:** {discord.utils.utcnow().strftime('%d.%m.%Y %H:%M')}\n"
+            transcript_text += "="*60 + "\n\n"
+
+            for msg in messages:
+                time_str = msg.created_at.strftime("%d.%m.%Y %H:%M")
+                transcript_text += f"[{time_str}] {msg.author.display_name}: {msg.content}\n"
+                if msg.attachments:
+                    transcript_text += f"   Prilozi: {', '.join([a.url for a in msg.attachments])}\n"
+
+            transcript_channel = await transcript_cat.create_text_channel(
+                name=f"transcript-{interaction.channel.name.replace('ticket-', '')}"
+            )
+            await transcript_channel.send(transcript_text)
+        except Exception as e:
+            print(f"Transcript error: {e}")
+
+    await asyncio.sleep(2)
+    try:
+        await interaction.channel.delete(reason=f"Closed with transcript by {interaction.user}")
+    except:
+        await interaction.followup.send("Ticket zatvoren, ali transcript nije uspeo da se sačuva.", ephemeral=True)
+
+
+# ========== /delete - Potpuno brisanje bez transcripta ==========
+@tree.command(
+    name="delete",
+    description="Potpuno obriši ticket bez čuvanja transcripta",
+    guild=GUILD_OBJ
+)
+async def delete_ticket(interaction: discord.Interaction):
+    if not interaction.channel.name.startswith("ticket-"):
+        return await interaction.response.send_message(
+            "❌ Ova komanda radi samo unutar ticketa.", 
+            ephemeral=True
+        )
+
+    await interaction.response.send_message("**Brišem ticket zauvek...**", ephemeral=False)
+    await asyncio.sleep(2)
+    
+    try:
+        await interaction.channel.delete(reason=f"Deleted by {interaction.user}")
+    except Exception as e:
+        await interaction.followup.send(f"❌ Greška pri brisanju: {e}", ephemeral=True)
+
+# /newm
+@tree.command(
+    name="newm",
+    description="Napravi novi model",
+    guild=GUILD_OBJ
+)
+@need_manage_roles()
+@need_manage_channels()
+async def new_model(interaction: discord.Interaction, ime: str):
+    await interaction.response.defer(ephemeral=True)
+
+    guild = interaction.guild
+
+    model_name = ime.strip().upper()
+    role_name = f"> {model_name}"
+    category_name = f"TEAM {model_name}"
+
+    try:
+        print("START")
+
+        # ROLE
+        new_role = await guild.create_role(
+            name=role_name,
+            colour=discord.Colour(0x2b2d31),
+            mentionable=True
+        )
+        print("ROLE CREATED")
+
+        # CATEGORY
+        new_category = await guild.create_category(
+            name=category_name
+        )
+        
+        team_categories = sorted(
+            [c for c in guild.categories if c.name.startswith("TEAM ")],
+            key=lambda c: c.name.upper()
+        )
+        
+        for category in team_categories:
+            if category == new_category:
+                continue
+        
+            if category.name.upper() > new_category.name.upper():
+                await new_category.edit(position=category.position)
+                break
+        
+        print("CATEGORY CREATED")
+
+        # CHANNELS
+        general = await new_category.create_text_channel(
+            "general"
+        )
+        print("GENERAL CREATED")
+
+        whales = await new_category.create_text_channel(
+            "whales"
+        )
+        print("WHALES CREATED")
+
+        welcome_message = (
+            "Ovo je kanal u koji se upisuju sve bitne stavke vezane za model, spendere, ostale fanove i slično.\n\n"
+            "Ukoliko ste imali farmu, nju upisujete u kanalu **#whales** koristeći komandu `/farm` uz sve adekvatne podatke.\n\n"
+            "Ako vam je potrebno više informacija od onih koje već imate o modelu, obavezno to napišite u grupnom chatu vaše smene na Telegramu.\n\n"
+            "Što se tiče customa – ako nema dovoljno informacija, a fan je mali spender, možete odokativno napraviti pitch za nešto ekskluzivno za određenu sumu.\n\n"
+            "Ne pitati za custome fanove koji su potrošili 0 ili su tek došli.\n\n"
+            "Za sve lične podatke koji nisu navedeni u postojećim informacijama, dozvoljeno je odokativno improvizovati uz upisivanje u notes šta je izmišljeno."
+        )
+
+        await general.send(welcome_message)
+
+        # PERMISSIONS
+        await new_category.set_permissions(
+            guild.default_role,
+            view_channel=False
+        )
+
+        await new_category.set_permissions(
+            new_role,
+            view_channel=True
+        )
+
+        print("PERMISSIONS SET")
+
+        await interaction.followup.send(
+            f"✅ Napravljeno:\n"
+            f"Role: {role_name}\n"
+            f"Category: {category_name}",
+            ephemeral=True
+        )
+
+    except Exception as e:
+        import traceback
+
+        traceback.print_exc()
+
+        await interaction.followup.send(
+            f"❌ {type(e).__name__}: {e}",
+            ephemeral=True
+        )
+
+
+
+
+# ---------- /resync ----------
+@tree.command(name="resync", description="force guild sync instant", guild=GUILD_OBJ)
+@need_manage_roles()
+async def resync(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        if GUILD_OBJ is None:
+            return await interaction.followup.send(
+                "GUILD_ID nije setovan.", ephemeral=True
+            )
+        # FORCE COPY GLOBAL → GUILD
+        tree.copy_global_to(guild=GUILD_OBJ)
+        cmds = await tree.sync(guild=GUILD_OBJ)
+        names = ", ".join(sorted(c.name for c in cmds))
+        await interaction.followup.send(
+            f"Guild sync OK. {len(cmds)} komandi → {names}", ephemeral=True
+        )
+    except Exception as e:
+        await interaction.followup.send(f"Resync FAIL: {e}", ephemeral=True)
+
+
+# ---------- global error ----------
+@tree.error
+async def on_app_command_error(interaction: discord.Interaction, error):
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(f"greška: {error}", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"greška: {error}", ephemeral=True)
+    except Exception:
+        pass
+
+
+# ---------- MM HOOKS ----------
+def _mm_text_from_message(content: str) -> str:
+    raw = (content or "").strip()
+    if raw.lower().startswith("!mm"):
+        return raw[3:].strip(": \n\t")
+    return raw
+
+
+@bot.event
+async def on_message(message: discord.Message):
+    if message.author.bot:
+        return
+    content_raw = message.content or ""
+    content = content_raw.strip().lower()
+    if content.startswith("!mm"):
+        mentions = " ".join(
+            f"<@{uid}>" for uid in [886983698321391667, 1301678435776598107]
+        )
+        await message.channel.send(
+            f"{mentions} {message.author.mention} je upravo poslao !mm."
+        )
+        # auto FU
+        mm_line = _mm_text_from_message(message.content)
+        if mm_line:
+            fus = await safe_generate_fus(mm_line, message.channel.id)
+            if fus:
+                block = "```\n" + "\n".join(fus) + "\n```"
+                await message.channel.send(block)
+    await bot.process_commands(message)
+
+
+# ========== AUTO SCHEDULE (/as) ==========
+AS_CHANNELS = {
+    "1": 1517504193735426148,
+    "2": 1520415486725193768,
+    "3": 1520415502458028032,
+    "4": 1520415519679840417,
+    "5": 1520415544304472134,
+    "6": 1520415560519782482,
+    "7": 1520415584171331604,
+    "8": 1520415611522515055,
+    "9": 1520415630296092682,
+    "10": 1520415659089985566,
+    "11": 1520415681802141847,
+}
+COVER_CATEGORY_ID = 1520385768214888530
+
+
+def cover_channel_name(name):
+    return "cover-team-" + re.sub(r"\s+", "-", (name or "").strip().lower())
+
+
+async def find_cover_channel(guild, name):
+    target = cover_channel_name(name)
+    cat = guild.get_channel(COVER_CATEGORY_ID)
+    if cat is not None:
+        for ch in cat.channels:
+            if isinstance(ch, discord.TextChannel) and ch.name.lower() == target:
+                return ch
+    for ch in guild.text_channels:
+        if ch.name.lower() == target:
+            return ch
+    return None
+
+
+def extract_chatters(chatter_str):
+    out = []
+    for p in re.split(r"[/,]", chatter_str or ""):
+        p = p.strip()
+        if p and p.lower() != "off":
+            out.append(p)
+    return out
+
+
+def _find_member_by_name(guild, name, role):
+    target = (name or "").strip().lower()
+    if not target:
+        return None
+
+    def exact(m):
+        return (m.display_name or "").lower() == target or (m.name or "").lower() == target
+
+    def partial(m):
+        return target in (m.display_name or "").lower() or target in (m.name or "").lower()
+
+    members = [m for m in guild.members if not m.bot]
+    if role is not None:
+        for m in members:
+            if role in m.roles and exact(m):
+                return m
+    for m in members:
+        if exact(m):
+            return m
+    if role is not None:
+        for m in members:
+            if role in m.roles and partial(m):
+                return m
+    for m in members:
+        if partial(m):
+            return m
+    return None
+
+
+def find_chatter_mentions(guild, chatter_str, shift):
+    names = extract_chatters(chatter_str)
+    role_id = SHIFT_ROLES.get(shift) if shift else None
+    role = guild.get_role(role_id) if role_id else None
+    mentions = []
+    for name in names:
+        member = _find_member_by_name(guild, name, role)
+        if member:
+            mentions.append(member.mention)
+    return mentions
+
+
+def parse_schedule(text):
+    lines = [ln.rstrip() for ln in (text or "").splitlines()]
+    token_re = re.compile(r"(COVER\s+TEAM|TEAM\s*\d+)\s*\(\s*([^)]*?)\s*\)", re.IGNORECASE)
+    blocks = []
+    current = None
+    for ln in lines:
+        m = token_re.search(ln)
+        is_header = bool(m) and (ln[: m.start()].strip() == "")
+        if is_header:
+            if current is not None:
+                blocks.append(current)
+            targets = []
+            for raw_label, raw_name in token_re.findall(ln):
+                label = raw_label.strip()
+                name = raw_name.strip()
+                if label.upper().startswith("COVER"):
+                    targets.append({"kind": "cover", "num": None, "name": name, "chatter": name})
+                else:
+                    nm = re.search(r"\d+", label)
+                    num = nm.group(0) if nm else None
+                    targets.append({"kind": "team", "num": num, "name": None, "chatter": name})
+            current = {"header": ln.strip(), "targets": targets, "models": []}
+        else:
+            if current is not None:
+                for p in re.split(r"/", ln):
+                    p = p.strip()
+                    if p:
+                        current["models"].append(p)
+    if current is not None:
+        blocks.append(current)
+    return blocks
+
+
+def parse_schedule_meta(text):
+    for ln in (text or "").splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        m = re.search(
+            r"(\d{1,2}\.\d{1,2}(?:\.\d{2,4})?)\s*(?:[-–—]\s*)?(graveyard|grave|afternoon|after|main)",
+            ln,
+            re.IGNORECASE,
+        )
+        if m:
+            date_str = m.group(1)
+            raw = m.group(2).lower()
+            if raw in ("grave", "graveyard"):
+                shift = "graveyard"
+            elif raw in ("after", "afternoon"):
+                shift = "afternoon"
+            else:
+                shift = "main"
+            return {"date": date_str, "shift": shift}
+        break
+    return None
+
+
+SHIFT_LABELS = {"afternoon": "AFTERNOON", "graveyard": "GRAVEYARD", "main": "MAIN"}
+
+
+def format_channel_schedule(info):
+    models_text = " / ".join(info["models"])
+    date_str = info.get("date")
+    mentions = info.get("mentions") or []
+    shift = info.get("shift")
+    part = info.get("part")  # None / "first" / "second"
+
+    shift_label = SHIFT_LABELS.get(shift) if shift else None
+
+    parts = []
+    if shift_label:
+        if part == "first":
+            parts.append(f"prvi deo {shift_label} smene")
+        elif part == "second":
+            parts.append(f"drugi deo {shift_label} smene")
+        else:
+            parts.append(shift_label)
+    if date_str:
+        parts.append(date_str)
+    if mentions:
+        parts.append(" ".join(mentions))
+
+    header = " ".join(parts)
+    if header:
+        return f"{header}\n{models_text}"
+    return models_text
+
+
+async def route_schedule(guild, text, check_channel=None):
+    blocks = parse_schedule(text)
+    if not blocks:
+        return {"ok": False, "error": "Nisam pronašao nijedan TEAM u tekstu."}
+
+    meta = parse_schedule_meta(text)
+    date_str = meta.get("date") if meta else None
+    shift = meta.get("shift") if meta else None
+
+    sent = []
+    skipped = []
+    for block in blocks:
+        models = block["models"]
+        if not models:
+            skipped.append(f"{block['header']} (off)")
+            continue
+        for i, target in enumerate(block["targets"]):
+            if target["kind"] == "team":
+                num = target["num"]
+                if not (num and num in AS_CHANNELS):
+                    skipped.append(f"{block['header']} (nepoznat tim {num})")
+                    continue
+                tgt = bot.get_channel(AS_CHANNELS[num])
+                desc = f"TEAM {num}"
+            else:
+                tgt = await find_cover_channel(guild, target["name"])
+                desc = f"COVER {target['name']}"
+                if not tgt:
+                    skipped.append(f"{block['header']} (cover kanal nije nađen: {cover_channel_name(target['name'])})")
+                    continue
+
+            mentions = find_chatter_mentions(guild, target["chatter"], shift)
+            if not mentions and shift:
+                role_id = SHIFT_ROLES.get(shift)
+                if role_id:
+                    mentions = [f"<@&{role_id}>"]
+
+            part = None
+            if len(block["targets"]) > 1:
+                part = "first" if i == 0 else "second"
+
+            info = {"models": models, "date": date_str, "mentions": mentions, "shift": shift, "part": part}
+            try:
+                await tgt.send(format_channel_schedule(info))
+                sent.append(desc)
+            except Exception as e:
+                skipped.append(f"{block['header']} → {desc} (greška)")
+                print("[AS] auto send fail:", e)
+
+    first_half = []
+    second_half = []
+    for block in blocks:
+        targets = block["targets"]
+        for i, target in enumerate(targets):
+            names = extract_chatters(target["chatter"])
+            if len(targets) == 1 or i == 0:
+                first_half.extend(names)
+            else:
+                second_half.extend(names)
+
+    def _dedupe(lst):
+        seen = set()
+        out = []
+        for c in lst:
+            k = c.lower()
+            if k not in seen:
+                seen.add(k)
+                out.append(c)
+        return out
+
+    check_line = "!check " + ", ".join(_dedupe(first_half)) if first_half else "!check"
+    check_line_second = "!check " + ", ".join(_dedupe(second_half)) if second_half else ""
+
+    if check_channel is not None:
+        try:
+            full = ", ".join(_dedupe(first_half + second_half))
+            await check_channel.send("!check " + full if full else "!check")
+        except Exception as e:
+            print("[AS] check send fail:", e)
+
+    return {
+        "ok": True,
+        "sent": sent,
+        "skipped": skipped,
+        "check_line": check_line,
+        "check_line_second": check_line_second,
+    }
+
+
+class AsModal(Modal, title="Auto Schedule"):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.schedule = TextInput(
+            label="Zalepi raspored",
+            style=TextStyle.paragraph,
+            placeholder="Zalepi ceo raspored ovde...",
+            required=True,
+            max_length=4000,
+        )
+        self.add_item(self.schedule)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        result = await route_schedule(
+            interaction.guild, self.schedule.value, check_channel=interaction.channel
+        )
+        if not result.get("ok"):
+            return await interaction.followup.send(
+                f"❌ {result['error']}", ephemeral=True
+            )
+        sent = result["sent"]
+        skipped = result["skipped"]
+        summary = f"✅ Poslao {len(sent)} poruka"
+        if sent:
+            summary += ": " + ", ".join(sent)
+        if skipped:
+            summary += "\nPreskočeno: " + ", ".join(skipped)
+        await interaction.followup.send(summary, ephemeral=True)
+
+
+@tree.command(name="as", description="Auto schedule: podeli raspored po timovima i rutiraj", guild=GUILD_OBJ)
+async def as_cmd(interaction: discord.Interaction):
+    await interaction.response.send_modal(AsModal())
+
+
+# ========== REASSIGN ==========
+# /reassign radi samo u kanalima čije ime počinje ovim prefiksom (npr. reassigns-team-3)
+REASSIGN_CHANNEL_PREFIX = os.getenv("REASSIGN_CHANNEL_PREFIX", "reassigns-")
+# prihvata i česte varijante imena (reassings-, reassign-) — zarezom odvojeno u env-u
+REASSIGN_CHANNEL_PREFIXES = tuple(
+    x.strip().lower() for x in os.getenv(
+        "REASSIGN_CHANNEL_PREFIXES", "reassigns,reassings,reassign"
+    ).split(",") if x.strip()
+)
+REASSIGN_CHANNEL_ID = 1543240286615117925
+# dodatno dozvoljeni kanali po ID-u (zarezom odvojeno u env-u)
+REASSIGN_ALLOWED_CHANNEL_IDS = {
+    int(x) for x in os.getenv(
+        "REASSIGN_ALLOWED_CHANNEL_IDS", "1549009721984290866"
+    ).split(",") if x.strip().isdigit()
+}
+
+
+def _is_reassign_channel(ch) -> bool:
+    """True ako je kanal (ili parent kanal threada) reassign kanal — po ID-u ili po imenu."""
+    import unicodedata
+    for c in (ch, getattr(ch, "parent", None)):
+        if c is None:
+            continue
+        if getattr(c, "id", None) in REASSIGN_ALLOWED_CHANNEL_IDS:
+            return True
+        raw = unicodedata.normalize("NFKD", getattr(c, "name", "") or "").lower()
+        name = "".join(x for x in raw if x.isascii() and (x.isalnum() or x == "-"))
+        name = name.lstrip("-")
+        if name.startswith(REASSIGN_CHANNEL_PREFIXES) or "reass" in name:
+            return True
+    return False
+pending_reassigns = {}  # user_id -> {"model","date","reassign_to","fans":[(name,sale),...],"preview_msg": Message}
+reassign_msg_ids = set()  # cache id-jeva poruka (pending) da ne querijemo DB na svaku reakciju
+
+
+def load_reassign_msg_ids():
+    global reassign_msg_ids
+    conn = _db()
+    rows = conn.execute("SELECT ticket_msg_id, overview_msg_id FROM reassigns WHERE done=0").fetchall()
+    conn.close()
+    reassign_msg_ids = set()
+    for r in rows:
+        if r["ticket_msg_id"]:
+            reassign_msg_ids.add(r["ticket_msg_id"])
+        if r["overview_msg_id"]:
+            reassign_msg_ids.add(r["overview_msg_id"])
+
+
+def save_reassign(data, channel_id=None, user_id=None):
+    conn = _db()
+    cur = conn.execute(
+        "INSERT INTO reassigns (model, date, chatter, fans, created_at, channel_id, user_id) VALUES (?,?,?,?,?,?,?)",
+        (
+            data["model"],
+            data["date"],
+            data["reassign_to"],
+            json.dumps(data["fans"], ensure_ascii=False),
+            _local_now().isoformat(),
+            channel_id,
+            user_id,
+        ),
+    )
+    conn.commit()
+    rid = cur.lastrowid
+    conn.close()
+    return rid
+
+
+def set_reassign_messages(rid, ticket_msg_id, overview_msg_id):
+    conn = _db()
+    conn.execute(
+        "UPDATE reassigns SET ticket_msg_id=?, overview_msg_id=? WHERE id=?",
+        (ticket_msg_id, overview_msg_id, rid),
+    )
+    conn.commit()
+    conn.close()
+    if ticket_msg_id:
+        reassign_msg_ids.add(ticket_msg_id)
+    if overview_msg_id:
+        reassign_msg_ids.add(overview_msg_id)
+
+
+def get_reassign_by_message(message_id):
+    conn = _db()
+    row = conn.execute(
+        "SELECT id, channel_id, user_id, ticket_msg_id, overview_msg_id, done FROM reassigns WHERE ticket_msg_id=? OR overview_msg_id=?",
+        (message_id, message_id),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "id": row["id"],
+        "channel_id": row["channel_id"],
+        "user_id": row["user_id"],
+        "ticket_msg_id": row["ticket_msg_id"],
+        "overview_msg_id": row["overview_msg_id"],
+        "done": row["done"],
+    }
+
+
+def mark_reassign_done(rid):
+    conn = _db()
+    conn.execute("UPDATE reassigns SET done=1 WHERE id=?", (rid,))
+    conn.commit()
+    conn.close()
+
+
+def mark_reassigns_done(ids):
+    """Označi ID-eve kao urađeno (batch). Vraća (novi_id_evi, ukupno_traženo, potvrđeno_u_bazi)."""
+    ids = [int(i) for i in ids if i is not None]
+    if not ids:
+        return [], 0, 0
+    marks = ",".join("?" * len(ids))
+    conn = _db()
+    newly_ids = [r["id"] for r in conn.execute(
+        f"SELECT id FROM reassigns WHERE id IN ({marks}) AND done=0", ids
+    ).fetchall()]
+    if newly_ids:
+        conn.execute(
+            f"UPDATE reassigns SET done=1 WHERE id IN ({','.join('?' * len(newly_ids))})",
+            newly_ids,
+        )
+        conn.commit()
+    row = conn.execute(
+        f"SELECT COUNT(*) AS n FROM reassigns WHERE id IN ({marks}) AND done=1", ids
+    ).fetchone()
+    confirmed = row["n"] if row else 0
+    conn.close()
+    print(
+        f"[REASSIGN] done: novo={len(newly_ids)} confirmed={confirmed}/{len(ids)}",
+        flush=True,
+    )
+    return newly_ids, len(ids), confirmed
+
+
+def mark_reassigns_undone(ids):
+    """Vrati ID-eve u nerešeno (batch). Vraća (vraćeno, ukupno_traženo)."""
+    ids = [int(i) for i in ids if i is not None]
+    if not ids:
+        return 0, 0
+    marks = ",".join("?" * len(ids))
+    conn = _db()
+    target = [r["id"] for r in conn.execute(
+        f"SELECT id FROM reassigns WHERE id IN ({marks}) AND done=1", ids
+    ).fetchall()]
+    if target:
+        conn.execute(
+            f"UPDATE reassigns SET done=0 WHERE id IN ({','.join('?' * len(target))})",
+            target,
+        )
+        conn.commit()
+    conn.close()
+    print(f"[REASSIGN] undone: {len(target)}/{len(ids)}", flush=True)
+    return target, len(ids)
+
+
+def delete_reassign(rid):
+    conn = _db()
+    conn.execute("DELETE FROM reassigns WHERE id=?", (rid,))
+    conn.commit()
+    conn.close()
+
+
+def get_reassigns(done=False):
+    conn = _db()
+    rows = conn.execute(
+        "SELECT id, model, date, chatter, fans, channel_id, ticket_msg_id, overview_msg_id, user_id FROM reassigns WHERE done=? ORDER BY created_at DESC, id DESC",
+        (1 if done else 0,),
+    ).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        try:
+            fans = json.loads(r["fans"]) if r["fans"] else []
+        except Exception:
+            fans = []
+        out.append({
+            "id": r["id"],
+            "model": r["model"],
+            "date": r["date"],
+            "chatter": r["chatter"],
+            "fans": fans,
+            "channel_id": r["channel_id"],
+            "ticket_msg_id": r["ticket_msg_id"],
+            "overview_msg_id": r["overview_msg_id"],
+            "user_id": r["user_id"],
+        })
+    return out
+
+
+def parse_date_str(s):
+    s = (s or "").strip().rstrip(".")
+    if not s:
+        return None
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").date()
+    except Exception:
+        pass
+    for fmt in ("%d.%m.%Y", "%d.%m.%y"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except Exception:
+            continue
+    m = re.match(r"^(\d{1,2})\.(\d{1,2})\.?$", s)
+    if m:
+        try:
+            return datetime(_local_now().year, int(m.group(2)), int(m.group(1))).date()
+        except Exception:
+            return None
+    return None
+
+
+def format_date_str(s):
+    d = parse_date_str(s)
+    return d.strftime("%d.%m.%Y") if d else s
+
+
+def format_reassign(data):
+    lines = [f"MODEL: {data['model']}"]
+    for name, sale in data["fans"]:
+        lines.append(f"FAN'S NAME (ne fan's @): {name}")
+        lines.append(f"SALE: ${sale}")
+    lines.append(f"DATE: {format_date_str(data['date'])}")
+    lines.append(f"REASSIGN TO: {data['reassign_to']}")
+    return "\n".join(lines)
+
+
+class ReassignActionsView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=900)
+
+    @discord.ui.button(label="➕ Dodaj još", style=discord.ButtonStyle.secondary)
+    async def add_fan(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(AddFanModal())
+
+    @discord.ui.button(label="✅ Završi", style=discord.ButtonStyle.success)
+    async def finish(self, interaction: discord.Interaction, button: discord.ui.Button):
+        data = pending_reassigns.pop(interaction.user.id, None)
+        if not data:
+            await interaction.response.send_message("❌ Nema započetog reassign-a.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+
+        original_channel = interaction.channel
+        info_text = f"🔄 **REASSIGN**\n\n{format_reassign(data)}"
+
+        rid = save_reassign(
+            data,
+            channel_id=original_channel.id if original_channel else None,
+            user_id=interaction.user.id,
+        )
+
+        ticket_msg_id = None
+        overview_msg_id = None
+        # 1) info u kanalu gde je komanda pokrenuta (npr. ticket)
+        if original_channel:
+            try:
+                m1 = await original_channel.send(info_text)
+                await m1.add_reaction("✅")
+                ticket_msg_id = m1.id
+            except Exception as e:
+                print("[REASSIGN] ticket send fail:", e)
+
+        # 2) info u preglednom kanalu (preskoči ako je komanda već pokrenuta u njemu)
+        overview = bot.get_channel(REASSIGN_CHANNEL_ID)
+        if overview and original_channel and overview.id == original_channel.id:
+            overview = None
+        if overview:
+            try:
+                m2 = await overview.send(info_text)
+                await m2.add_reaction("✅")
+                overview_msg_id = m2.id
+            except Exception as e:
+                print("[REASSIGN] overview send fail:", e)
+
+        set_reassign_messages(rid, ticket_msg_id, overview_msg_id)
+
+        await interaction.edit_original_response(content="✅ Reassign poslat.", view=None)
+
+
+class ReassignModal(Modal, title="Reassign unos"):
+    def __init__(self, model, date):
+        super().__init__(timeout=None)
+        self.model = model
+        self.date = date
+        self.fan = TextInput(label="Fan's name (ne @)", required=True, max_length=100)
+        self.sale = TextInput(label="Sale ($)", required=True, max_length=20)
+        self.add_item(self.fan)
+        self.add_item(self.sale)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        _, err = _validate_sale(self.sale.value)
+        if err:
+            return await interaction.response.send_message(err, ephemeral=True)
+        data = {
+            "model": self.model,
+            "date": self.date,
+            "reassign_to": interaction.user.display_name,
+            "fans": [(self.fan.value.strip(), self.sale.value.strip())],
+        }
+        pending_reassigns[interaction.user.id] = data
+        await interaction.response.send_message(
+            "**Reassign (u izradi):**\n\n" + format_reassign(data),
+            view=ReassignActionsView(),
+            ephemeral=True,
+        )
+        msg = await interaction.original_response()
+        data["preview_msg"] = msg
+
+
+class AddFanModal(Modal, title="Dodaj fan-a"):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.fan = TextInput(label="Fan's name (ne @)", required=True, max_length=100)
+        self.sale = TextInput(label="Sale ($)", required=True, max_length=20)
+        self.add_item(self.fan)
+        self.add_item(self.sale)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        data = pending_reassigns.get(interaction.user.id)
+        if not data:
+            await interaction.response.send_message("❌ Nema započetog reassign-a.", ephemeral=True)
+            return
+        _, err = _validate_sale(self.sale.value)
+        if err:
+            return await interaction.response.send_message(err, ephemeral=True)
+        fan_name = self.fan.value.strip()
+        if any((n or "").strip().lower() == fan_name.lower() for n, _ in data["fans"]):
+            return await interaction.response.send_message(
+                f"❌ Fan `{fan_name}` je već unet u ovaj reassign. Ako su dve različite osobe, dodaj nešto u ime (npr. `{fan_name} 2`).",
+                ephemeral=True,
+            )
+        data["fans"].append((fan_name, self.sale.value.strip()))
+        await interaction.response.defer(ephemeral=True)
+        preview_msg = data.get("preview_msg")
+        if preview_msg:
+            try:
+                await preview_msg.edit(
+                    content="**Reassign (u izradi):**\n\n" + format_reassign(data),
+                    view=ReassignActionsView(),
+                )
+            except Exception as e:
+                print("[REASSIGN] preview edit fail:", e)
+
+
+_creators_cache = None
+_creators_cache_time = 0.0
+
+
+async def fetch_creators():
+    if not NOTION_TOKEN or not NOTION_DATABASE_ID:
+        return []
+
+    def _fetch():
+        headers = {
+            "Authorization": f"Bearer {NOTION_TOKEN}",
+            "Notion-Version": "2022-06-28",
+            "Content-Type": "application/json",
+        }
+        url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
+        names = []
+        seen = set()
+        payload = {
+            "page_size": 100,
+            "filter": {"property": "STATUS", "select": {"equals": "Active"}},
+        }
+        while True:
+            r = requests.post(url, headers=headers, json=payload, timeout=30)
+            if r.status_code != 200:
+                break
+            data = r.json()
+            for item in data.get("results", []):
+                title = "".join(t.get("plain_text", "") for t in item["properties"].get("CREATOR", {}).get("title", []))
+                name = title.strip().split("\n", 1)[0].strip()[:100]
+                if name and name not in seen:
+                    seen.add(name)
+                    names.append(name)
+            if data.get("has_more") and data.get("next_cursor"):
+                payload["start_cursor"] = data["next_cursor"]
+            else:
+                break
+        return names
+
+    try:
+        return await asyncio.to_thread(_fetch)
+    except Exception as e:
+        print("[REASSIGN] fetch_creators fail:", e)
+        return []
+
+
+async def get_creators_cached():
+    global _creators_cache, _creators_cache_time
+    if _creators_cache and (time.time() - _creators_cache_time) < 3600:
+        return _creators_cache
+    creators = await fetch_creators()
+    if creators:
+        _creators_cache = creators
+        _creators_cache_time = time.time()
+    return _creators_cache or []
+
+
+async def model_autocomplete(interaction: discord.Interaction, current: str):
+    creators = await get_creators_cached()
+    current = (current or "").strip().lower()
+    matches = [c for c in creators if current in c.lower()][:25]
+    return [app_commands.Choice(name=c, value=c) for c in matches]
+
+
+@tree.command(name="reassign", description="Prijavi reassign prodaje", guild=GUILD_OBJ)
+@app_commands.autocomplete(model=model_autocomplete)
+async def reassign_cmd(interaction: discord.Interaction, model: str):
+    if not _is_reassign_channel(interaction.channel):
+        ch = interaction.channel
+        return await interaction.response.send_message(
+            f"❌ /reassign se koristi samo u reassigns kanalima "
+            f"(npr. #{REASSIGN_CHANNEL_PREFIX}team-1).\n"
+            f"-# kanal: `{getattr(ch, 'name', '?')}` / id `{getattr(ch, 'id', '?')}`",
+            ephemeral=True,
+        )
+    dates = build_reassign_dates()
+    await interaction.response.send_message(
+        f"🗓 Izaberi datum za **{model}**:",
+        view=ReassignDateView(model, dates),
+        ephemeral=True,
+    )
+
+
+def build_reassign_dates():
+    today = _local_now().date()
+    return [today - timedelta(days=i) for i in range(0, 3)]
+
+
+class ReassignDateSelect(discord.ui.Select):
+    def __init__(self, dates):
+        rel = {0: "DANAS", 1: "JUČE", 2: "PREKJUČE"}
+        options = []
+        for i, d in enumerate(dates):
+            options.append(
+                discord.SelectOption(
+                    label=rel[i],
+                    value=d.isoformat(),
+                    description=f"{d.strftime('%d.%m.%Y')} · {SR_WEEKDAYS[d.weekday()]}",
+                )
+            )
+        super().__init__(placeholder="Izaberi datum", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(ReassignModal(self.view.model, self.values[0]))
+
+
+class ReassignDateView(discord.ui.View):
+    def __init__(self, model, dates):
+        super().__init__(timeout=600)
+        self.model = model
+        self.dates = dates
+        self.page = 0
+        self._render()
+
+    @property
+    def total_pages(self):
+        return (len(self.dates) + 24) // 25
+
+    def _page_dates(self):
+        return self.dates[self.page * 25:(self.page + 1) * 25]
+
+    def _render(self):
+        self.clear_items()
+        self.add_item(ReassignDateSelect(self._page_dates()))
+        prev_btn = discord.ui.Button(style=discord.ButtonStyle.secondary, emoji="◀", row=1, disabled=(self.page == 0))
+        prev_btn.callback = self._prev
+        next_btn = discord.ui.Button(style=discord.ButtonStyle.secondary, emoji="▶", row=1, disabled=(self.page >= self.total_pages - 1))
+        next_btn.callback = self._next
+        self.add_item(prev_btn)
+        self.add_item(next_btn)
+
+    async def _prev(self, interaction: discord.Interaction):
+        self.page -= 1
+        self._render()
+        await interaction.response.edit_message(view=self)
+
+    async def _next(self, interaction: discord.Interaction):
+        self.page += 1
+        self._render()
+        await interaction.response.edit_message(view=self)
+
+
+def _fans_str(fans):
+    return ", ".join(f"{name} (${sale})" for name, sale in fans)
+
+
+def reassign_jump(r):
+    msg_id = r.get("overview_msg_id") or r.get("ticket_msg_id")
+    if not msg_id or not GUILD_ID:
+        return None
+    ch_id = REASSIGN_CHANNEL_ID if r.get("overview_msg_id") else r.get("channel_id")
+    if not ch_id:
+        return None
+    return f"https://discord.com/channels/{GUILD_ID}/{ch_id}/{msg_id}"
+
+
+def _entry_lines(r, name):
+    jump = reassign_jump(r)
+    link = f" ↪ [skoči na poruku]({jump})" if jump else ""
+    return f"• {name}: {_fans_str(r['fans'])}{link}"
+
+
+def _date_sort_key(s):
+    d = parse_date_str(s)
+    return d if d else datetime(9999, 12, 31).date()
+
+
+async def _send_chunks(interaction, lines, limit=1900):
+    chunks = []
+    cur = []
+    cur_len = 0
+    for ln in lines:
+        if cur and cur_len + len(ln) + 1 > limit:
+            chunks.append("\n".join(cur))
+            cur = []
+            cur_len = 0
+        cur.append(ln)
+        cur_len += len(ln) + 1
+    if cur:
+        chunks.append("\n".join(cur))
+    for ch in chunks:
+        await interaction.followup.send(ch, ephemeral=True)
+
+
+REASSIGN_DELETE_DM = "proverite da li je dobar datum unet. Ako je javljeno već da reassign ne treba da se odradi, samo ignorisite poruku"
+
+
+class ReassignListSelect(discord.ui.Select):
+    def __init__(self, reassigns):
+        options = []
+        for r in reassigns[:25]:
+            label = f"{r['model']} — {format_date_str(r['date'])} ({r['chatter']})"
+            options.append(discord.SelectOption(label=label[:100], value=str(r["id"])))
+        super().__init__(placeholder="Izaberi reassign", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.selected_id = int(self.values[0])
+        await interaction.response.defer()
+
+
+DONE_EMOJI = "☑️"
+
+
+async def remove_done_reactions(reassigns, delay=0.3):
+    """Skida ☑️ sa poruka i vraća ih u listu onih koje ✅ može da zatvori."""
+    for r in reassigns:
+        targets = [
+            (r.get("channel_id"), r.get("ticket_msg_id")),
+            (REASSIGN_CHANNEL_ID, r.get("overview_msg_id")),
+        ]
+        for chan_id, msg_id in targets:
+            if not msg_id:
+                continue
+            reassign_msg_ids.add(msg_id)
+            ch = bot.get_channel(chan_id) if chan_id else None
+            if not ch:
+                continue
+            try:
+                msg = await ch.fetch_message(msg_id)
+                await msg.remove_reaction(DONE_EMOJI, bot.user)
+            except Exception as e:
+                print(f"[REASSIGN] skidanje ☑️ (msg {msg_id}) nije uspelo:", e, flush=True)
+            await asyncio.sleep(delay)
+    print(f"[REASSIGN] ☑️ skinuto za {len(reassigns)} reassign(a)", flush=True)
+
+
+async def add_done_reactions(reassigns, delay=0.3):
+    """Dodaje ☑️ na originalne reassign poruke (ticket + pregledni kanal)."""
+    ok = 0
+    for r in reassigns:
+        targets = [
+            (r.get("channel_id"), r.get("ticket_msg_id")),
+            (REASSIGN_CHANNEL_ID, r.get("overview_msg_id")),
+        ]
+        for chan_id, msg_id in targets:
+            if not chan_id or not msg_id:
+                continue
+            ch = bot.get_channel(chan_id)
+            if not ch:
+                continue
+            try:
+                msg = await ch.fetch_message(msg_id)
+                await msg.add_reaction(DONE_EMOJI)
+                ok += 1
+                reassign_msg_ids.discard(msg_id)
+            except Exception as e:
+                print(f"[REASSIGN] react fail (msg {msg_id}):", e, flush=True)
+            await asyncio.sleep(delay)
+    print(f"[REASSIGN] ☑️ dodato na {ok} poruka", flush=True)
+    return ok
+
+
+def build_reassign_xlsx(reassigns):
+    """Vraća (bytes, broj_redova). Kolone: creator / fan / date / sale amount ($)."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Reassigns"
+    ws.append(["creator", "fan", "date", "sale amount ($)"])
+    rows = 0
+    ordered = sorted(
+        reassigns,
+        key=lambda x: (_date_sort_key(x.get("date")), (x.get("model") or "").lower()),
+    )
+    for r in ordered:
+        d = parse_date_str(r.get("date"))
+        date_txt = d.strftime("%d.%m.%Y") if d else (r.get("date") or "")
+        for fan in (r.get("fans") or []):
+            try:
+                name, sale = fan
+            except Exception:
+                name, sale = str(fan), 0
+            ws.append([r.get("model") or "", name or "", date_txt, _parse_sale(sale)])
+            rows += 1
+    for col, width in (("A", 28), ("B", 30), ("C", 14), ("D", 16)):
+        ws.column_dimensions[col].width = width
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+    for row in ws.iter_rows(min_row=2, min_col=4, max_col=4):
+        for cell in row:
+            cell.number_format = "#,##0.00"
+    ws.freeze_panes = "A2"
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.getvalue(), rows
+
+
+async def send_reassign_xlsx(interaction, reassigns, label="reassigns"):
+    """Napravi i pošalji .xlsx (ephemeral)."""
+    if not reassigns:
+        return await interaction.followup.send("Nema reassignova za export.", ephemeral=True)
+    data, rows = await asyncio.to_thread(build_reassign_xlsx, reassigns)
+    if not rows:
+        return await interaction.followup.send("Nema nijednog fan zapisa za export.", ephemeral=True)
+    fname = f"{label}-{_local_now().strftime('%Y%m%d-%H%M')}.xlsx"
+    await interaction.followup.send(
+        f"📄 Export: {rows} red(ova) iz {len(reassigns)} reassign(a).",
+        file=discord.File(io.BytesIO(data), filename=fname),
+        ephemeral=True,
+    )
+
+
+class ConfirmAllDoneView(discord.ui.View):
+    def __init__(self, parent):
+        super().__init__(timeout=120)
+        self.parent = parent
+
+    @discord.ui.button(label="✅ Da, označi sve", style=discord.ButtonStyle.danger)
+    async def yes(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for item in self.children:
+            item.disabled = True
+        await self.parent._run_all_done(interaction)
+
+    @discord.ui.button(label="↩ Otkaži", style=discord.ButtonStyle.secondary)
+    async def no(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(content="Otkazano, ništa nije promenjeno.", view=None)
+
+
+class ReassignListActions(discord.ui.View):
+    def __init__(self, reassigns, all_reassigns=None):
+        super().__init__(timeout=1800)
+        self.reassigns = reassigns
+        self.all_reassigns = list(all_reassigns) if all_reassigns is not None else list(reassigns)
+        # ID-evi se pamte odmah, da dugmad rade i kad se lista u međuvremenu promeni
+        self.chunk_ids = [r["id"] for r in self.reassigns if r.get("id")]
+        self.all_ids = [r["id"] for r in self.all_reassigns if r.get("id")]
+        self.selected_id = None
+        if reassigns:
+            self.add_item(ReassignListSelect(reassigns))
+
+    async def _notify_ceter(self, interaction, r):
+        if not r or not r.get("user_id"):
+            return
+        guild = interaction.guild
+        user = guild.get_member(r["user_id"])
+        if not user:
+            try:
+                user = await guild.fetch_member(r["user_id"])
+            except Exception:
+                return
+        try:
+            await user.send(REASSIGN_DELETE_DM)
+        except Exception as e:
+            print("[REASSIGN] DM ceteru neuspelo:", e)
+
+    @discord.ui.button(label="✅ Urađeno", style=discord.ButtonStyle.success)
+    async def done(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.selected_id:
+            await interaction.response.send_message("Prvo izaberi reassign iz liste.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        newly_ids, _total, _conf = await asyncio.to_thread(mark_reassigns_done, [self.selected_id])
+        picked = next((x for x in self.all_reassigns if x.get("id") == self.selected_id), None)
+        if picked and newly_ids:
+            asyncio.create_task(add_done_reactions([picked]))
+        msg = "✅ Označeno kao urađeno." if newly_ids else "ℹ️ Taj reassign je već bio označen kao urađen."
+        await interaction.followup.send(msg, ephemeral=True)
+
+    @discord.ui.button(label="🗑 Izbriši", style=discord.ButtonStyle.danger)
+    async def delete(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.selected_id:
+            await interaction.response.send_message("Prvo izaberi reassign iz liste.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        r = next((x for x in self.reassigns if x["id"] == self.selected_id), None)
+        await asyncio.to_thread(delete_reassign, self.selected_id)
+        await self._notify_ceter(interaction, r)
+        await interaction.followup.send("🗑 Reassign obrisan.", ephemeral=True)
+
+    @discord.ui.button(label="📦 Označi ovaj deo kao urađeno", style=discord.ButtonStyle.primary)
+    async def chunk_done(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.chunk_ids:
+            await interaction.response.send_message(
+                "ℹ️ U ovom delu liste nema nijednog reassigna za označavanje.", ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        newly_ids, total, confirmed = await asyncio.to_thread(mark_reassigns_done, self.chunk_ids)
+        new_set = set(newly_ids)
+        fresh = [r for r in self.reassigns if r.get("id") in new_set]
+        if fresh:
+            asyncio.create_task(add_done_reactions(fresh))
+        await interaction.followup.send(
+            f"✅ Ovaj deo: sada je urađeno {confirmed}/{total} "
+            f"(novo označeno: {len(newly_ids)}). ☑️ reakcija ide samo na te nove.",
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="📄 Export .xlsx", style=discord.ButtonStyle.secondary)
+    async def export_xlsx(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            await send_reassign_xlsx(interaction, self.all_reassigns, "reassigns")
+        except Exception as e:
+            print("[EXPORT] fail:", e, flush=True)
+            await interaction.followup.send(f"❌ Export nije uspeo: {e}", ephemeral=True)
+
+    @discord.ui.button(label="↩ Vrati SVE izlistane u nerešeno", style=discord.ButtonStyle.secondary)
+    async def all_undone(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.all_ids:
+            await interaction.response.send_message("ℹ️ Nema izlistanih reassignova.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        back_ids, total = await asyncio.to_thread(mark_reassigns_undone, self.all_ids)
+        back_set = set(back_ids)
+        back = [r for r in self.all_reassigns if r.get("id") in back_set]
+        if back:
+            asyncio.create_task(remove_done_reactions(back))
+        await interaction.followup.send(
+            f"↩ Vraćeno u nerešeno: {len(back_ids)} od {total} reassign(a). "
+            "☑️ se skida, a ✅ ponovo radi na tim porukama.",
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="✔ Označi SVE izlistane kao urađeno", style=discord.ButtonStyle.secondary)
+    async def all_done(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.all_ids:
+            await interaction.response.send_message(
+                "ℹ️ Nema izlistanih reassignova za označavanje.", ephemeral=True
+            )
+            return
+        await interaction.response.send_message(
+            f"⚠️ Označiće **{len(self.all_ids)}** reassign(a) iz cele liste kao urađeno. Jesi siguran/na?",
+            view=ConfirmAllDoneView(self),
+            ephemeral=True,
+        )
+
+    async def _run_all_done(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(content="⏳ Označavam...", view=None)
+        newly_ids, total, confirmed = await asyncio.to_thread(mark_reassigns_done, self.all_ids)
+        new_set = set(newly_ids)
+        fresh = [r for r in self.all_reassigns if r.get("id") in new_set]
+        if fresh:
+            asyncio.create_task(add_done_reactions(fresh))
+        await interaction.followup.send(
+            f"✅ Cela lista: sada je urađeno {confirmed}/{total} "
+            f"(novo označeno: {len(newly_ids)}). ☑️ reakcija ide samo na te nove.",
+            ephemeral=True,
+        )
+
+
+async def _send_list_with_actions(interaction, lines, reassigns):
+    chunks = []
+    cur = []
+    cur_len = 0
+    for ln in lines:
+        if cur and cur_len + len(ln) + 1 > 1900:
+            chunks.append("\n".join(cur))
+            cur = []
+            cur_len = 0
+        cur.append(ln)
+        cur_len += len(ln) + 1
+    if cur:
+        chunks.append("\n".join(cur))
+
+    view = ReassignListActions(reassigns)
+    for i, ch in enumerate(chunks):
+        if i == 0:
+            await interaction.followup.send(ch, ephemeral=True, view=view)
+        else:
+            await interaction.followup.send(ch, ephemeral=True)
+
+
+def _ceter_sort_key(name):
+    """y -> yy -> yyy -> ostali (abecedno unutar grupe)."""
+    n = (name or "").strip().lower()
+    m = re.match(r"^(y+)", n)
+    return (len(m.group(1)) if m else 99, n)
+
+
+async def _send_items_with_actions(interaction, items, all_reassigns, limit=1900):
+    """items = [(tekst_linije, reassign_ili_None)]. Svaki chunk dobija svoja dugmad."""
+    chunks = []
+    cur_lines, cur_rs, cur_len = [], [], 0
+    for text, r in items:
+        if cur_lines and cur_len + len(text) + 1 > limit:
+            chunks.append((cur_lines, cur_rs))
+            cur_lines, cur_rs, cur_len = [], [], 0
+        cur_lines.append(text)
+        cur_len += len(text) + 1
+        if r is not None and r.get("id"):
+            cur_rs.append(r)
+    if cur_lines:
+        chunks.append((cur_lines, cur_rs))
+
+    all_list = list(all_reassigns) if all_reassigns else [r for _, r in items if r is not None and r.get("id")]
+    total = len(chunks)
+    for i, (lines_, rs_) in enumerate(chunks, start=1):
+        body = "\n".join(lines_)
+        if total > 1:
+            body = f"{body}\n*— deo {i}/{total} —*"
+        if rs_ or all_list:
+            view = ReassignListActions(rs_, all_reassigns=all_list)
+            await interaction.followup.send(body, ephemeral=True, view=view)
+        else:
+            await interaction.followup.send(body, ephemeral=True)
+
+
+_listr_counts_cache = {"t": 0.0, "data": {}}
+
+
+def _listr_counts():
+    """Broj reassignova po datumu; keš 30s da autocomplete ne obara bazu."""
+    now = time.time()
+    if now - _listr_counts_cache["t"] < 30 and _listr_counts_cache["data"]:
+        return _listr_counts_cache["data"]
+    counts = {}
+    try:
+        for r in get_reassigns(done=False) + get_reassigns(done=True):
+            d = parse_date_str(r["date"])
+            if d:
+                counts[d] = counts.get(d, 0) + 1
+    except Exception as e:
+        print("[LISTR] counts fail:", e, flush=True)
+        return _listr_counts_cache["data"]
+    _listr_counts_cache["t"] = now
+    _listr_counts_cache["data"] = counts
+    return counts
+
+
+async def listr_date_autocomplete(interaction: discord.Interaction, current: str):
+    """Predlozi: poslednjih 30 dana (danas -> unazad), bez budućnosti. Discord max 25 — kucanjem se filtrira ostatak."""
+    current = (current or "").strip()
+    q = current.lower()
+    today = _local_now().date()
+    counts = _listr_counts()
+
+    def label(d):
+        delta = (today - d).days
+        name = "danas" if delta == 0 else "juče" if delta == 1 else SR_WEEKDAYS[d.weekday()]
+        extra = f" • {counts[d]} reassign" if counts.get(d) else ""
+        return f"{d.strftime('%d.%m.%Y')} — {name}{extra}"
+
+    def choice(d):
+        return app_commands.Choice(name=label(d), value=d.strftime("%d.%m.%Y"))
+
+    typed = parse_date_str(current)
+    if typed:
+        # ukucan konkretan datum → samo on (budućnost se ne nudi)
+        return [choice(typed)] if typed <= today else []
+    days = [today - timedelta(days=i) for i in range(30)]  # danas → 29 dana unazad
+    matches = [d for d in days if not q or q in label(d).lower()]
+    return [choice(d) for d in matches[:25]]
+
+
+async def _list_reassigns_range(interaction, od, do_, status, group_by, model_q=""):
+    """Zajednička logika za /listr (po modelu) i /listch (po chatteru) u opsegu datuma."""
+    await interaction.response.defer(ephemeral=True)
+    today = _local_now().date()
+    start = parse_date_str(od)
+    if not start:
+        return await interaction.followup.send(f"❌ Neispravan datum 'od': `{od}` (koristi DD.MM.YYYY).", ephemeral=True)
+    end = parse_date_str(do_) if (do_ or "").strip() else today
+    if not end:
+        return await interaction.followup.send(f"❌ Neispravan datum 'do': `{do_}` (koristi DD.MM.YYYY).", ephemeral=True)
+    if start > end:
+        start, end = end, start
+    if start > today:
+        return await interaction.followup.send("❌ Datum ne može biti u budućnosti.", ephemeral=True)
+    if end > today:
+        end = today
+
+    open_reassigns = get_reassigns(done=False)
+    done_reassigns = get_reassigns(done=True)
+    for r in open_reassigns:
+        r["done"] = False
+    for r in done_reassigns:
+        r["done"] = True
+    reassigns = open_reassigns + done_reassigns
+    if not reassigns:
+        return await interaction.followup.send("Nema reassignova.", ephemeral=True)
+
+    mq = (model_q or "").strip().lower()
+    filtered = []
+    for r in reassigns:
+        if status == "open" and r.get("done"):
+            continue
+        if status == "done" and not r.get("done"):
+            continue
+        if mq and (r.get("model") or "").strip().lower() != mq:
+            continue
+        d = parse_date_str(r["date"])
+        if d and start <= d <= end:
+            filtered.append(r)
+    status_txt = {"open": "nerešeni", "done": "urađeni", "all": "svi"}.get(status, "nerešeni")
+    range_txt = f"{start.strftime('%d.%m.%Y')} – {end.strftime('%d.%m.%Y')} ({status_txt})"
+    if mq:
+        range_txt += f" • model: {model_q.strip()}"
+    if not filtered:
+        return await interaction.followup.send(f"Nema reassignova za {range_txt}.", ephemeral=True)
+
+    open_count = sum(1 for r in filtered if not r.get("done"))
+    items = [
+        (
+            f"📅 {range_txt} — {len(filtered)} reassign(a) "
+            f"({open_count} nerešeno, {len(filtered) - open_count} urađeno)",
+            None,
+        ),
+        ("", None),
+    ]
+    groups = {}
+    if group_by == "model":
+        for r in filtered:
+            groups.setdefault((r.get("model") or "—").strip(), []).append(r)
+        for model in sorted(groups, key=lambda m: m.lower()):
+            rs = sorted(groups[model], key=lambda r: (_date_sort_key(r["date"]), _ceter_sort_key((r.get("chatter") or "").strip())))
+            items.append((f"**{model}** ({len(rs)})", None))
+            for r in rs:
+                prefix = "✅ " if r.get("done") else ""
+                label = f"{(r.get('chatter') or '—').strip()} — {format_date_str(r['date'])}"
+                items.append((prefix + _entry_lines(r, label), r))
+            items.append(("", None))
+    else:
+        for r in filtered:
+            groups.setdefault((r.get("chatter") or "—").strip(), []).append(r)
+        for ceter in sorted(groups, key=_ceter_sort_key):
+            rs = sorted(groups[ceter], key=lambda r: (_date_sort_key(r["date"]), (r["model"] or "").lower()))
+            items.append((f"**{ceter}**", None))
+            for r in rs:
+                prefix = "✅ " if r.get("done") else ""
+                label = f"{r['model']} — {format_date_str(r['date'])}"
+                items.append((prefix + _entry_lines(r, label), r))
+            items.append(("", None))
+
+    await _send_items_with_actions(interaction, items, filtered)
+
+
+@tree.command(name="listr", description="Team: svi reassignovi poređani po modelu (A–Z) u opsegu datuma", guild=GUILD_OBJ)
+@app_commands.rename(do_="do")
+@app_commands.describe(
+    od="Od datuma — izaberi iz poslednjih 30 dana ili ukucaj (DD.MM.YYYY)",
+    do_="Do datuma — prazno = danas",
+)
+@app_commands.choices(status=[
+    app_commands.Choice(name="Samo nerešeni", value="open"),
+    app_commands.Choice(name="Svi (nerešeni + urađeni)", value="all"),
+    app_commands.Choice(name="Samo urađeni", value="done"),
+])
+@app_commands.autocomplete(od=listr_date_autocomplete, do_=listr_date_autocomplete)
+async def listr(interaction: discord.Interaction, od: str, do_: str = "", status: str = "open"):
+    await _list_reassigns_range(interaction, od, do_, status, "model")
+
+
+@tree.command(name="exportr", description="Export reassignova u .xlsx (creator/fan/date/sale)", guild=GUILD_OBJ)
+@app_commands.rename(do_="do")
+@app_commands.describe(
+    od="Od datuma (opciono, DD.MM.YYYY)",
+    do_="Do datuma (opciono, prazno = danas)",
+)
+@app_commands.choices(status=[
+    app_commands.Choice(name="Samo nerešeni", value="open"),
+    app_commands.Choice(name="Svi (nerešeni + urađeni)", value="all"),
+    app_commands.Choice(name="Samo urađeni", value="done"),
+])
+@app_commands.autocomplete(od=listr_date_autocomplete, do_=listr_date_autocomplete)
+async def exportr(interaction: discord.Interaction, od: str = "", do_: str = "", status: str = "open"):
+    await interaction.response.defer(ephemeral=True)
+    today = _local_now().date()
+    start = parse_date_str(od) if (od or "").strip() else None
+    end = parse_date_str(do_) if (do_ or "").strip() else (today if start else None)
+    if (od or "").strip() and not start:
+        return await interaction.followup.send(f"❌ Neispravan datum 'od': `{od}`.", ephemeral=True)
+    if (do_ or "").strip() and not end:
+        return await interaction.followup.send(f"❌ Neispravan datum 'do': `{do_}`.", ephemeral=True)
+    if start and end and start > end:
+        start, end = end, start
+
+    open_reassigns = get_reassigns(done=False)
+    done_reassigns = get_reassigns(done=True)
+    for r in open_reassigns:
+        r["done"] = False
+    for r in done_reassigns:
+        r["done"] = True
+    if status == "open":
+        pool = open_reassigns
+    elif status == "done":
+        pool = done_reassigns
+    else:
+        pool = open_reassigns + done_reassigns
+
+    selected = []
+    for r in pool:
+        if start:
+            d = parse_date_str(r.get("date"))
+            if not d or d < start or (end and d > end):
+                continue
+        selected.append(r)
+
+    label = "reassigns-" + {"open": "neresen", "done": "uradjen", "all": "svi"}.get(status, "neresen")
+    try:
+        await send_reassign_xlsx(interaction, selected, label)
+    except Exception as e:
+        print("[EXPORT] fail:", e, flush=True)
+        await interaction.followup.send(f"❌ Export nije uspeo: {e}", ephemeral=True)
+
+
+@tree.command(name="listch", description="Team: reassignovi po CHATTERU u izabranom opsegu datuma", guild=GUILD_OBJ)
+@app_commands.rename(do_="do")
+@app_commands.describe(
+    od="Od datuma — izaberi iz poslednjih 30 dana ili ukucaj (DD.MM.YYYY)",
+    do_="Do datuma — prazno = danas",
+)
+@app_commands.choices(status=[
+    app_commands.Choice(name="Samo nerešeni", value="open"),
+    app_commands.Choice(name="Svi (nerešeni + urađeni)", value="all"),
+    app_commands.Choice(name="Samo urađeni", value="done"),
+])
+@app_commands.autocomplete(od=listr_date_autocomplete, do_=listr_date_autocomplete)
+async def listch(interaction: discord.Interaction, od: str, do_: str = "", status: str = "open"):
+    await _list_reassigns_range(interaction, od, do_, status, "chatter")
+
+
+@tree.command(name="listundone", description="Lista nerešenih reassignova za jednog cetera", guild=GUILD_OBJ)
+@app_commands.describe(ceter="Ime cetera (chattera)")
+async def listundone(interaction: discord.Interaction, ceter: str):
+    await interaction.response.defer(ephemeral=True)
+    reassigns = get_reassigns()  # done=False po default-u -> samo nerešeni
+    query = ceter.strip().lower()
+    matched = [r for r in reassigns if r["chatter"].lower() == query]
+    if not matched:
+        return await interaction.followup.send(f"Nema nerešenih reassignova za '{ceter}'.", ephemeral=True)
+
+    groups = {}
+    for r in matched:
+        groups.setdefault(r["date"], []).append(r)
+
+    items = [(f"Nerešeni reassignovi — {ceter}", None), ("", None)]
+    for date, rs in sorted(groups.items(), key=lambda x: _date_sort_key(x[0])):
+        items.append((f"{format_date_str(date)}", None))
+        for r in rs:
+            items.append((_entry_lines(r, r["model"]), r))
+        items.append(("", None))
+
+    await _send_items_with_actions(interaction, items, matched)
+
+
+MAX_SALE = 200.0
+
+
+def _validate_sale(raw):
+    """Vraća (iznos, greška). Iznos preko MAX_SALE se odbija da se unos proveri još jednom."""
+    txt = str(raw or "").strip()
+    cleaned = txt.replace("$", "").replace(",", ".").replace(" ", "")
+    try:
+        val = float(cleaned)
+    except Exception:
+        return None, f"❌ Iznos `{txt}` nije broj. Unesi npr. `120` ili `120.5`."
+    if val <= 0:
+        return None, f"❌ Iznos mora biti veći od 0 (uneo si `{txt}`)."
+    if val > MAX_SALE:
+        return None, (
+            f"⚠️ Uneo si **${val:,.2f}**, što je više od ${MAX_SALE:,.0f}.\n"
+            "Proveri još jednom unos pa probaj ponovo. Ako je iznos stvarno toliki, javi menadžeru."
+        )
+    return val, None
+
+
+def _parse_sale(s):
+    s = str(s or "").replace("$", "").replace(",", "").replace(" ", "").strip()
+    try:
+        return float(s)
+    except Exception:
+        return 0.0
+
+
+@tree.command(name="rtotal", description="Zbir reassignova jednog cetera za mesec (gross)", guild=GUILD_OBJ)
+@app_commands.describe(ceter="Ime cetera (chattera)", mesec="Mesec u formatu MM.YYYY (npr. 09.2026)")
+@need_off_manager()
+async def rtotal(interaction: discord.Interaction, ceter: str, mesec: str = None):
+    await interaction.response.defer(ephemeral=True)
+    now = _local_now()
+    if not mesec:
+        month = now.strftime("%Y-%m")
+    else:
+        m = re.match(r"^(\d{1,2})\.(\d{4})$", mesec.strip())
+        if not m:
+            return await interaction.followup.send("❌ Format meseca: MM.YYYY", ephemeral=True)
+        month = f"{m.group(2)}-{int(m.group(1)):02d}"
+
+    reassigns = get_reassigns(done=False) + get_reassigns(done=True)
+    query = ceter.strip().lower()
+    total_reassigns = 0
+    total_fans = 0
+    total_usd = 0.0
+    for r in reassigns:
+        if r["chatter"].lower() != query:
+            continue
+        d = parse_date_str(r["date"])
+        if not d or d.strftime("%Y-%m") != month:
+            continue
+        total_reassigns += 1
+        fans = r.get("fans") or []
+        total_fans += len(fans)
+        for name, sale in fans:
+            total_usd += _parse_sale(sale)
+
+    await interaction.followup.send(
+        f"📊 **{ceter}** — {month}\n"
+        f"Reassignova: {total_reassigns}\n"
+        f"Fanova: {total_fans}\n"
+        f"Ukupno: ${total_usd:,.0f}",
+        ephemeral=True,
+    )
+
+
+@tree.command(name="rtotaltotal", description="Zbir svih reassignova svih cetera za mesec (gross)", guild=GUILD_OBJ)
+@app_commands.describe(mesec="Mesec u formatu MM.YYYY (npr. 09.2026)")
+@need_off_manager()
+async def rtotaltotal(interaction: discord.Interaction, mesec: str = None):
+    await interaction.response.defer(ephemeral=True)
+    now = _local_now()
+    if not mesec:
+        month = now.strftime("%Y-%m")
+    else:
+        m = re.match(r"^(\d{1,2})\.(\d{4})$", mesec.strip())
+        if not m:
+            return await interaction.followup.send("❌ Format meseca: MM.YYYY", ephemeral=True)
+        month = f"{m.group(2)}-{int(m.group(1)):02d}"
+
+    reassigns = get_reassigns(done=False) + get_reassigns(done=True)
+    total_reassigns = 0
+    total_fans = 0
+    total_usd = 0.0
+    per_ceter = {}
+    for r in reassigns:
+        d = parse_date_str(r["date"])
+        if not d or d.strftime("%Y-%m") != month:
+            continue
+        total_reassigns += 1
+        fans = r.get("fans") or []
+        total_fans += len(fans)
+        ceter = (r.get("chatter") or "—").strip()
+        row = per_ceter.setdefault(ceter, {"reassigns": 0, "fans": 0, "usd": 0.0})
+        row["reassigns"] += 1
+        row["fans"] += len(fans)
+        for name, sale in fans:
+            val = _parse_sale(sale)
+            total_usd += val
+            row["usd"] += val
+
+    if not per_ceter:
+        return await interaction.followup.send(f"📊 Nema reassignova za {month}.", ephemeral=True)
+
+    lines = [f"📊 **UKUPNO — {month}**", ""]
+    for ceter, row in sorted(per_ceter.items(), key=lambda x: (-x[1]["usd"], x[0].lower())):
+        lines.append(
+            f"• **{ceter}** — ${row['usd']:,.0f} "
+            f"({row['reassigns']} reassign, {row['fans']} fan)"
+        )
+    lines += [
+        "",
+        f"**TOTAL: ${total_usd:,.0f}**",
+        f"Cetera: {len(per_ceter)} | Reassignova: {total_reassigns} | Fanova: {total_fans}",
+    ]
+    await _send_chunks(interaction, lines)
+
+
+# ========== OFF DAYS ==========
+class DayPickSelect(discord.ui.Select):
+    def __init__(self, dates, taken):
+        options = []
+        for d in dates:
+            options.append(
+                discord.SelectOption(
+                    label=d.strftime("%d.%m.%Y"),
+                    value=d.isoformat(),
+                    description="zauzeto" if d in taken else SR_WEEKDAYS[d.weekday()],
+                )
+            )
+        super().__init__(
+            placeholder="🗓 Izaberi datum",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        d = datetime.strptime(self.values[0], "%Y-%m-%d").date()
+        await self.view.handle_date(interaction, d)
+
+
+class OffDayPickerView(discord.ui.View):
+    def __init__(self, taken, all_dates, on_pick):
+        super().__init__(timeout=600)
+        self.taken = taken
+        self.all_dates = all_dates
+        self.on_pick = on_pick
+        self.page = 0
+        self._render()
+
+    @property
+    def total_pages(self):
+        return (len(self.all_dates) + 24) // 25
+
+    def _page_dates(self):
+        return self.all_dates[self.page * 25:(self.page + 1) * 25]
+
+    def _render(self):
+        self.clear_items()
+        self.add_item(DayPickSelect(self._page_dates(), self.taken))
+        prev_btn = discord.ui.Button(
+            style=discord.ButtonStyle.secondary, emoji="◀", row=1, disabled=(self.page == 0)
+        )
+        prev_btn.callback = self._prev
+        next_btn = discord.ui.Button(
+            style=discord.ButtonStyle.secondary, emoji="▶", row=1,
+            disabled=(self.page >= self.total_pages - 1),
+        )
+        next_btn.callback = self._next
+        self.add_item(prev_btn)
+        self.add_item(next_btn)
+
+    async def _prev(self, interaction: discord.Interaction):
+        self.page -= 1
+        self._render()
+        await interaction.response.edit_message(view=self)
+
+    async def _next(self, interaction: discord.Interaction):
+        self.page += 1
+        self._render()
+        await interaction.response.edit_message(view=self)
+
+    async def handle_date(self, interaction: discord.Interaction, d):
+        await self.on_pick(interaction, d)
+
+
+async def book_off_days(interaction, start_date, end_date, shift):
+    days = []
+    d = start_date
+    while d <= end_date:
+        days.append(d)
+        d += timedelta(days=1)
+
+    taken = taken_dates_for_shift(shift)
+    conflict = sorted(x for x in days if x in taken)
+    if conflict:
+        msg = ", ".join(x.strftime("%d.%m.%Y") for x in conflict)
+        await interaction.response.send_message(
+            f"❌ Ne može — već zauzeti dan(i) u tvojoj smeni: {msg}", ephemeral=True
+        )
+        return
+
+    # limit: maksimalno MAX_OFF_PER_MONTH off dana po KALENDARSKOM mesecu u kom je off dan
+    per_month = {}
+    for day in days:
+        per_month[day.strftime("%Y-%m")] = per_month.get(day.strftime("%Y-%m"), 0) + 1
+    for month, cnt in sorted(per_month.items()):
+        used = count_month_off_days(interaction.user.id, month)
+        if used + cnt > MAX_OFF_PER_MONTH:
+            label = datetime.strptime(month, "%Y-%m").strftime("%m.%Y")
+            remaining = max(0, MAX_OFF_PER_MONTH - used)
+            await interaction.response.send_message(
+                f"❌ Maksimalno {MAX_OFF_PER_MONTH} off dana za mesec {label}. "
+                f"Za taj mesec već imaš {used} — ostalo ti je {remaining}, a tražiš {cnt}.",
+                ephemeral=True,
+            )
+            return
+
+    group_id = f"{interaction.user.id}-{int(datetime.now().timestamp())}"
+    # potvrdi interakciju odmah (Discord daje 3s), posao ide posle
+    try:
+        await interaction.response.defer(thinking=True)
+    except Exception as e:
+        print("[OFF] defer fail:", e, flush=True)
+
+    for day in days:
+        off_days.append({
+            "user_id": interaction.user.id,
+            "username": interaction.user.display_name,
+            "date": day.isoformat(),
+            "shift": shift,
+            "message_id": None,
+            "confirmed": False,
+            "group_id": group_id,
+            "channel_id": interaction.channel.id,
+        })
+    await asyncio.to_thread(save_off_days)
+
+    if len(days) == 1:
+        date_str = f"{days[0].strftime('%d.%m.%Y')} ({SR_WEEKDAYS[days[0].weekday()]})"
+    else:
+        date_str = (
+            f"{days[0].strftime('%d.%m.%Y')} → {days[-1].strftime('%d.%m.%Y')} ({len(days)} dana)"
+        )
+
+    channel = bot.get_channel(OFF_DAY_CHANNEL_ID)
+    if channel:
+        try:
+            await channel.send(
+                f"📅 **OFF DAY**\n"
+                f"**Datum:** {date_str}\n"
+                f"**Chatter:** {interaction.user.mention} ({interaction.user.display_name})\n"
+                f"**Smena:** {shift}"
+            )
+        except Exception as e:
+            print("[OFF] slanje u management kanal nije uspelo:", e, flush=True)
+
+    month_key = days[0].strftime("%Y-%m")
+    left = max(0, MAX_OFF_PER_MONTH - count_month_off_days(interaction.user.id, month_key))
+    month_label = days[0].strftime("%m.%Y")
+
+    msg = await interaction.edit_original_response(
+        content=(
+            f"📅 **{interaction.user.mention} je rezervisao/la off day**\n"
+            f"**Datum:** {date_str}\n"
+            f"**Smena:** {shift}\n"
+            f"**Preostalo off dana za {month_label}:** {left}\n"
+            f"Potvrdi klikom na ✅ da si video/la, ili klikni ❌ da obrišeš."
+        )
+    )
+    for e in off_days:
+        if e.get("group_id") == group_id:
+            e["message_id"] = msg.id
+    await asyncio.to_thread(save_off_days)
+    try:
+        await msg.add_reaction("✅")
+        await msg.add_reaction("❌")
+    except Exception as e:
+        print("[OFF] dodavanje reakcija nije uspelo:", e, flush=True)
+
+
+async def _require_shift(interaction):
+    shift = get_user_shift(interaction.user)
+    if shift is None:
+        await interaction.response.send_message(
+            "❌ Moraš imati tačno jednu smensku rolu (graveyard / afternoon / main).",
+            ephemeral=True,
+        )
+        return None
+    if shift == "multiple":
+        await interaction.response.send_message(
+            "❌ Imaš više smenskih rola — javi se managementu.",
+            ephemeral=True,
+        )
+        return None
+    return shift
+
+
+@tree.command(name="off", description="Rezerviši slobodan dan (off day)", guild=GUILD_OBJ)
+async def off(interaction: discord.Interaction):
+    shift = await _require_shift(interaction)
+    if not shift:
+        return
+    taken = taken_dates_for_shift(shift)
+    dates = build_date_range()
+
+    async def on_pick(i, d):
+        await book_off_days(i, d, d, shift)
+
+    view = OffDayPickerView(taken, dates, on_pick)
+    note = ""
+    if taken:
+        taken_lines = "\n".join(
+            f"- ~~{x.strftime('%d.%m.%Y')}~~" for x in sorted(taken)
+        )
+        note = f"\n\n**Već zauzeti dani ({shift} smena):**\n{taken_lines}"
+    await interaction.response.send_message(
+        f"🗓 **Off day** — izaberi datum (narednih 60 dana):{note}",
+        view=view,
+        ephemeral=True,
+    )
+
+
+@tree.command(name="multioff", description="Rezerviši više uzastopnih dana (putovanje, svadba...)", guild=GUILD_OBJ)
+async def multioff(interaction: discord.Interaction):
+    shift = await _require_shift(interaction)
+    if not shift:
+        return
+    taken = taken_dates_for_shift(shift)
+    dates = build_date_range()
+
+    async def on_start(i, d):
+        if d in taken:
+            await i.response.send_message(
+                "❌ Taj datum je već zauzet u tvojoj smeni — izaberi drugi.", ephemeral=True
+            )
+            return
+        end_dates = [x for x in dates if x > d]
+        if not end_dates:
+            await i.response.send_message("❌ Nema dostupnih datuma posle tog dana.", ephemeral=True)
+            return
+
+        async def on_end(i2, d2):
+            await book_off_days(i2, d, d2, shift)
+
+        view2 = OffDayPickerView(taken, end_dates, on_end)
+        await i.response.edit_message(
+            content=f"🗓 **Multi off** — početak: **{d.strftime('%d.%m.%Y')}**. Sada izaberi **poslednji dan**:",
+            view=view2,
+        )
+
+    view = OffDayPickerView(taken, dates, on_start)
+    await interaction.response.send_message(
+        "🗓 **Multi off** — izaberi **prvi dan** (narednih 60 dana):",
+        view=view,
+        ephemeral=True,
+    )
+
+
+async def _announce_override_in_channel(interaction, ceter, when_txt, shift):
+    """Javna poruka u kanalu gde je override urađen — da je chatter vidi (taguje ga)."""
+    ch = interaction.channel
+    if ch is None or getattr(ch, "id", None) == OFF_DAY_CHANNEL_ID:
+        return  # u off-day kanalu je već poslata poruka sa tagom
+    try:
+        await ch.send(
+            f"🛡 **OFF ODOBREN (manager override)**\n"
+            f"{ceter.mention} — tvoj off je upisan: **{when_txt}** ({shift})\n"
+            f"Odobrio: {interaction.user.mention}",
+            allowed_mentions=discord.AllowedMentions(users=[ceter], roles=False, everyone=False),
+        )
+    except Exception as e:
+        print("[OFF] override javna poruka nije uspela:", e, flush=True)
+
+
+@tree.command(name="approvedoff", description="Manager override: odobri off dan (bez limita i zauzeća)", guild=GUILD_OBJ)
+@app_commands.describe(ceter="Chatter", datum="Datum (YYYY-MM-DD ili DD.MM.YYYY)")
+@need_off_manager()
+async def approvedoff(interaction: discord.Interaction, ceter: discord.Member, datum: str):
+    shift = get_user_shift(ceter)
+    if shift is None:
+        return await interaction.response.send_message("❌ Taj član nema tačno jednu smensku rolu.", ephemeral=True)
+    if shift == "multiple":
+        return await interaction.response.send_message("❌ Član ima više smenskih rola.", ephemeral=True)
+
+    d = parse_date_str(datum)
+    if not d:
+        return await interaction.response.send_message("❌ Loš format datuma. Koristi YYYY-MM-DD ili DD.MM.YYYY.", ephemeral=True)
+
+    cover_due = (d - timedelta(days=3)).isoformat()
+    off_days.append({
+        "user_id": ceter.id,
+        "username": ceter.display_name,
+        "date": d.isoformat(),
+        "shift": shift,
+        "message_id": None,
+        "confirmed": True,
+        "group_id": f"{ceter.id}-{int(datetime.now().timestamp())}",
+        "channel_id": interaction.channel.id,
+        "approved_by": interaction.user.id,
+        "needs_cover": 1,
+        "cover_reminder_due": cover_due,
+    })
+    save_off_days()
+
+    channel = bot.get_channel(OFF_DAY_CHANNEL_ID)
+    if channel:
+        try:
+            await channel.send(
+                f"🛡 **MANAGER OVERRIDE — OFF DAY**\n"
+                f"**Datum:** {d.strftime('%d.%m.%Y')} ({SR_WEEKDAYS[d.weekday()]})\n"
+                f"**Chatter:** {ceter.mention} ({ceter.display_name})\n"
+                f"**Smena:** {shift}\n"
+                f"**Odobrio:** {interaction.user.mention}\n"
+                f"⚠️ Treba cover"
+            )
+        except Exception as e:
+            print("[OFF] MANAGER OVERRIDE slanje nije uspelo:", e)
+
+    await interaction.response.send_message(
+        f"🛡 Manager override off dan upisan za {ceter.mention} ({d.strftime('%d.%m.%Y')}, {shift}).",
+        ephemeral=True,
+    )
+    await _announce_override_in_channel(
+        interaction, ceter, f"{d.strftime('%d.%m.%Y')} ({SR_WEEKDAYS[d.weekday()]})", shift
+    )
+
+
+@tree.command(
+    name="approvedmultioff",
+    description="Manager override: odobri više off dana zaredom (bez limita i zauzeća)",
+    guild=GUILD_OBJ,
+)
+@app_commands.describe(
+    ceter="Chatter",
+    od="Prvi dan (YYYY-MM-DD ili DD.MM.YYYY)",
+    do="Poslednji dan (YYYY-MM-DD ili DD.MM.YYYY)",
+)
+@need_off_manager()
+async def approvedmultioff(interaction: discord.Interaction, ceter: discord.Member, od: str, do: str):
+    shift = get_user_shift(ceter)
+    if shift is None:
+        return await interaction.response.send_message("❌ Taj član nema tačno jednu smensku rolu.", ephemeral=True)
+    if shift == "multiple":
+        return await interaction.response.send_message("❌ Član ima više smenskih rola.", ephemeral=True)
+
+    start = parse_date_str(od)
+    end = parse_date_str(do)
+    if not start or not end:
+        return await interaction.response.send_message(
+            "❌ Loš format datuma. Koristi YYYY-MM-DD ili DD.MM.YYYY.", ephemeral=True
+        )
+    if start > end:
+        start, end = end, start
+    days = []
+    d = start
+    while d <= end:
+        days.append(d)
+        d += timedelta(days=1)
+    if len(days) > 31:
+        return await interaction.response.send_message(
+            f"❌ Opseg je {len(days)} dana — maksimum je 31.", ephemeral=True
+        )
+
+    await interaction.response.defer(ephemeral=True)
+
+    group_id = f"{ceter.id}-{int(datetime.now().timestamp())}"
+    existing = {
+        e.get("date") for e in off_days if e.get("user_id") == ceter.id
+    }
+    added = []
+    skipped = []
+    for day in days:
+        iso = day.isoformat()
+        if iso in existing:
+            skipped.append(day)
+            continue
+        off_days.append({
+            "user_id": ceter.id,
+            "username": ceter.display_name,
+            "date": iso,
+            "shift": shift,
+            "message_id": None,
+            "confirmed": True,
+            "group_id": group_id,
+            "channel_id": interaction.channel.id,
+            "approved_by": interaction.user.id,
+            "needs_cover": 1,
+            "cover_reminder_due": (day - timedelta(days=3)).isoformat(),
+        })
+        added.append(day)
+    if added:
+        await asyncio.to_thread(save_off_days)
+
+    range_txt = (
+        f"{start.strftime('%d.%m.%Y')} → {end.strftime('%d.%m.%Y')} ({len(added)} dana)"
+        if len(added) != 1
+        else f"{added[0].strftime('%d.%m.%Y')} ({SR_WEEKDAYS[added[0].weekday()]})"
+    )
+
+    channel = bot.get_channel(OFF_DAY_CHANNEL_ID)
+    if channel and added:
+        try:
+            await channel.send(
+                f"🛡 **MANAGER OVERRIDE — OFF DANI**\n"
+                f"**Datum:** {range_txt}\n"
+                f"**Chatter:** {ceter.mention} ({ceter.display_name})\n"
+                f"**Smena:** {shift}\n"
+                f"**Odobrio:** {interaction.user.mention}\n"
+                f"⚠️ Treba cover"
+            )
+        except Exception as e:
+            print("[OFF] MANAGER OVERRIDE (multi) slanje nije uspelo:", e, flush=True)
+
+    msg = f"🛡 Upisano {len(added)} off dan(a) za {ceter.mention} ({shift})."
+    if added:
+        msg += "\n" + ", ".join(x.strftime("%d.%m.%Y") for x in added)
+    if skipped:
+        msg += "\nPreskočeno (već postoji): " + ", ".join(x.strftime("%d.%m.%Y") for x in skipped)
+    print(f"[OFF] approvedmultioff {ceter} +{len(added)} (skip {len(skipped)})", flush=True)
+    await interaction.followup.send(msg, ephemeral=True)
+    if added:
+        await _announce_override_in_channel(interaction, ceter, range_txt, shift)
+
+
+@tree.command(name="loff", description="Pregled svih off dana po datumima", guild=GUILD_OBJ)
+async def loff(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    covers = await asyncio.to_thread(approved_covers)
+    if not off_days and not covers:
+        return await interaction.followup.send("Nema nijednog off dana.", ephemeral=True)
+
+    by_date = defaultdict(list)
+    for e in off_days:
+        by_date[e.get("date")].append(e)
+    for r in covers:
+        by_date[r["date"]].append({"_cover": r, "username": r.get("username")})
+
+    today = _local_now().date()
+    lines = []
+    for date_iso in sorted(k for k in by_date.keys() if k):
+        try:
+            d = datetime.strptime(date_iso, "%Y-%m-%d").date()
+        except Exception:
+            continue
+        if d < today:
+            continue
+        wd = SR_WEEKDAYS[d.weekday()]
+        names = []
+        for e in sorted(by_date[date_iso], key=lambda x: str(x.get("username", ""))):
+            if e.get("_cover"):
+                names.append(cover_line(e["_cover"]))
+                continue
+            mark = "✅" if e.get("confirmed") else "⏳"
+            if e.get("approved_by"):
+                mark = "🛡"
+            extra = " ⚠️ treba cover" if e.get("needs_cover") else ""
+            names.append(f"{mark} {e.get('username', e.get('user_id'))} ({e.get('shift')}){extra}")
+        lines.append(f"**{d.strftime('%d.%m.%Y')}** ({wd})\n" + "\n".join(names))
+
+    if not lines:
+        return await interaction.followup.send("Nema nijednog budućeg off dana.", ephemeral=True)
+
+    embed = discord.Embed(
+        title="📅 Off dani",
+        description="\n\n".join(lines),
+        color=0x00b0f4,
+    )
+    embed.set_footer(text=f"Ukupno: {len(off_days)} off dana")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@tree.command(name="checkoff", description="Proveri ko je off izabranog dana", guild=GUILD_OBJ)
+async def checkoff(interaction: discord.Interaction):
+    today = _local_now().date()
+    dates = [today + timedelta(days=i) for i in range(62)]
+    busy = set()
+    for e in off_days:
+        try:
+            busy.add(datetime.strptime(e.get("date") or "", "%Y-%m-%d").date())
+        except Exception:
+            pass
+
+    async def on_pick(i, d):
+        iso = d.isoformat()
+        entries = sorted(
+            (e for e in off_days if e.get("date") == iso),
+            key=lambda x: (str(x.get("shift") or ""), str(x.get("username") or "")),
+        )
+        title = f"📅 {d.strftime('%d.%m.%Y')} ({SR_WEEKDAYS[d.weekday()]})"
+        covers = await asyncio.to_thread(approved_covers, iso, iso)
+        if not entries and not covers:
+            return await i.response.send_message(f"{title}\nNiko nije off tog dana. ✅", ephemeral=True)
+        lines = []
+        for e in entries:
+            mark = "✅" if e.get("confirmed") else "⏳"
+            if e.get("approved_by"):
+                mark = "🛡"
+            extra = " ⚠️ treba cover" if e.get("needs_cover") else ""
+            lines.append(f"{mark} <@{e.get('user_id')}> — {e.get('username') or ''} ({e.get('shift')}){extra}")
+        lines += [cover_line(r, with_tag=True) for r in covers]
+        embed = discord.Embed(title=title, description="\n".join(lines), color=0x00b0f4)
+        embed.set_footer(text=f"Off: {len(entries)}  •  ✅ potvrđen  ⏳ čeka  🛡 odobren")
+        await i.response.send_message(embed=embed, ephemeral=True)
+
+    view = OffDayPickerView(busy, dates, on_pick)
+    await interaction.response.send_message(
+        "🔎 **Check off** — izaberi datum (\"zauzeto\" = neko je off tog dana):",
+        view=view,
+        ephemeral=True,
+    )
+
+
+class DelOffSelect(discord.ui.Select):
+    def __init__(self, entries):
+        options = []
+        for i, e in enumerate(entries[:25]):
+            try:
+                d = datetime.strptime(e["date"], "%Y-%m-%d").date()
+                date_txt = d.strftime("%d.%m.%Y")
+            except Exception:
+                date_txt = str(e.get("date"))
+            mark = "✅" if e.get("confirmed") else "⏳"
+            label = f"{mark} {date_txt} — {e.get('username') or e.get('user_id')}"
+            options.append(
+                discord.SelectOption(label=label[:100], value=str(i), description=str(e.get("shift"))[:50])
+            )
+        super().__init__(placeholder="Izaberi off dan(e) za brisanje", min_values=1, max_values=min(25, len(options)), options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.picked = [int(v) for v in self.values]
+        await interaction.response.send_message(
+            f"Izabrano: {len(self.view.picked)}. Sada klikni 🗑 Obriši.", ephemeral=True
+        )
+
+
+class DelOffView(discord.ui.View):
+    def __init__(self, entries):
+        super().__init__(timeout=600)
+        self.entries = entries[:25]
+        self.picked = []
+        self.add_item(DelOffSelect(self.entries))
+
+    @discord.ui.button(label="🗑 Obriši izabrano", style=discord.ButtonStyle.danger)
+    async def do_delete(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.picked:
+            return await interaction.response.send_message("Prvo izaberi iz liste.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        targets = [self.entries[i] for i in self.picked if i < len(self.entries)]
+        removed = []
+        for t in targets:
+            for e in list(off_days):
+                if (
+                    e.get("user_id") == t.get("user_id")
+                    and e.get("date") == t.get("date")
+                    and e.get("shift") == t.get("shift")
+                ):
+                    off_days.remove(e)
+                    removed.append(e)
+        if removed:
+            await asyncio.to_thread(save_off_days)
+        # probaj da obrišeš i poruku o off danu
+        for e in removed:
+            ch = bot.get_channel(e.get("channel_id")) if e.get("channel_id") else None
+            if ch and e.get("message_id"):
+                try:
+                    m = await ch.fetch_message(e["message_id"])
+                    await m.delete()
+                except Exception as ex:
+                    print("[OFF] brisanje poruke nije uspelo:", ex, flush=True)
+        names = ", ".join(
+            f"{e.get('username')} {format_date_str(e.get('date'))}" for e in removed
+        ) or "—"
+        print(f"[OFF] obrisano {len(removed)} off dana ({interaction.user})", flush=True)
+        await interaction.followup.send(
+            f"🗑 Obrisano {len(removed)} off dan(a): {names}", ephemeral=True
+        )
+
+
+@tree.command(name="deloff", description="Obriši off dan(e) — npr. greškom unete", guild=GUILD_OBJ)
+@app_commands.describe(
+    ceter="Ime chattera (opciono, filter)",
+    samo_nepotvrdjeni="Prikaži samo one koji čekaju potvrdu (podrazumevano da)",
+)
+@need_off_manager()
+async def deloff(interaction: discord.Interaction, ceter: str = "", samo_nepotvrdjeni: bool = True):
+    await interaction.response.defer(ephemeral=True)
+    today = _local_now().date()
+    q = (ceter or "").strip().lower()
+    entries = []
+    for e in off_days:
+        try:
+            d = datetime.strptime(e["date"], "%Y-%m-%d").date()
+        except Exception:
+            continue
+        if d < today:
+            continue
+        if samo_nepotvrdjeni and e.get("confirmed"):
+            continue
+        if q and q not in str(e.get("username", "")).lower():
+            continue
+        entries.append(e)
+
+    if not entries:
+        return await interaction.followup.send(
+            "Nema off dana koji odgovaraju filteru.", ephemeral=True
+        )
+
+    entries.sort(key=lambda e: (e.get("date") or "", str(e.get("username") or "")))
+    head = f"Nađeno {len(entries)} off dan(a)"
+    if len(entries) > 25:
+        head += " — prikazano prvih 25 (suzi filterom)"
+    await interaction.followup.send(head, view=DelOffView(entries), ephemeral=True)
+
+
+@bot.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+    guild = bot.get_guild(payload.guild_id) if payload.guild_id else None
+    if not guild:
+        return
+    member = payload.member
+    if member is None:
+        try:
+            member = await guild.fetch_member(payload.user_id)
+        except Exception:
+            return
+    if member.bot:
+        return
+
+    # /reassign potvrda
+    if payload.message_id in reassign_msg_ids:
+        info = get_reassign_by_message(payload.message_id)
+        if info is not None and str(payload.emoji) == "✅" and not info["done"]:
+            if not any(r.id in REASSIGN_DONE_ROLE_IDS for r in getattr(member, "roles", [])):
+                print(f"[REASSIGN] ✅ bez prava: {member} (msg {payload.message_id})", flush=True)
+                try:
+                    ch = bot.get_channel(payload.channel_id)
+                    msg_obj = await ch.fetch_message(payload.message_id) if ch else None
+                    if msg_obj:
+                        await msg_obj.remove_reaction("✅", member)
+                except Exception as ex:
+                    print("[REASSIGN] skidanje reakcije nije uspelo:", ex, flush=True)
+                return
+            mark_reassign_done(info["id"])
+            reassign_msg_ids.discard(payload.message_id)
+            if info.get("ticket_msg_id"):
+                reassign_msg_ids.discard(info["ticket_msg_id"])
+            if info.get("overview_msg_id"):
+                reassign_msg_ids.discard(info["overview_msg_id"])
+            ticket_channel = bot.get_channel(info["channel_id"])
+            ticket_msg_id = info.get("ticket_msg_id")
+            if ticket_channel and ticket_msg_id:
+                try:
+                    msg = await ticket_channel.fetch_message(ticket_msg_id)
+                    await msg.add_reaction(DONE_EMOJI)
+                except Exception as e:
+                    print("[REASSIGN] ticket react fail:", e)
+
+            overview_channel = bot.get_channel(REASSIGN_CHANNEL_ID)
+            overview_msg_id = info.get("overview_msg_id")
+            if overview_channel and overview_msg_id:
+                try:
+                    msg = await overview_channel.fetch_message(overview_msg_id)
+                    await msg.add_reaction(DONE_EMOJI)
+                except Exception as e:
+                    print("[REASSIGN] overview react fail:", e)
+        return
+
+    # /farm potvrda
+    if payload.message_id in farm_reminders:
+        info = farm_reminders.get(payload.message_id)
+        if info and str(payload.emoji) == "✅" and member.id == info["user_id"]:
+            info["done"] = True
+            channel = bot.get_channel(payload.channel_id)
+            if channel:
+                try:
+                    qmsg = await channel.fetch_message(payload.message_id)
+                    await qmsg.edit(content=f"{qmsg.content}\n\n✅ Odgovoreno.")
+                except Exception as e:
+                    print("[FARM] confirm edit fail:", e)
+        return
+
+    # /off otkazivanje — potvrda (✅ na cancel request poruci, role required)
+    if payload.message_id in off_cancel_requests:
+        info = off_cancel_requests.get(payload.message_id)
+        if info and str(payload.emoji) == "✅":
+            has_role = any(r.id == OFF_CANCEL_ROLE_ID for r in member.roles)
+            if has_role:
+                off_message_id = info["off_message_id"]
+                user_id = info["user_id"]
+                off_channel_id = info.get("off_channel_id")
+                off_days[:] = [e for e in off_days if e.get("message_id") != off_message_id]
+                save_off_days()
+                off_cancel_requests.pop(payload.message_id, None)
+                # edit reply (zahtev) na potvrđeno
+                channel = bot.get_channel(payload.channel_id)
+                if channel:
+                    try:
+                        msg = await channel.fetch_message(payload.message_id)
+                        await msg.edit(content=f"✅ Off day je obrisan — <@{user_id}>")
+                        await msg.clear_reactions()
+                    except Exception as e:
+                        print("[OFF] cancel confirm edit fail:", e)
+                # edit originalnu off-day poruku
+                chatter_channel = bot.get_channel(off_channel_id) if off_channel_id else None
+                if chatter_channel:
+                    try:
+                        off_msg = await chatter_channel.fetch_message(off_message_id)
+                        await off_msg.edit(content=f"{off_msg.content}\n\n❌ Off day je obrisan.")
+                    except Exception as e:
+                        print("[OFF] cancel orig edit fail:", e)
+        return
+
+    entries = [e for e in off_days if e.get("message_id") == payload.message_id]
+    if not entries:
+        return
+
+    emoji = str(payload.emoji)
+    channel = bot.get_channel(payload.channel_id)
+
+    if emoji == "✅":
+        if member.id == entries[0].get("user_id") and not entries[0].get("confirmed"):
+            for e in entries:
+                e["confirmed"] = True
+            save_off_days()
+            if channel:
+                try:
+                    msg = await channel.fetch_message(payload.message_id)
+                    await msg.edit(
+                        content=f"{msg.content}\n\n✅ Potvrđeno od strane {member.mention}"
+                    )
+                except Exception as e:
+                    print("[OFF] edit confirm fail:", e)
+
+    elif emoji == "❌":
+        # admin (manage_roles) može direktno da obriše
+        if member.guild_permissions.manage_roles:
+            off_days[:] = [e for e in off_days if e.get("message_id") != payload.message_id]
+            save_off_days()
+            if channel:
+                try:
+                    msg = await channel.fetch_message(payload.message_id)
+                    await msg.edit(content="❌ Off day je obrisan.")
+                    await msg.clear_reactions()
+                except Exception as e:
+                    print("[OFF] edit delete fail:", e)
+        # chatter traži otkazivanje (čeka potvrdu role)
+        elif member.id == entries[0].get("user_id"):
+            dates = ", ".join(sorted({e.get("date") for e in entries if e.get("date")}))
+            # reply na originalnu poruku — taguje rolu
+            try:
+                orig_msg = await channel.fetch_message(payload.message_id)
+                cm = await orig_msg.reply(
+                    f"🔔 <@&{OFF_CANCEL_ROLE_ID}> — potvrdi brisanje off dana za <@{member.id}> ({dates}).",
+                    mention_author=False,
+                )
+                await cm.add_reaction("✅")
+                off_cancel_requests[cm.id] = {"off_message_id": payload.message_id, "user_id": member.id, "off_channel_id": payload.channel_id}
+            except Exception as e:
+                print("[OFF] cancel request send fail:", e)
+            # edit originalnu poruku
+            try:
+                msg = await channel.fetch_message(payload.message_id)
+                await msg.edit(content=f"{msg.content}\n\n⏳ Otkazivanje zatraženo — čeka potvrdu.")
+            except Exception as e:
+                print("[OFF] cancel edit fail:", e)
+
+
+@tasks.loop(minutes=1)
+async def off_day_reminder_loop():
+    now = _local_now()
+    if now.hour != 10:
+        return
+    today_iso = now.date().isoformat()
+    if get_state("last_off_reminder_date") == today_iso:
+        return
+    channel = bot.get_channel(OFF_DAY_CHANNEL_ID)
+    if not channel:
+        return
+
+    tomorrow = now.date() + timedelta(days=1)
+    tomorrow_iso = tomorrow.isoformat()
+    entries = [e for e in off_days if e.get("date") == tomorrow_iso]
+    covers = approved_covers(tomorrow_iso, tomorrow_iso)
+    if entries or covers:
+        lines = []
+        for e in sorted(entries, key=lambda x: str(x.get("username", ""))):
+            lines.append(f"• <@{e.get('user_id')}> — {e.get('shift')}")
+        lines += ["• " + cover_line(r, with_tag=True) for r in covers]
+        date_str = tomorrow.strftime("%d.%m.%Y")
+        try:
+            await channel.send(
+                f"🔔 **Podsetnik — off dani za sutra** ({date_str}):\n"
+                + "\n".join(lines)
+                + f"\n\n<@{REMINDER_TARGET_USER_ID}>"
+            )
+        except Exception as e:
+            print("[OFF] reminder send fail:", e)
+            return
+    set_state("last_off_reminder_date", today_iso)
+
+
+@off_day_reminder_loop.before_loop
+async def _before_off_reminder():
+    await bot.wait_until_ready()
+
+
+@tasks.loop(minutes=1)
+async def farm_reminder_loop():
+    now = time.time()
+    for msg_id in list(farm_reminders.keys()):
+        info = farm_reminders.get(msg_id)
+        if not info:
+            continue
+        if info["done"]:
+            farm_reminders.pop(msg_id, None)
+            continue
+        elapsed = now - info["created_at"]
+        channel = bot.get_channel(info["channel_id"])
+        for i, threshold in enumerate(FARM_REMINDER_TIMES):
+            if elapsed >= threshold and not info["sent"][i]:
+                info["sent"][i] = True
+                if channel:
+                    try:
+                        qmsg = await channel.fetch_message(msg_id)
+                        await qmsg.reply(
+                            f"⏰ <@{info['user_id']}> podsetnik: reaguj ✅ na pitanje o farmi (da li je fan dodat na liste i ažurirane beleške).",
+                            mention_author=False,
+                        )
+                    except Exception as e:
+                        print("[FARM] reminder fail:", e)
+        if elapsed >= FARM_REMINDER_TIMES[-1] and all(info["sent"]):
+            farm_reminders.pop(msg_id, None)
+
+
+@farm_reminder_loop.before_loop
+async def _before_farm_reminder():
+    await bot.wait_until_ready()
+
+
+@tasks.loop(minutes=30)
+async def off_confirm_reminder_loop():
+    today = _local_now().date()
+    for e in list(off_days):
+        if e.get("confirmed"):
+            continue
+        try:
+            d = datetime.strptime(e["date"], "%Y-%m-%d").date()
+        except Exception:
+            continue
+        if d < today:
+            continue
+        key = f"off_confirm_reminders:{e.get('user_id')}:{e.get('date')}"
+        sent = int(get_state(key) or 0)
+        if sent >= MAX_TAG_REMINDERS:
+            continue
+        ch = bot.get_channel(e.get("channel_id")) if e.get("channel_id") else None
+        if not ch:
+            continue
+        try:
+            left = MAX_TAG_REMINDERS - sent - 1
+            suffix = "" if left else " (poslednji podsetnik)"
+            await ch.send(
+                f"⏳ <@{e.get('user_id')}> — nisi potvrdio/la svoj off day ({d.strftime('%d.%m.%Y')}). "
+                f"Klikni ✅ (potvrda) ili ❌ (otkazivanje) na svoju off-day poruku."
+                f"{suffix}"
+            )
+            set_state(key, str(sent + 1))
+        except Exception as ex:
+            print("[OFF] confirm reminder fail:", ex, flush=True)
+
+
+@off_confirm_reminder_loop.before_loop
+async def _before_off_confirm_reminder():
+    await bot.wait_until_ready()
+
+
+# ========== COVER PODSETNIK ==========
+class CoverReminderView(discord.ui.View):
+    def __init__(self, entry):
+        super().__init__(timeout=None)
+        self.entry = entry
+
+    @discord.ui.button(label="🔁 Podseti me sutra", style=discord.ButtonStyle.secondary)
+    async def remind_tomorrow(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.entry["cover_reminder_due"] = (_local_now().date() + timedelta(days=1)).isoformat()
+        save_off_days()
+        await interaction.response.send_message("🔁 Podsetiću te sutra.", ephemeral=True)
+
+    @discord.ui.button(label="✅ Nađen cover", style=discord.ButtonStyle.success)
+    async def cover_found(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.entry["needs_cover"] = 0
+        save_off_days()
+        await interaction.response.send_message("✅ Cover nađen — prestajem da podsećam.", ephemeral=True)
+
+
+@tasks.loop(minutes=60)
+async def cover_reminder_loop():
+    now = _local_now()
+    if now.hour != 11:
+        return
+    today_iso = now.date().isoformat()
+    if get_state("last_cover_reminder_date") == today_iso:
+        return
+    today = now.date()
+    changed = False
+    for e in list(off_days):
+        if not e.get("needs_cover"):
+            continue
+        try:
+            d = datetime.strptime(e["date"], "%Y-%m-%d").date()
+        except Exception:
+            continue
+        if d < today:
+            e["needs_cover"] = 0
+            changed = True
+            continue
+        due = e.get("cover_reminder_due")
+        if not due:
+            continue
+        try:
+            due_d = datetime.strptime(due, "%Y-%m-%d").date()
+        except Exception:
+            continue
+        if due_d <= today:
+            manager_id = e.get("approved_by")
+            channel = bot.get_channel(OFF_DAY_CHANNEL_ID)
+            if manager_id and channel:
+                try:
+                    await channel.send(
+                        f"🛡 <@{manager_id}> — još nije nađen cover za off dan <@{e['user_id']}> ({e.get('username')}) {d.strftime('%d.%m.%Y')}.",
+                        view=CoverReminderView(e),
+                    )
+                except Exception as ex:
+                    print("[COVER] reminder fail:", ex)
+    if changed:
+        save_off_days()
+    set_state("last_cover_reminder_date", today_iso)
+
+
+@cover_reminder_loop.before_loop
+async def _before_cover_reminder():
+    await bot.wait_until_ready()
+
+
+# ---------- BRIDGE (telegram -> discord) ----------
+_bridge_started = False
+
+
+async def handle_health(request):
+    return web.Response(text="ok" if bot.is_ready() else "starting (discord not ready)")
+
+
+def _bridge_not_ready():
+    if not bot.is_ready():
+        return web.json_response({"ok": False, "error": "Discord bot još nije spreman (restart/deploy u toku), probaj ponovo za minut."}, status=503)
+    return None
+
+
+TEAM_ANNOUNCE_CHANNELS = {f"t{i}": f"announcements-team-{i}" for i in range(1, 12)}
+TEAM_ANNOUNCE_CHANNELS["ct"] = "announcements-cover-team"
+ALL_ANNOUNCE_ROLE_ID = 1410962215770656768
+
+
+def normalize_shift(s):
+    s = (s or "").strip().lower()
+    if s in ("after", "afternoon"):
+        return "afternoon"
+    if s in ("grave", "graveyard"):
+        return "graveyard"
+    if s == "main":
+        return "main"
+    return None
+
+
+async def handle_bridge_announcement(request):
+    try:
+        return await _bridge_announcement_impl(request)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return web.json_response({"ok": False, "error": f"interna greška: {e}"}, status=500)
+
+
+async def _bridge_announcement_impl(request):
+    if not BRIDGE_TOKEN:
+        return web.json_response({"ok": False, "error": "bridge disabled"}, status=403)
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid json"}, status=400)
+    if data.get("token") != BRIDGE_TOKEN:
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    text = (data.get("text") or "").strip()
+    if not text:
+        return web.json_response({"ok": False, "error": "empty text"}, status=400)
+    nr = _bridge_not_ready()
+    if nr:
+        return nr
+    guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
+    if not guild:
+        return web.json_response({"ok": False, "error": "guild not found"}, status=500)
+
+    lines = text.splitlines()
+    head = lines[0].strip().lower() if lines else ""
+    body = "\n".join(lines[1:]).strip()
+    if not body:
+        return web.json_response({"ok": False, "error": "Nema teksta poruke."}, status=400)
+
+    all_announce = [
+        ch for ch in guild.channels
+        if isinstance(ch, discord.TextChannel) and "announcement" in ch.name.lower()
+    ]
+    shift = normalize_shift(head)
+    mention = ""
+    targets = []
+
+    if shift:
+        role_id = SHIFT_ROLES.get(shift)
+        mention = f"<@&{role_id}>" if role_id else f"@{shift}"
+        targets = all_announce
+        mode = f"shift={shift}"
+    elif head in ("all", "svi", "sve"):
+        mention = f"<@&{ALL_ANNOUNCE_ROLE_ID}>"
+        targets = all_announce
+        mode = "all"
+    elif head in TEAM_ANNOUNCE_CHANNELS:
+        want = TEAM_ANNOUNCE_CHANNELS[head]
+        targets = [ch for ch in all_announce if ch.name.lower() == want]
+        if not targets:
+            return web.json_response(
+                {"ok": False, "error": f"Nema kanala '{want}' na serveru."}, status=400
+            )
+        mode = f"team={head}"
+    else:
+        return web.json_response(
+            {
+                "ok": False,
+                "error": (
+                    "Prva linija mora biti: smena (main/afternoon/grave), "
+                    "tim (t1-t10, ct) ili all."
+                ),
+            },
+            status=400,
+        )
+
+    if not targets:
+        return web.json_response({"ok": False, "error": "Nema announcement kanala."}, status=400)
+
+    full_text = f"{mention}\n{body}" if mention else body
+    print(f"[ANNOUNCE] {mode} kanali={[c.name for c in targets]}", flush=True)
+    sent = []
+    skipped = []
+    for ch in targets:
+        try:
+            await ch.send(full_text, allowed_mentions=discord.AllowedMentions(roles=True))
+            sent.append(ch.name)
+        except Exception as e:
+            skipped.append(f"{ch.name} (greška)")
+            print("[ANNOUNCE] send fail:", e)
+    return web.json_response({"ok": True, "sent": sent, "skipped": skipped})
+
+
+async def handle_bridge_as(request):
+    if not BRIDGE_TOKEN:
+        return web.json_response({"ok": False, "error": "bridge disabled"}, status=403)
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid json"}, status=400)
+    if data.get("token") != BRIDGE_TOKEN:
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    text = (data.get("text") or "").strip()
+    if not text:
+        return web.json_response({"ok": False, "error": "empty text"}, status=400)
+    nr = _bridge_not_ready()
+    if nr:
+        return nr
+    guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
+    if not guild:
+        return web.json_response({"ok": False, "error": "guild not found"}, status=500)
+    check_channel = None
+    if AS_CHECK_CHANNEL_ID:
+        try:
+            check_channel = bot.get_channel(int(AS_CHECK_CHANNEL_ID))
+        except Exception:
+            check_channel = None
+    result = await route_schedule(guild, text, check_channel=check_channel)
+    return web.json_response(result)
+
+
+async def start_bridge_server():
+    global _bridge_started
+    if _bridge_started:
+        return
+    _bridge_started = True
+    app = web.Application()
+    app.router.add_get("/", handle_health)
+    app.router.add_post("/as", handle_bridge_as)
+    app.router.add_post("/announcement", handle_bridge_announcement)
+    app.router.add_get("/qc_inbox", handle_qc_inbox)
+    app.router.add_post("/qc_inbox/ack", handle_qc_ack)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", BRIDGE_PORT)
+    await site.start()
+    print(f"[BRIDGE] HTTP server sluša na portu {BRIDGE_PORT}")
+
+
+# ---------- SEED (jednokratno vraćanje izgubljenih off dana) ----------
+SEED_OFF_DAYS = [
+    ("kvu", "graveyard", ["2026-08-28", "2026-08-29"]),
+    ("khazperix", "afternoon", ["2026-08-28", "2026-08-23", "2026-09-07"]),
+    ("ckevuz", "main", ["2026-08-30", "2026-09-06", "2026-08-27"]),
+    ("Dejan", "graveyard", ["2026-08-22", "2026-08-23", "2026-08-30"]),
+    ("Nemac", "main", ["2026-08-23", "2026-09-01"]),
+]
+
+
+async def seed_off_days(guild):
+    added = 0
+    missing = []
+    for name, shift, dates in SEED_OFF_DAYS:
+        member = _find_member_by_name(guild, name, None)
+        if not member:
+            missing.append(name)
+            continue
+        for d in dates:
+            if any(e.get("user_id") == member.id and e.get("date") == d for e in off_days):
+                continue
+            off_days.append({
+                "user_id": member.id,
+                "username": member.display_name or name,
+                "date": d,
+                "shift": shift,
+                "message_id": None,
+                "confirmed": True,
+                "group_id": None,
+            })
+            added += 1
+    if added:
+        save_off_days()
+        print(f"[SEED] vraćeno {added} off dana")
+    if missing:
+        print(f"[SEED] upozorenje: nije nađen member za: {', '.join(missing)}")
+
+
+# ========== /test — test posle obuke (osnovni + tehnički) ==========
+TEST_DURATION_MIN = 45
+TEST_REVIEW_ROLE_IDS = [1410962105749995591, 1504564869569970196]
+TEST_REVIEW_REMIND_HOURS = 5
+
+TEST_TITLES = {
+    "osnovni": "Nakon zavrsenih obuka - Test potrebno uraditi pre polaska sa radom (osnovni deo)",
+    "tehnicki": "Nakon zavrsenih obuka - Test potrebno uraditi pre polaska sa radom (tehnicki deo)",
+}
+TEST_QUESTIONS = {
+    "osnovni": [
+        "1. Za koje stvari su propisani penali? (najvise napisi o tos-u, sta je itd.)",
+        "2. Kada usledjuje direktan otkaz?",
+        "3. Koja su tvoja glavna zaduzenja?",
+        "4. Sta radis pre ulaska u smenu? (pored pripreme za smenu)",
+        "5. Sta ti je ukljuceno u toku smene?",
+        "6. Sta znaci kada pored kreatorke imas inb 1/inb2/inb3? Kako postupas ako nemas da selectujes neki od inboxa na kreatorci?",
+        "7. Sta je potrebno uraditi kada dobijes down time report za kreatorku za koju si assignovan/a?",
+        "8. Cemu sluzi komanda !chelp",
+        "9. Koja komanda se koristi za vise informacija o custom request-u, kako se salje upit, koga i u kojoj formi pitas za custom?",
+        "10. Kako i gde se prijavljuje farm i koji je prag?",
+        "11. Za sta pitas VA tim na telegramu a za sta pitas menadzere u tiketu?",
+        "12. Sem dvojice menadzera, tu su jos neke bitne role - ukratko napisi za sta njih kontaktiras i kada su dostupni?",
+        "13. Za sta je namenjen tiket?",
+        "14. Kako funkcionise raspored?",
+        "15. Kako se prijavljuje day off?",
+        "16. Kako se salje upit za day off ako je taj dan zauzet?",
+        "17. Kako se submituje reassign za prodaju koju je bot ostvario?",
+        "18. Kako da saznas vise informacija o kreatorki?",
+        "19. Kako saljes upit za cover ako recimo kasnis prvih sat vremena?",
+        "20. Kako funkcionise isplata?",
+    ],
+    "tehnicki": [
+        "1. Kada ti pustas mm?",
+        "1.1 Kome se uvek salju mmovi a ko se uvek excluduje?",
+        "2. Kada pitchujemo secret? (hint - 3 situacije)",
+        "3. Sta je small talk? Navedi primenu small talk-a",
+        "4. Sta je ppv i sta se sve moze svesti pod ppv-em?",
+        "5. Za sta sluze followupovi ispod ppv-a?",
+        "6. Za sta koristimo objectione?",
+        "6.1 Iskucaj 3 objectiona.",
+        "6.2 Kada dajemo discount za ppv?",
+        "7. Na cemu insistiramo posle kupovine mmppv-a?",
+        "7.1 Kako upsellujemo mmppv?",
+        "8. Kako se razlikuje ulazak u intro skriptu nakon kupljenog welcome ppv-a?",
+    ],
+}
+TEST_LABELS = {"osnovni": "Osnovni", "tehnicki": "Tehnički"}
+
+
+def _test_db_init():
+    conn = _db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lv_tests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            channel_id INTEGER NOT NULL,
+            first_kind TEXT NOT NULL,
+            stage INTEGER DEFAULT 1,
+            msg1_id INTEGER,
+            msg2_id INTEGER,
+            review_msg_id INTEGER,
+            started1 TEXT,
+            done1 TEXT,
+            started2 TEXT,
+            done2 TEXT,
+            expired_notified INTEGER DEFAULT 0,
+            reviewed_by INTEGER,
+            reviewed_at TEXT,
+            last_reminder TEXT
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def _test_other(kind):
+    return "tehnicki" if kind == "osnovni" else "osnovni"
+
+
+def _test_text(kind, member_mention, deadline, part_no):
+    qs = "\n".join(TEST_QUESTIONS[kind])
+    ts = int(deadline.timestamp())
+    return (
+        f"📝 **TEST {part_no}/2 — {TEST_LABELS[kind].upper()}**\n"
+        f"{member_mention}\n"
+        f"**{TEST_TITLES[kind]}**\n\n"
+        f"{qs}\n\n"
+        f"⏱ Imaš **{TEST_DURATION_MIN} min** — rok: <t:{ts}:t> (<t:{ts}:R>)\n"
+        f"Odgovore piši ovde u kanalu, pa klikni **✅ Završio/la sam test**."
+    )
+
+
+def _test_get(where, val):
+    conn = _db()
+    row = conn.execute(f"SELECT * FROM lv_tests WHERE {where}=?", (val,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def _test_update(test_id, **fields):
+    if not fields:
+        return
+    cols = ", ".join(f"{k}=?" for k in fields)
+    conn = _db()
+    conn.execute(f"UPDATE lv_tests SET {cols} WHERE id=?", (*fields.values(), test_id))
+    conn.commit()
+    conn.close()
+
+
+def _test_find_by_message(message_id):
+    conn = _db()
+    row = conn.execute(
+        "SELECT * FROM lv_tests WHERE msg1_id=? OR msg2_id=? OR review_msg_id=?",
+        (message_id, message_id, message_id),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def _test_review_mentions():
+    return " ".join(f"<@&{r}>" for r in TEST_REVIEW_ROLE_IDS)
+
+
+def _disabled_view(label, emoji, style):
+    v = discord.ui.View(timeout=None)
+    v.add_item(discord.ui.Button(label=label, emoji=emoji, style=style, disabled=True))
+    return v
+
+
+class TestDoneView(discord.ui.View):
+    """Persistentno dugme ispod svakog testa (radi i posle restarta)."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Završio/la sam test", emoji="✅", style=discord.ButtonStyle.success, custom_id="lvtest_done")
+    async def done(self, interaction: discord.Interaction, button: discord.ui.Button):
+        t = await asyncio.to_thread(_test_find_by_message, interaction.message.id)
+        if not t:
+            return await interaction.response.send_message("❌ Ne nalazim ovaj test u bazi.", ephemeral=True)
+        if interaction.user.id != t["user_id"]:
+            return await interaction.response.send_message("❌ Samo osoba koja radi test može da ga završi.", ephemeral=True)
+
+        now = _local_now()
+        is_first = interaction.message.id == t["msg1_id"]
+        if (is_first and t["done1"]) or (not is_first and t["done2"]):
+            return await interaction.response.send_message("Ovaj test je već označen kao završen.", ephemeral=True)
+
+        await interaction.response.defer()
+        try:
+            await interaction.message.edit(view=_disabled_view("Završeno", "✅", discord.ButtonStyle.success))
+        except Exception:
+            pass
+        channel = interaction.channel
+        member_mention = interaction.user.mention
+
+        if is_first:
+            second = _test_other(t["first_kind"])
+            deadline = now + timedelta(minutes=TEST_DURATION_MIN)
+            msg2 = await channel.send(
+                _test_text(second, member_mention, deadline, 2),
+                view=TestDoneView(),
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+            )
+            await asyncio.to_thread(
+                _test_update, t["id"],
+                done1=now.isoformat(), started2=now.isoformat(), msg2_id=msg2.id, stage=2, expired_notified=0,
+            )
+        else:
+            review = await channel.send(
+                f"📋 **TEST ZAVRŠEN — čeka pregled**\n"
+                f"{member_mention} je završio/la oba testa (osnovni + tehnički).\n"
+                f"{_test_review_mentions()} — pregledajte odgovore u ovom kanalu i kliknite **👀 Test pregledan**.",
+                view=TestReviewView(),
+                allowed_mentions=discord.AllowedMentions(users=False, roles=True, everyone=False),
+            )
+            await asyncio.to_thread(
+                _test_update, t["id"],
+                done2=now.isoformat(), review_msg_id=review.id, stage=3, last_reminder=now.isoformat(),
+            )
+
+
+class TestReviewView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Test pregledan", emoji="👀", style=discord.ButtonStyle.primary, custom_id="lvtest_reviewed")
+    async def reviewed(self, interaction: discord.Interaction, button: discord.ui.Button):
+        roles = {r.id for r in getattr(interaction.user, "roles", [])}
+        if not roles.intersection(TEST_REVIEW_ROLE_IDS):
+            return await interaction.response.send_message("❌ Samo menadžeri mogu da označe test kao pregledan.", ephemeral=True)
+        t = await asyncio.to_thread(_test_find_by_message, interaction.message.id)
+        if not t:
+            return await interaction.response.send_message("❌ Ne nalazim ovaj test u bazi.", ephemeral=True)
+        if t["reviewed_by"]:
+            return await interaction.response.send_message("Test je već označen kao pregledan.", ephemeral=True)
+        now = _local_now()
+        await asyncio.to_thread(_test_update, t["id"], reviewed_by=interaction.user.id, reviewed_at=now.isoformat(), stage=4)
+        await interaction.response.edit_message(
+            view=_disabled_view(f"Pregledao/la: {interaction.user.display_name}"[:80], "👀", discord.ButtonStyle.primary)
+        )
+        await interaction.followup.send(f"✅ Test za <@{t['user_id']}> je pregledan ({interaction.user.mention}).")
+
+
+class TestKindSelect(discord.ui.Select):
+    def __init__(self):
+        super().__init__(
+            placeholder="Izaberi test",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(label="Osnovni", value="osnovni", description="Preporučeno da se radi prvo", emoji="📘"),
+                discord.SelectOption(label="Tehnički", value="tehnicki", description="Drugi deo testa", emoji="🛠"),
+            ],
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        kind = self.values[0]
+        now = _local_now()
+        deadline = now + timedelta(minutes=TEST_DURATION_MIN)
+        await interaction.response.edit_message(
+            content=f"✅ Pokrenut test: **{TEST_LABELS[kind]}**. Tajmer od {TEST_DURATION_MIN} min je krenuo.",
+            view=None,
+        )
+        msg = await interaction.channel.send(
+            _test_text(kind, interaction.user.mention, deadline, 1),
+            view=TestDoneView(),
+            allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+        )
+
+        def _insert():
+            conn = _db()
+            conn.execute(
+                "INSERT INTO lv_tests (user_id, channel_id, first_kind, stage, msg1_id, started1) VALUES (?,?,?,?,?,?)",
+                (interaction.user.id, interaction.channel.id, kind, 1, msg.id, now.isoformat()),
+            )
+            conn.commit()
+            conn.close()
+
+        await asyncio.to_thread(_insert)
+
+
+class TestKindView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+        self.add_item(TestKindSelect())
+
+
+@tree.command(name="test", description="Pokreni test posle obuke (osnovni + tehnički, 45 min po testu)", guild=GUILD_OBJ)
+async def test_cmd(interaction: discord.Interaction):
+    def _active():
+        conn = _db()
+        row = conn.execute(
+            "SELECT id FROM lv_tests WHERE user_id=? AND stage IN (1,2)", (interaction.user.id,)
+        ).fetchone()
+        conn.close()
+        return row
+
+    if await asyncio.to_thread(_active):
+        return await interaction.response.send_message(
+            "❌ Već imaš test u toku — završi ga klikom na ✅ ispod testa.", ephemeral=True
+        )
+    await interaction.response.send_message(
+        "📝 **Test posle obuke** — izaberi koji radiš prvo.\n"
+        "Preporučeno: prvo **Osnovni**. Kad završiš prvi, drugi stiže automatski.\n"
+        f"Svaki test traje **{TEST_DURATION_MIN} min**.",
+        view=TestKindView(),
+        ephemeral=True,
+    )
+
+
+@tasks.loop(minutes=1)
+async def test_timer_loop():
+    """Isteklo vreme (45 min) + podsetnik menadžerima na 5h dok test nije pregledan."""
+    try:
+        now = _local_now()
+
+        def _rows():
+            conn = _db()
+            rows = conn.execute("SELECT * FROM lv_tests WHERE stage IN (1,2,3)").fetchall()
+            conn.close()
+            return [dict(r) for r in rows]
+
+        for t in await asyncio.to_thread(_rows):
+            ch = bot.get_channel(t["channel_id"])
+            if ch is None:
+                continue
+            if t["stage"] in (1, 2) and not t["expired_notified"]:
+                started = t["started1"] if t["stage"] == 1 else t["started2"]
+                try:
+                    st = datetime.fromisoformat(started)
+                except Exception:
+                    continue
+                if now >= st + timedelta(minutes=TEST_DURATION_MIN):
+                    kind = t["first_kind"] if t["stage"] == 1 else _test_other(t["first_kind"])
+                    await ch.send(
+                        f"⏰ <@{t['user_id']}> — isteklo je {TEST_DURATION_MIN} min za **{TEST_LABELS[kind]}** test. "
+                        f"Završi odgovore i klikni ✅ ispod testa.",
+                        allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+                    )
+                    await asyncio.to_thread(_test_update, t["id"], expired_notified=1)
+            elif t["stage"] == 3 and not t["reviewed_by"]:
+                try:
+                    last = datetime.fromisoformat(t["last_reminder"] or t["done2"])
+                except Exception:
+                    last = now
+                if now >= last + timedelta(hours=TEST_REVIEW_REMIND_HOURS):
+                    link = ""
+                    if t["review_msg_id"] and getattr(ch, "guild", None):
+                        link = f"\nhttps://discord.com/channels/{ch.guild.id}/{ch.id}/{t['review_msg_id']}"
+                    await ch.send(
+                        f"🔔 {_test_review_mentions()} — test od <@{t['user_id']}> još nije pregledan. "
+                        f"Kliknite **👀 Test pregledan** kad ga pregledate.{link}",
+                        allowed_mentions=discord.AllowedMentions(users=False, roles=True, everyone=False),
+                    )
+                    await asyncio.to_thread(_test_update, t["id"], last_reminder=now.isoformat())
+    except Exception as e:
+        print("[TEST] loop greška:", e, flush=True)
+
+
+_test_db_init()
+
+
+# ========== /reqoff + /reqcover (samo u tiketu, odobrava manager) ==========
+REQ_MANAGER_ROLE_ID = OFF_CANCEL_ROLE_ID
+COVER_TYPES = {"late": "kasniji ulazak u smenu", "early": "raniji izlazak iz smene"}
+
+
+def _req_db_init():
+    conn = _db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lv_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
+            username TEXT,
+            shift TEXT,
+            date TEXT NOT NULL,
+            cover_type TEXT,
+            minutes INTEGER,
+            reason TEXT,
+            status TEXT DEFAULT 'pending',
+            channel_id INTEGER,
+            msg_id INTEGER,
+            decided_by INTEGER,
+            created_at TEXT
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def _req_get_by_msg(msg_id):
+    conn = _db()
+    row = conn.execute("SELECT * FROM lv_requests WHERE msg_id=?", (msg_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def _req_set(req_id, **fields):
+    cols = ", ".join(f"{k}=?" for k in fields)
+    conn = _db()
+    conn.execute(f"UPDATE lv_requests SET {cols} WHERE id=?", (*fields.values(), req_id))
+    conn.commit()
+    conn.close()
+
+
+def _req_insert(**fields):
+    cols = ", ".join(fields)
+    marks = ", ".join("?" * len(fields))
+    conn = _db()
+    cur = conn.execute(f"INSERT INTO lv_requests ({cols}) VALUES ({marks})", tuple(fields.values()))
+    conn.commit()
+    rid = cur.lastrowid
+    conn.close()
+    return rid
+
+
+def approved_covers(date_from=None, date_to=None):
+    """Odobreni cover zahtevi (za /loff, /checkoff i dnevni podsetnik)."""
+    conn = _db()
+    rows = conn.execute(
+        "SELECT * FROM lv_requests WHERE kind='cover' AND status='approved' ORDER BY date"
+    ).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        r = dict(r)
+        if date_from and r["date"] < date_from:
+            continue
+        if date_to and r["date"] > date_to:
+            continue
+        out.append(r)
+    return out
+
+
+def cover_line(r, with_tag=False):
+    who = f"<@{r['user_id']}>" if with_tag else (r.get("username") or str(r["user_id"]))
+    typ = COVER_TYPES.get(r.get("cover_type"), r.get("cover_type") or "")
+    return f"🔁 {who} ({r.get('shift')}) — cover {r.get('minutes')} min, {typ}"
+
+
+def _in_ticket(interaction):
+    ch = interaction.channel
+    name = (getattr(ch, "name", "") or "").lower()
+    parent = getattr(ch, "parent", None)
+    pname = (getattr(parent, "name", "") or "").lower() if parent else ""
+    return name.startswith("ticket-") or pname.startswith("ticket-")
+
+
+async def _deny_outside_ticket(interaction):
+    await interaction.response.send_message(
+        "❌ Ova komanda može da se koristi **samo u tvom tiketu**. Otvori tiket sa `/ticket` pa probaj tamo.",
+        ephemeral=True,
+    )
+
+
+class ReqDecisionView(discord.ui.View):
+    """Persistentna dugmad za odobravanje zahteva (rade i posle restarta)."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _check(self, interaction):
+        if not any(r.id == REQ_MANAGER_ROLE_ID for r in getattr(interaction.user, "roles", [])):
+            await interaction.response.send_message("❌ Samo manager rola može da odobri/odbije.", ephemeral=True)
+            return None
+        req = await asyncio.to_thread(_req_get_by_msg, interaction.message.id)
+        if not req:
+            await interaction.response.send_message("❌ Ne nalazim zahtev u bazi.", ephemeral=True)
+            return None
+        if req["status"] != "pending":
+            await interaction.response.send_message(f"Zahtev je već rešen ({req['status']}).", ephemeral=True)
+            return None
+        return req
+
+    @discord.ui.button(label="Odobri", emoji="✅", style=discord.ButtonStyle.success, custom_id="lvreq_ok")
+    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+        req = await self._check(interaction)
+        if not req:
+            return
+        d = datetime.strptime(req["date"], "%Y-%m-%d").date()
+        when = f"{d.strftime('%d.%m.%Y')} ({SR_WEEKDAYS[d.weekday()]})"
+
+        if req["kind"] == "off":
+            # ponovna provera — u međuvremenu je neko drugi možda odobren
+            if any(
+                e.get("date") == req["date"] and e.get("shift") == req["shift"]
+                and e.get("user_id") != req["user_id"] and e.get("approved_by")
+                for e in off_days
+            ):
+                await asyncio.to_thread(_req_set, req["id"], status="denied", decided_by=interaction.user.id)
+                await interaction.response.edit_message(
+                    content=interaction.message.content + "\n\n❌ **Automatski odbijeno** — taj dan je u međuvremenu odobren drugom kolegi.",
+                    view=None,
+                )
+                return
+            if not any(e.get("user_id") == req["user_id"] and e.get("date") == req["date"] for e in off_days):
+                off_days.append({
+                    "user_id": req["user_id"],
+                    "username": req["username"],
+                    "date": req["date"],
+                    "shift": req["shift"],
+                    "message_id": None,
+                    "confirmed": True,
+                    "group_id": f"req-{req['id']}",
+                    "channel_id": req["channel_id"],
+                    "approved_by": interaction.user.id,
+                    "needs_cover": 1,
+                    "cover_reminder_due": (d - timedelta(days=3)).isoformat(),
+                })
+                await asyncio.to_thread(save_off_days)
+            title = "OFF DAY (zahtev odobren)"
+            detail = f"**Datum:** {when}\n**Smena:** {req['shift']}\n⚠️ Treba cover"
+        else:
+            typ = COVER_TYPES.get(req["cover_type"], req["cover_type"])
+            title = "COVER (zahtev odobren)"
+            detail = f"**Datum:** {when}\n**Smena:** {req['shift']}\n**Cover:** {req['minutes']} min — {typ}"
+            if req.get("reason"):
+                detail += f"\n**Razlog:** {req['reason']}"
+
+        await asyncio.to_thread(_req_set, req["id"], status="approved", decided_by=interaction.user.id)
+        await interaction.response.edit_message(
+            content=interaction.message.content + f"\n\n✅ **Odobreno** — {interaction.user.mention}",
+            view=None,
+        )
+        try:
+            await interaction.channel.send(
+                f"✅ <@{req['user_id']}> tvoj zahtev je **odobren**: {when}.",
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+            )
+        except Exception:
+            pass
+        channel = bot.get_channel(OFF_DAY_CHANNEL_ID)
+        if channel:
+            try:
+                await channel.send(
+                    f"🛡 **{title}**\n{detail}\n"
+                    f"**Chatter:** <@{req['user_id']}> ({req['username']})\n"
+                    f"**Odobrio:** {interaction.user.mention}"
+                )
+            except Exception as e:
+                print("[REQ] overview send fail:", e, flush=True)
+
+    @discord.ui.button(label="Odbij", emoji="❌", style=discord.ButtonStyle.danger, custom_id="lvreq_no")
+    async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
+        req = await self._check(interaction)
+        if not req:
+            return
+        await asyncio.to_thread(_req_set, req["id"], status="denied", decided_by=interaction.user.id)
+        await interaction.response.edit_message(
+            content=interaction.message.content + f"\n\n❌ **Odbijeno** — {interaction.user.mention}",
+            view=None,
+        )
+        try:
+            await interaction.channel.send(
+                f"❌ <@{req['user_id']}> tvoj zahtev je **odbijen**.",
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+            )
+        except Exception:
+            pass
+
+
+async def _post_request(interaction, req_id, text):
+    msg = await interaction.channel.send(
+        text + f"\n\n<@&{REQ_MANAGER_ROLE_ID}> — odobri ili odbij:",
+        view=ReqDecisionView(),
+        allowed_mentions=discord.AllowedMentions(users=False, roles=True, everyone=False),
+    )
+    await asyncio.to_thread(_req_set, req_id, msg_id=msg.id)
+
+
+@tree.command(name="reqoff", description="Zahtev za off dan (i kad je dan zauzet) — samo u tiketu", guild=GUILD_OBJ)
+async def reqoff(interaction: discord.Interaction):
+    if not _in_ticket(interaction):
+        return await _deny_outside_ticket(interaction)
+    shift = await _require_shift(interaction)
+    if not shift:
+        return
+    taken = taken_dates_for_shift(shift)
+    # /reqoff dozvoljava i sutrašnji dan (/off kreće od prekosutra)
+    dates = [_local_now().date() + timedelta(days=1)] + build_date_range()
+
+    async def on_pick(i, d):
+        iso = d.isoformat()
+        if any(e.get("user_id") == i.user.id and e.get("date") == iso for e in off_days):
+            return await i.response.send_message("❌ Već imaš off taj dan.", ephemeral=True)
+        others = [
+            e for e in off_days
+            if e.get("date") == iso and e.get("shift") == shift and e.get("user_id") != i.user.id
+        ]
+        approved_other = [e for e in others if e.get("approved_by")]
+        if approved_other:
+            return await i.response.send_message(
+                f"❌ Zahtev odbijen — {d.strftime('%d.%m.%Y')} je već **odobren** kolegi "
+                f"({', '.join(str(e.get('username')) for e in approved_other)}). Izaberi drugi dan.",
+                ephemeral=True,
+            )
+        if len(others) > 1:
+            return await i.response.send_message(
+                f"❌ Zahtev odbijen — {d.strftime('%d.%m.%Y')} je off već {len(others)} kolega u tvojoj smeni.",
+                ephemeral=True,
+            )
+        await i.response.edit_message(content="⏳ Šaljem zahtev menadžerima...", view=None)
+        used = count_month_off_days(i.user.id, d.strftime("%Y-%m"))
+        req_id = await asyncio.to_thread(
+            _req_insert,
+            kind="off", user_id=i.user.id, username=i.user.display_name, shift=shift,
+            date=iso, status="pending", channel_id=i.channel.id, created_at=_local_now().isoformat(),
+        )
+        busy = f"{others[0].get('username')} je već off taj dan" if others else "dan je slobodan"
+        await _post_request(
+            i, req_id,
+            f"📨 **ZAHTEV ZA OFF DAN**\n"
+            f"**Chatter:** {i.user.mention} ({i.user.display_name})\n"
+            f"**Datum:** {d.strftime('%d.%m.%Y')} ({SR_WEEKDAYS[d.weekday()]})\n"
+            f"**Smena:** {shift}\n"
+            f"**Stanje:** {busy}\n"
+            f"**Off dana u tom mesecu:** {used}/{MAX_OFF_PER_MONTH}",
+        )
+        await i.edit_original_response(content="✅ Zahtev poslat — čeka odobrenje menadžera.")
+
+    note = ""
+    if taken:
+        note = "\n\nZauzeti dani u tvojoj smeni su označeni sa „zauzeto” — i njih možeš da tražiš (ako nisu već odobreni drugom)."
+    await interaction.response.send_message(
+        f"📨 **Zahtev za off** — izaberi datum:{note}",
+        view=OffDayPickerView(taken, dates, on_pick),
+        ephemeral=True,
+    )
+
+
+async def reqcover_date_autocomplete(interaction: discord.Interaction, current: str):
+    """Samo 3 datuma: danas, sutra, prekosutra."""
+    today = _local_now().date()
+    labels = ["DANAS", "SUTRA", "PREKOSUTRA"]
+    out = []
+    for i, lab in enumerate(labels):
+        d = today + timedelta(days=i)
+        out.append(app_commands.Choice(
+            name=f"{lab} — {d.strftime('%d.%m.%Y')} ({SR_WEEKDAYS[d.weekday()]})",
+            value=d.isoformat(),
+        ))
+    return out
+
+
+@tree.command(name="reqcover", description="Zahtev za cover do 4h (kasniji ulazak / raniji izlazak) — samo u tiketu", guild=GUILD_OBJ)
+@app_commands.describe(
+    datum="Izaberi: danas, sutra ili prekosutra",
+    tip="Kasniji ulazak ili raniji izlazak",
+    trajanje="Koliko (max 4h)",
+    razlog="Kratko objašnjenje (opciono)",
+)
+@app_commands.choices(
+    tip=[
+        app_commands.Choice(name="Kasniji ulazak u smenu", value="late"),
+        app_commands.Choice(name="Raniji izlazak iz smene", value="early"),
+    ],
+    trajanje=[
+        app_commands.Choice(name="30 min", value=30),
+        app_commands.Choice(name="1h", value=60),
+        app_commands.Choice(name="1h 30min", value=90),
+        app_commands.Choice(name="2h", value=120),
+        app_commands.Choice(name="2h 30min", value=150),
+        app_commands.Choice(name="3h", value=180),
+        app_commands.Choice(name="3h 30min", value=210),
+        app_commands.Choice(name="4h", value=240),
+    ],
+)
+@app_commands.autocomplete(datum=reqcover_date_autocomplete)
+async def reqcover(interaction: discord.Interaction, datum: str, tip: str, trajanje: int, razlog: str = ""):
+    if not _in_ticket(interaction):
+        return await _deny_outside_ticket(interaction)
+    shift = await _require_shift(interaction)
+    if not shift:
+        return
+    d = parse_date_str(datum)
+    if not d:
+        return await interaction.response.send_message("❌ Loš datum. Koristi DD.MM.YYYY.", ephemeral=True)
+    _today = _local_now().date()
+    if not (_today <= d <= _today + timedelta(days=2)):
+        return await interaction.response.send_message("❌ Cover može samo za danas, sutra ili prekosutra — izaberi iz menija.", ephemeral=True)
+    trajanje = max(1, min(int(trajanje), 240))
+    await interaction.response.defer(ephemeral=True)
+    req_id = await asyncio.to_thread(
+        _req_insert,
+        kind="cover", user_id=interaction.user.id, username=interaction.user.display_name, shift=shift,
+        date=d.isoformat(), cover_type=tip, minutes=trajanje, reason=(razlog or "").strip()[:300],
+        status="pending", channel_id=interaction.channel.id, created_at=_local_now().isoformat(),
+    )
+    text = (
+        f"📨 **ZAHTEV ZA COVER**\n"
+        f"**Chatter:** {interaction.user.mention} ({interaction.user.display_name})\n"
+        f"**Datum:** {d.strftime('%d.%m.%Y')} ({SR_WEEKDAYS[d.weekday()]})\n"
+        f"**Smena:** {shift}\n"
+        f"**Cover:** {trajanje} min — {COVER_TYPES[tip]}"
+    )
+    if (razlog or "").strip():
+        text += f"\n**Razlog:** {razlog.strip()[:300]}"
+    await _post_request(interaction, req_id, text)
+    await interaction.followup.send("✅ Zahtev za cover poslat — čeka odobrenje menadžera.", ephemeral=True)
+
+
+_req_db_init()
+
+
+# ========== QC report inbox (desni klik → Apps → "Pošalji u QC") ==========
+def _qc_db_init():
+    conn = _db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS qc_inbox (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            message_id INTEGER UNIQUE,
+            channel_id INTEGER,
+            chatter TEXT,
+            chatter_id INTEGER,
+            qc TEXT,
+            qc_id INTEGER,
+            date TEXT,
+            text TEXT,
+            sent_by INTEGER,
+            created_at TEXT,
+            synced INTEGER DEFAULT 0,
+            synced_at TEXT
+        )
+        """
+    )
+    # ID-evi poruka koje su već prebačene (report se briše, ID ostaje da se ne pošalje opet)
+    conn.execute("CREATE TABLE IF NOT EXISTS qc_sent (message_id INTEGER PRIMARY KEY, sent_at TEXT)")
+    conn.commit()
+    conn.close()
+
+
+def _qc_guess_chatter(message):
+    """Chatter = prvi tagovan član koji nije bot i nije autor; inače prazno (AI prepoznaje iz teksta)."""
+    for m in getattr(message, "mentions", []) or []:
+        if not m.bot and m.id != message.author.id:
+            return (m.display_name or m.name), m.id
+    return "", None
+
+
+@tree.context_menu(name="Pošalji u QC", guild=GUILD_OBJ)
+async def qc_send_ctx(interaction: discord.Interaction, message: discord.Message):
+    text = (message.content or "").strip()
+    if message.attachments:
+        text += "\n" + "\n".join(a.url for a in message.attachments)
+    if len(text) < 20:
+        return await interaction.response.send_message(
+            "❌ Poruka je prekratka za QC report (min 20 znakova).", ephemeral=True
+        )
+    await interaction.response.defer(ephemeral=True)
+    chatter, chatter_id = _qc_guess_chatter(message)
+    created = message.created_at.astimezone(ZoneInfo("Europe/Belgrade"))
+
+    def _save():
+        conn = _db()
+        if conn.execute("SELECT 1 FROM qc_sent WHERE message_id=?", (message.id,)).fetchone():
+            conn.close()
+            return 0
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO qc_inbox (message_id, channel_id, chatter, chatter_id, qc, qc_id, date, text, sent_by, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                message.id, message.channel.id, chatter, chatter_id,
+                message.author.display_name, message.author.id,
+                created.date().isoformat(), text[:20000], interaction.user.id,
+                _local_now().isoformat(),
+            ),
+        )
+        conn.commit()
+        n = cur.rowcount
+        conn.close()
+        return n
+
+    added = await asyncio.to_thread(_save)
+    if not added:
+        return await interaction.followup.send("ℹ️ Ova poruka je već poslata u QC.", ephemeral=True)
+    try:
+        await message.add_reaction("📋")
+    except Exception:
+        pass
+    who = f" • chatter: **{chatter}**" if chatter else " • chatter: AI prepoznaje iz teksta"
+    await interaction.followup.send(
+        f"✅ QC report sačuvan (QC: **{message.author.display_name}**, {created.strftime('%d.%m.%Y')}{who}).\n"
+        "Prebacuje se u QC tabelu pri sledećoj sinhronizaciji (na svakih 12h).",
+        ephemeral=True,
+    )
+
+
+def _qc_token_ok(request, data=None):
+    tok = request.query.get("token") or (data or {}).get("token") or request.headers.get("X-Bridge-Token")
+    return bool(BRIDGE_TOKEN) and tok == BRIDGE_TOKEN
+
+
+async def handle_qc_inbox(request):
+    """GET /qc_inbox?token=...&limit=50 → nesinhronizovani QC reporti."""
+    if not _qc_token_ok(request):
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    try:
+        limit = max(1, min(int(request.query.get("limit", "50")), 200))
+    except Exception:
+        limit = 50
+
+    def _rows():
+        conn = _db()
+        rows = conn.execute(
+            "SELECT id, message_id, channel_id, chatter, chatter_id, qc, qc_id, date, text, created_at "
+            "FROM qc_inbox WHERE synced=0 ORDER BY id LIMIT ?",
+            (limit,),
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    items = await asyncio.to_thread(_rows)
+    for it in items:
+        it["message_id"] = str(it["message_id"])
+        it["channel_id"] = str(it["channel_id"])
+        it["chatter_id"] = str(it["chatter_id"]) if it["chatter_id"] else None
+        it["qc_id"] = str(it["qc_id"]) if it["qc_id"] else None
+        if GUILD_ID:
+            it["jump_url"] = f"https://discord.com/channels/{GUILD_ID}/{it['channel_id']}/{it['message_id']}"
+    return web.json_response({"ok": True, "items": items})
+
+
+async def handle_qc_ack(request):
+    """POST /qc_inbox/ack {token, ids:[...]} → prebačeni reporti se brišu (ID poruke se pamti da se ne pošalje ponovo)."""
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    if not _qc_token_ok(request, data):
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    ids = [int(i) for i in (data.get("ids") or []) if str(i).isdigit()]
+    if not ids:
+        return web.json_response({"ok": False, "error": "no ids"}, status=400)
+
+    def _ack():
+        conn = _db()
+        marks = ",".join("?" * len(ids))
+        now = _local_now().isoformat()
+        for r in conn.execute(f"SELECT message_id FROM qc_inbox WHERE id IN ({marks})", ids).fetchall():
+            conn.execute("INSERT OR IGNORE INTO qc_sent (message_id, sent_at) VALUES (?, ?)", (r["message_id"], now))
+        cur = conn.execute(f"DELETE FROM qc_inbox WHERE id IN ({marks})", ids)
+        conn.commit()
+        n = cur.rowcount
+        conn.close()
+        return n
+
+    n = await asyncio.to_thread(_ack)
+    return web.json_response({"ok": True, "acked": n})
+
+
+_qc_db_init()
+
+
+# ========== /reqfeature → Notion "Feature requests" ==========
+FEATURE_PARENT_PAGE_ID = os.getenv("FEATURE_PARENT_PAGE_ID", "3f6476bd-965e-8095-a4be-e5096f708abb")
+FEATURE_DB_TITLE = "Feature requests"
+FEATURE_TEAMS = [f"t{i}" for i in range(1, 12)] + ["ct"]
+FEATURE_STATUSES = ["Request queue", "Requested"]
+FEATURE_DEFAULT_STATUS = "Request queue"
+_feature_schema_ok = False
+
+
+def _feat_headers():
+    return {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json",
+    }
+
+
+def _feat_find_existing_db():
+    """Traži već napravljenu bazu u parent stranici (da se ne pravi duplikat)."""
+    cursor = None
+    while True:
+        url = f"https://api.notion.com/v1/blocks/{FEATURE_PARENT_PAGE_ID}/children?page_size=100"
+        if cursor:
+            url += f"&start_cursor={cursor}"
+        r = requests.get(url, headers=_feat_headers(), timeout=30)
+        r.raise_for_status()
+        data = r.json()
+        for b in data.get("results", []):
+            if b.get("type") == "child_database" and (b.get("child_database") or {}).get("title") == FEATURE_DB_TITLE:
+                return b["id"]
+        if data.get("has_more") and data.get("next_cursor"):
+            cursor = data["next_cursor"]
+        else:
+            return None
+
+
+def ensure_feature_db():
+    """Vrati ID Notion baze; napravi je ako ne postoji. Vraća (db_id, greška)."""
+    if not NOTION_TOKEN:
+        return None, "NOTION_TOKEN nije podešen."
+    db_id = get_state("feature_db_id")
+    if db_id:
+        _feature_migrate_schema(db_id)
+        return db_id, None
+    try:
+        db_id = _feat_find_existing_db()
+        if not db_id:
+            payload = {
+                "parent": {"type": "page_id", "page_id": FEATURE_PARENT_PAGE_ID},
+                "title": [{"type": "text", "text": {"content": FEATURE_DB_TITLE}}],
+                "properties": {
+                    "Feature": {"title": {}},
+                    "Opis": {"rich_text": {}},
+                    "Chatter": {"rich_text": {}},
+                    "Team": {"select": {"options": [{"name": t} for t in FEATURE_TEAMS]}},
+                    "Datum": {"date": {}},
+                    "Status": {"select": {"options": [{"name": s} for s in FEATURE_STATUSES]}},
+                    "Slika": {"files": {}},
+                },
+            }
+            r = requests.post("https://api.notion.com/v1/databases", headers=_feat_headers(), json=payload, timeout=30)
+            if r.status_code >= 400:
+                return None, f"Notion {r.status_code}: {r.text[:300]}"
+            db_id = r.json()["id"]
+            print(f"[FEATURE] napravljena Notion baza {db_id}", flush=True)
+    except Exception as e:
+        return None, f"Notion greška: {e}"
+    set_state("feature_db_id", db_id)
+    _feature_migrate_schema(db_id)
+    return db_id, None
+
+
+def _feature_migrate_schema(db_id):
+    """Jednom po startu: Status opcije Request queue/Requested, ukloni staru kolonu Discord ID."""
+    global _feature_schema_ok
+    if _feature_schema_ok:
+        return
+    for props in (
+        {"Discord ID": None},
+        {"Slika": {"files": {}}},
+        {"Status": {"select": {"options": [{"name": s} for s in FEATURE_STATUSES]}}},
+    ):
+        try:
+            r = requests.patch(
+                f"https://api.notion.com/v1/databases/{db_id}",
+                headers=_feat_headers(), json={"properties": props}, timeout=30,
+            )
+            if r.status_code >= 400:
+                print(f"[FEATURE] schema update ({list(props)[0]}): {r.status_code} {r.text[:200]}", flush=True)
+        except Exception as e:
+            print(f"[FEATURE] schema update fail: {e}", flush=True)
+    _feature_schema_ok = True
+
+
+_FEAT_STOP = {"the", "and", "for", "that", "with", "this", "kad", "kada", "koji", "koja", "koje",
+              "bude", "biti", "neka", "moze", "mozes", "treba", "bi", "da", "se", "na", "za", "od",
+              "je", "su", "sto", "kako", "ili", "ali", "ako", "jos", "vise", "nam", "mi", "nas"}
+
+
+def _feat_words(text):
+    import unicodedata
+    t = unicodedata.normalize("NFKD", (text or "").lower())
+    t = "".join(ch for ch in t if not unicodedata.combining(ch)).replace("đ", "dj")
+    return {w for w in re.findall(r"[a-z0-9]+", t) if len(w) >= 3 and w not in _FEAT_STOP}
+
+
+def _feat_similar(a, b):
+    import difflib
+    wa, wb = _feat_words(a), _feat_words(b)
+    if not wa or not wb:
+        return 0.0
+    jac = len(wa & wb) / len(wa | wb)
+    cover = len(wa & wb) / min(len(wa), len(wb))
+    ratio = difflib.SequenceMatcher(None, " ".join(sorted(wa)), " ".join(sorted(wb))).ratio()
+    return max(jac, ratio * 0.9, cover * 0.85 if min(len(wa), len(wb)) >= 3 else 0)
+
+
+def find_requested_feature(db_id, text, threshold=0.6):
+    """Vrati naslov već 'Requested' feature-a koji liči na novi predlog, ili None."""
+    payload = {"page_size": 100, "filter": {"property": "Status", "select": {"equals": "Requested"}}}
+    best, best_score = None, 0.0
+    while True:
+        r = requests.post(f"https://api.notion.com/v1/databases/{db_id}/query",
+                          headers=_feat_headers(), json=payload, timeout=30)
+        if r.status_code >= 400:
+            return None
+        data = r.json()
+        for page in data.get("results", []):
+            props = page.get("properties", {})
+            title = "".join(t.get("plain_text", "") for t in props.get("Feature", {}).get("title", []))
+            opis = "".join(t.get("plain_text", "") for t in props.get("Opis", {}).get("rich_text", []))
+            score = max(_feat_similar(text, opis or title), _feat_similar(text, title))
+            if score > best_score:
+                best, best_score = (title or opis[:80]), score
+        if data.get("has_more") and data.get("next_cursor"):
+            payload["start_cursor"] = data["next_cursor"]
+        else:
+            break
+    return best if best_score >= threshold else None
+
+
+FEATURE_MAX_IMAGE = 5 * 1024 * 1024
+
+
+def _feat_upload_image(data, filename, content_type):
+    """Notion File Upload API (single part, ≤5MB). Vraća file_upload id ili None."""
+    try:
+        r = requests.post(
+            "https://api.notion.com/v1/file_uploads",
+            headers=_feat_headers(),
+            json={"filename": filename, "content_type": content_type},
+            timeout=30,
+        )
+        if r.status_code >= 400:
+            print(f"[FEATURE] file_upload create: {r.status_code} {r.text[:200]}", flush=True)
+            return None
+        up_id = r.json()["id"]
+        h = {"Authorization": f"Bearer {NOTION_TOKEN}", "Notion-Version": "2022-06-28"}
+        r = requests.post(
+            f"https://api.notion.com/v1/file_uploads/{up_id}/send",
+            headers=h,
+            files={"file": (filename, data, content_type)},
+            timeout=60,
+        )
+        if r.status_code >= 400:
+            print(f"[FEATURE] file_upload send: {r.status_code} {r.text[:200]}", flush=True)
+            return None
+        return up_id
+    except Exception as e:
+        print(f"[FEATURE] file_upload fail: {e}", flush=True)
+        return None
+
+
+FEATURE_SHEET_URL = os.getenv(
+    "FEATURE_SHEET_URL",
+    "https://script.google.com/macros/s/AKfycby7wttog07dXZ6zsszYvt3Fq_oCT5SXM3X76vX6ln8pgQGZn-g8yV2lTm-CUBIXw24G-A/exec",
+)
+FEATURE_SHEET_SECRET = os.getenv("FEATURE_SHEET_SECRET", "ACkpXmZNkUEJcNLPtsYWSqI5FebPhRHC")
+
+
+def _feat_send_sheet(chatter, team, text, image=None):
+    """Best-effort kopija u Google Sheet (tab po danu, slika u Drive). Greška ne blokira Notion."""
+    if not FEATURE_SHEET_URL:
+        return
+    import base64
+    payload = {
+        "secret": FEATURE_SHEET_SECRET,
+        "chatter": chatter,
+        "team": team,
+        "feature": text,
+        "status": FEATURE_DEFAULT_STATUS,
+    }
+    if image and image[0]:
+        payload["image_b64"] = base64.b64encode(image[0]).decode()
+        payload["image_name"] = image[1]
+        payload["image_type"] = image[2]
+    try:
+        r = requests.post(FEATURE_SHEET_URL, json=payload, timeout=60)
+        ok = False
+        try:
+            ok = bool(r.json().get("ok"))
+        except Exception:
+            pass
+        if not ok:
+            print(f"[FEATURE] sheet: HTTP {r.status_code} {r.text[:200]}", flush=True)
+    except Exception as e:
+        print(f"[FEATURE] sheet fail: {e}", flush=True)
+
+
+def create_feature_request(chatter, user_id, team, text, image=None):
+    db_id, err = ensure_feature_db()
+    if err:
+        return False, err
+    try:
+        dup = find_requested_feature(db_id, text)
+    except Exception as e:
+        print(f"[FEATURE] dup check fail: {e}", flush=True)
+        dup = None
+    if dup:
+        return "dup", dup
+    _feat_send_sheet(chatter, team, text, image)
+    title = " ".join(text.split())
+    if len(title) > 80:
+        title = title[:77] + "..."
+    props = {
+        "Feature": {"title": [{"text": {"content": title}}]},
+        "Opis": {"rich_text": [{"text": {"content": text[:1900]}}]},
+        "Chatter": {"rich_text": [{"text": {"content": chatter[:200]}}]},
+        "Team": {"select": {"name": team}},
+        "Datum": {"date": {"start": _local_now().date().isoformat()}},
+        "Status": {"select": {"name": FEATURE_DEFAULT_STATUS}},
+    }
+    children = []
+    if image:
+        data, filename, ctype, url = image
+        up_id = _feat_upload_image(data, filename, ctype)
+        if up_id:
+            props["Slika"] = {"files": [{"type": "file_upload", "file_upload": {"id": up_id}, "name": filename[:100]}]}
+            children.append({"object": "block", "type": "image", "image": {"type": "file_upload", "file_upload": {"id": up_id}}})
+        elif url:
+            # rezerva: Discord link (može da istekne posle nekog vremena)
+            props["Slika"] = {"files": [{"type": "external", "external": {"url": url}, "name": filename[:100]}]}
+    body = {"parent": {"database_id": db_id}, "properties": props}
+    if children:
+        body["children"] = children
+    try:
+        r = requests.post(
+            "https://api.notion.com/v1/pages",
+            headers=_feat_headers(),
+            json=body,
+            timeout=30,
+        )
+    except Exception as e:
+        return False, f"Notion greška: {e}"
+    if r.status_code == 404:
+        # baza obrisana/premeštena → zaboravi ID, sledeći put napravi novu
+        set_state("feature_db_id", "")
+        return False, "Notion baza nije nađena — pokušaj ponovo za minut."
+    if r.status_code >= 400:
+        return False, f"Notion {r.status_code}: {r.text[:300]}"
+    return True, None
+
+
+class FeatureModal(Modal, title="Predlog za novi feature"):
+    def __init__(self, team, image=None):
+        super().__init__(timeout=None)
+        self.team = team
+        self.image = image
+        self.feature = TextInput(
+            label="Šta bi voleo/la da dodamo ili promenimo?",
+            style=TextStyle.paragraph,
+            placeholder="Opiši ideju što jasnije (šta, zašto, kako bi pomoglo)...",
+            required=True,
+            min_length=10,
+            max_length=1000,
+        )
+        self.add_item(self.feature)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        chatter = f"{interaction.user.display_name} (@{interaction.user.name})"
+        img = None
+        if self.image is not None:
+            try:
+                img = (await self.image.read(), self.image.filename, self.image.content_type or "image/png", self.image.url)
+            except Exception as e:
+                print(f"[FEATURE] attachment read fail: {e}", flush=True)
+                img = (b"", self.image.filename, self.image.content_type or "image/png", self.image.url)
+        ok, err = await asyncio.to_thread(
+            create_feature_request, chatter, interaction.user.id, self.team, self.feature.value.strip(), img
+        )
+        if ok == "dup":
+            await interaction.followup.send(
+                f"ℹ️ Ovaj feature je **već zatražen**: „{err}”.\nHvala na feedbacku — već radimo na tome!",
+                ephemeral=True,
+            )
+        elif ok:
+            await interaction.followup.send("✅ Hvala! Predlog je prijavljen.", ephemeral=True)
+        else:
+            print(f"[FEATURE] fail: {err}", flush=True)
+            await interaction.followup.send(f"❌ Predlog nije sačuvan: {err}", ephemeral=True)
+
+
+@tree.command(name="reqfeature", description="Predloži novi feature / poboljšanje", guild=GUILD_OBJ)
+@app_commands.describe(team="Tvoj tim", slika="Slika / screenshot (opciono, max 5MB)")
+@app_commands.choices(team=[app_commands.Choice(name=t.upper(), value=t) for t in FEATURE_TEAMS])
+async def reqfeature(interaction: discord.Interaction, team: str, slika: discord.Attachment = None):
+    if slika is not None:
+        if not (slika.content_type or "").startswith("image/"):
+            return await interaction.response.send_message("❌ Prilog mora biti slika (png, jpg, gif, webp).", ephemeral=True)
+        if slika.size > FEATURE_MAX_IMAGE:
+            return await interaction.response.send_message("❌ Slika je veća od 5MB — smanji je pa probaj ponovo.", ephemeral=True)
+    await interaction.response.send_modal(FeatureModal(team, slika))
+
+
+# ========== slobodni off dani — #day-off-team-N, ponedeljak i četvrtak u 12h ==========
+DAYOFF_WEEKLY_DAYS = (0, 3)  # ponedeljak, četvrtak
+DAYOFF_WEEKLY_HOUR = 12
+DAYOFF_CHANNEL_RE = re.compile(r"^day-?off-team-?\d+$")
+SHIFT_ORDER = [("graveyard", "GRAVEYARD"), ("afternoon", "AFTERNOON"), ("main", "MAIN")]
+
+
+def build_free_days_text(today):
+    """Slobodni off dani po smeni: od sutra do kraja nedelje (nedelja)."""
+    days_left = 6 - today.weekday()
+    if days_left < 1:
+        days_left = 7
+    days = [today + timedelta(days=i) for i in range(1, days_left + 1)]
+    first_off = today + timedelta(days=2)  # /off radi od prekosutra
+    lines = [
+        f"📅 **Slobodni day off dani — {days[0].strftime('%d.%m.')} – {days[-1].strftime('%d.%m.%Y')}**",
+        "",
+    ]
+    for code, label in SHIFT_ORDER:
+        taken = taken_dates_for_shift(code)
+        free = [d for d in days if d not in taken]
+        if free:
+            parts = []
+            for d in free:
+                tag = f"{SR_WEEKDAYS[d.weekday()]} {d.strftime('%d.%m.')}"
+                if d < first_off:
+                    tag += " (samo /reqoff)"
+                parts.append(tag)
+            lines.append(f"**{label}:** " + ", ".join(parts))
+        else:
+            lines.append(f"**{label}:** nema slobodnih dana")
+    lines += ["", "Rezervacija: `/off` (od prekosutra) ili `/reqoff` u tiketu (i za sutra)."]
+    return "\n".join(lines)
+
+
+@tasks.loop(minutes=1)
+async def dayoff_weekly_loop():
+    now = _local_now()
+    if now.weekday() not in DAYOFF_WEEKLY_DAYS or now.hour != DAYOFF_WEEKLY_HOUR:
+        return
+    key = f"dayoff_weekly_{now.date().isoformat()}"
+    if get_state(key):
+        return
+    set_state(key, "1")
+    guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
+    if not guild:
+        return
+    text = build_free_days_text(now.date())
+    sent = 0
+    for ch in guild.text_channels:
+        if DAYOFF_CHANNEL_RE.match(ch.name.lower()):
+            try:
+                await ch.send(text)
+                sent += 1
+            except Exception as e:
+                print(f"[DAYOFF-WEEKLY] {ch.name} fail: {e}", flush=True)
+    print(f"[DAYOFF-WEEKLY] poslato u {sent} kanala", flush=True)
+
+
+@dayoff_weekly_loop.before_loop
+async def _before_dayoff_weekly():
+    await bot.wait_until_ready()
+
+
+CHELP_TEXT = (
+    "📖 **LV HANDLER — chatter komande**\n\n"
+    "⏱ **CLOCK IN / OUT** (Telegram)\n"
+    "`!ci` — clock in za smenu. Na vreme: streak +1. Kasniš: streak se resetuje\n"
+    "`!co` — clock out; odrađeno vreme se dodaje na ukupno\n"
+    "`!streak [@user]` — tvoj ili tuđi streak\n"
+    "`!username <ime>` — ime koje bot prikazuje za tebe\n"
+    "`!team t1 … t11 / ct` — postavi svoj tim\n"
+    "`!check ime1, ime2, ...` — ko je od navedenih clockinovan\n\n"
+    "👩 **MODELI** (Telegram)\n"
+    "`!info <model>` — info o modelu iz Notiona (notes, calls, customs, traffic, MM, jezik)\n"
+    "`!custom` — kompletna pravila i format za custom request\n"
+    "`!issue` — prazna forma za AI chatbot issue (kopiraj, popuni, pošalji)\n\n"
+    "💬 **DISCORD KOMANDE**\n"
+    "`/off` — rezerviši slobodan dan (izaberi datum iz menija)\n"
+    "`/reqoff` — upit za day off i kad je dan zauzet (samo u tiketu, menadžer odobrava)\n"
+    "`/reqcover` — upit za cover do 4h za kašnjenje ili raniji odlazak (samo u tiketu, menadžer odobrava)\n"
+    "`/reassign` — prijava reassign prodaje (samo u reassign kanalima)\n"
+    "`/farm` — forma za farm unos\n"
+    "`/test` — pokreće test (45 min, radi se odmah)\n"
+    "`/chelp` — ova lista (Telegram: `!chelp`)"
+)
+
+
+@tree.command(name="chelp", description="Lista svih chatter komandi (isto kao !chelp na Telegramu)", guild=GUILD_OBJ)
+async def chelp_cmd(interaction: discord.Interaction):
+    await interaction.response.send_message(CHELP_TEXT, ephemeral=True)
+
+
+# ---------- on_ready ----------
+@bot.event
+async def on_ready():
+    try:
+        if GUILD_OBJ:
+            cmds = await tree.sync(guild=GUILD_OBJ)
+            print(f"synced {len(cmds)} slash komandi na server {GUILD_ID}")
+        else:
+            cmds = await tree.sync()
+            print(f"synced {len(cmds)} globalnih slash komandi")
+        print(f"✅ logged in as {bot.user}")
+        if not off_day_reminder_loop.is_running():
+            off_day_reminder_loop.start()
+            print("✅ Off day reminder task pokrenut")
+        if not farm_reminder_loop.is_running():
+            farm_reminder_loop.start()
+            print("✅ Farm reminder task pokrenut")
+        if not off_confirm_reminder_loop.is_running():
+            off_confirm_reminder_loop.start()
+            print("✅ Off confirm reminder task pokrenut")
+        if not cover_reminder_loop.is_running():
+            cover_reminder_loop.start()
+            print("✅ Cover reminder task pokrenut")
+        if not test_timer_loop.is_running():
+            test_timer_loop.start()
+        if not dayoff_weekly_loop.is_running():
+            dayoff_weekly_loop.start()
+            print("✅ Test timer task pokrenut")
+        guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
+        if guild:
+            await seed_off_days(guild)
+        load_reassign_msg_ids()
+    except Exception as e:
+        print("sync fail:", e)
+
+
+# ---------- global error logging ----------
+@bot.event
+async def on_error(event_method, *args, **kwargs):
+    import traceback
+    print(f"[ERROR] event={event_method}")
+    traceback.print_exc()
+
+
+@tree.error
+async def on_tree_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    import traceback
+    print(f"[ERROR] command={interaction.command.name if interaction.command else '?'}")
+    traceback.print_exc()
+
+
+# ---------- RUN ----------
+async def _setup_hook():
+    # bridge (HTTP port) se diže PRE Discord logina, da Render odmah vidi port
+    # i da /as i /announcement vrate jasnu grešku (503) umesto 502 dok bot nije spreman
+    await start_bridge_server()
+    # persistentna dugmad za /test (rade i posle restarta)
+    bot.add_view(TestDoneView())
+    bot.add_view(TestReviewView())
+    bot.add_view(ReqDecisionView())
+
+bot.setup_hook = _setup_hook
+bot.run(TOKEN)
+# main.py — lv-clean
+# Role/channel management + ticket sistem + farm/ratio/qc + !mm AI/FU + off days
+import os
+import io
+import re
+import json
+import sqlite3
+import time
+import asyncio
+import random
+import discord
+from discord import app_commands
+from discord.ext import commands, tasks
+from discord.ui import Modal, TextInput
+from discord import TextStyle
+from dotenv import load_dotenv
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+from openai import OpenAI
+from aiohttp import web
+import requests
+from collections import defaultdict
+
+# --- env first ---
+load_dotenv()
+TOKEN = os.getenv("DISCORD_TOKEN")
+GUILD_ID = os.getenv("GUILD_ID")
+USE_AI_FU = os.getenv("USE_AI_FU", "false").lower() in ("1", "true", "yes", "on")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+# bridge (telegram -> discord)
+BRIDGE_TOKEN = os.getenv("BRIDGE_TOKEN", "")
+BRIDGE_PORT = int(os.getenv("PORT", os.getenv("BRIDGE_PORT", "8080")))
+AS_CHECK_CHANNEL_ID = os.getenv("AS_CHECK_CHANNEL_ID", "")
+# notion (za /reassign dropdown modela)
+NOTION_TOKEN = os.getenv("NOTION_TOKEN", "")
+NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID", "a397b3af-356c-4024-8229-2e81ffc11654")
+# build client only after env is loaded
+client = OpenAI(api_key=OPENAI_API_KEY) if (USE_AI_FU and OPENAI_API_KEY) else None
+if not TOKEN:
+    raise RuntimeError("DISCORD_TOKEN nije setovan u .env")
+# ---------- TUNABLES ----------
+SLEEP_BETWEEN_CALLS = 0.35
+CHUNK_SIZE = 24
+RETRIES = 5
+RETRY_BASE_SLEEP = 0.8
+PROGRESS_EVERY_N = 5
+
+# QC statistika za /qcurrent
+qc_history = defaultdict(list)   # (year, month, user_id) -> list of {'date': day, 'count': num_chattera}
+
+# ---------- BOT ----------
+INTENTS = discord.Intents.default()
+INTENTS.members = True
+INTENTS.message_content = True  # za !mm detekciju
+bot = commands.Bot(command_prefix="!", intents=INTENTS)
+tree = bot.tree
+GUILD_OBJ = discord.Object(id=int(GUILD_ID)) if GUILD_ID else None
+# ==== OFF DAYS ====
+OFF_DAY_CHANNEL_ID = 1539560126061478049
+OFF_CANCEL_ROLE_ID = 1410958063824801802
+off_cancel_requests = {}  # cancel_msg_id -> {"off_message_id": int, "user_id": int}
+OFF_DAYS_FILE = "off_days.json"   # legacy (migrira se jednom u bazu)
+OFF_DAYS_DB = os.getenv("OFF_DAYS_DB", "off_days.db")
+
+SHIFT_ROLES = {
+    "afternoon": 1410962344124612710,
+    "graveyard": 1410962300554313870,
+    "main": 1410962407454675047,
+}
+
+# raspored kanala po smeni (koristi /cic)
+SCHEDULE_CHANNEL = {
+    "grave": 1364850505234518067,
+    "after": 1364850574205648967,
+    "main": 1364850795215982634,
+}
+
+SR_WEEKDAYS = ["ponedeljak", "utorak", "sreda", "četvrtak", "petak", "subota", "nedelja"]
+
+# kome se taguje podsetnik za off dan
+REMINDER_TARGET_USER_ID = 923657835164889119
+
+off_days = []
+
+
+def _db():
+    parent = os.path.dirname(OFF_DAYS_DB)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    conn = sqlite3.connect(OFF_DAYS_DB)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    conn = _db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS off_days (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            username TEXT,
+            date TEXT NOT NULL,
+            shift TEXT,
+            message_id INTEGER,
+            confirmed INTEGER DEFAULT 0,
+            group_id TEXT,
+            channel_id INTEGER,
+            UNIQUE(user_id, date)
+        )
+        """
+    )
+    try:
+        conn.execute("ALTER TABLE off_days ADD COLUMN channel_id INTEGER")
+    except sqlite3.OperationalError:
+        pass
+    for col in ["approved_by INTEGER", "needs_cover INTEGER DEFAULT 0", "cover_reminder_due TEXT"]:
+        try:
+            conn.execute(f"ALTER TABLE off_days ADD COLUMN {col}")
+        except sqlite3.OperationalError:
+            pass
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS state (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS reassigns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            model TEXT,
+            date TEXT,
+            chatter TEXT,
+            fans TEXT,
+            created_at TEXT,
+            done INTEGER DEFAULT 0,
+            channel_id INTEGER,
+            user_id INTEGER,
+            ticket_msg_id INTEGER,
+            overview_msg_id INTEGER
+        )
+        """
+    )
+    for col in ["done INTEGER DEFAULT 0", "channel_id INTEGER", "user_id INTEGER", "ticket_msg_id INTEGER", "overview_msg_id INTEGER"]:
+        try:
+            conn.execute(f"ALTER TABLE reassigns ADD COLUMN {col}")
+        except sqlite3.OperationalError:
+            pass
+    conn.commit()
+    conn.close()
+
+
+def migrate_from_json():
+    if not os.path.exists(OFF_DAYS_FILE):
+        return
+    try:
+        with open(OFF_DAYS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, list):
+            data = []
+    except Exception as e:
+        print("[DB] čitanje off_days.json nije uspelo:", e)
+        return
+    conn = _db()
+    inserted = 0
+    for e in data:
+        if not e.get("date"):
+            continue
+        try:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO off_days (user_id, username, date, shift, message_id, confirmed, group_id) VALUES (?,?,?,?,?,?,?)",
+                (
+                    e.get("user_id"),
+                    e.get("username"),
+                    e.get("date"),
+                    e.get("shift"),
+                    e.get("message_id"),
+                    1 if e.get("confirmed") else 0,
+                    None,
+                ),
+            )
+            if cur.rowcount:
+                inserted += 1
+        except Exception:
+            continue
+    conn.commit()
+    conn.close()
+    try:
+        os.rename(OFF_DAYS_FILE, OFF_DAYS_FILE + ".migrated")
+    except Exception:
+        pass
+    if inserted:
+        print(f"[DB] migrirano {inserted} off dana iz off_days.json u bazu")
+
+
+def clear_reassigns_once():
+    """Jednokratno: označi sve postojeće reassignove kao done."""
+    conn = _db()
+    row = conn.execute("SELECT value FROM state WHERE key='reassigns_cleared_2026_09'").fetchone()
+    if row:
+        conn.close()
+        return
+    cur = conn.execute("UPDATE reassigns SET done=1 WHERE done=0")
+    conn.execute("INSERT OR REPLACE INTO state (key, value) VALUES ('reassigns_cleared_2026_09', '1')")
+    conn.commit()
+    conn.close()
+    print(f"[DB] reassign cleanup: {cur.rowcount} označeno kao done")
+
+
+def load_off_days():
+    global off_days
+    init_db()
+    migrate_from_json()
+    clear_reassigns_once()
+    conn = _db()
+    rows = conn.execute(
+        "SELECT user_id, username, date, shift, message_id, confirmed, group_id, channel_id, approved_by, needs_cover, cover_reminder_due FROM off_days ORDER BY date"
+    ).fetchall()
+    conn.close()
+    off_days = [
+        {
+            "user_id": r["user_id"],
+            "username": r["username"],
+            "date": r["date"],
+            "shift": r["shift"],
+            "message_id": r["message_id"],
+            "confirmed": bool(r["confirmed"]),
+            "group_id": r["group_id"],
+            "channel_id": r["channel_id"],
+            "approved_by": r["approved_by"],
+            "needs_cover": r["needs_cover"] or 0,
+            "cover_reminder_due": r["cover_reminder_due"],
+        }
+        for r in rows
+    ]
+
+
+def save_off_days():
+    conn = _db()
+    conn.execute("DELETE FROM off_days")
+    for e in off_days:
+        conn.execute(
+            "INSERT INTO off_days (user_id, username, date, shift, message_id, confirmed, group_id, channel_id, approved_by, needs_cover, cover_reminder_due) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                e.get("user_id"),
+                e.get("username"),
+                e.get("date"),
+                e.get("shift"),
+                e.get("message_id"),
+                1 if e.get("confirmed") else 0,
+                e.get("group_id"),
+                e.get("channel_id"),
+                e.get("approved_by"),
+                1 if e.get("needs_cover") else 0,
+                e.get("cover_reminder_due"),
+            ),
+        )
+    conn.commit()
+    conn.close()
+
+
+def get_state(key):
+    conn = _db()
+    row = conn.execute("SELECT value FROM state WHERE key = ?", (key,)).fetchone()
+    conn.close()
+    return row["value"] if row else None
+
+
+def set_state(key, value):
+    conn = _db()
+    conn.execute(
+        "INSERT OR REPLACE INTO state (key, value) VALUES (?, ?)", (key, value)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_user_shift(member):
+    found = [name for name, rid in SHIFT_ROLES.items() if any(r.id == rid for r in member.roles)]
+    if len(found) == 1:
+        return found[0]
+    if len(found) == 0:
+        return None
+    return "multiple"
+
+
+def taken_dates_for_shift(shift):
+    out = set()
+    today = _local_now().date()
+    for e in off_days:
+        if e.get("shift") == shift:
+            try:
+                d = datetime.strptime(e["date"], "%Y-%m-%d").date()
+                if d >= today:
+                    out.add(d)
+            except Exception:
+                pass
+    return out
+
+
+MAX_OFF_PER_MONTH = 4
+
+
+def count_month_off_days(user_id, month=None):
+    """Broj off dana korisnika u datom mesecu (YYYY-MM); podrazumevano tekući mesec."""
+    month = month or _local_now().strftime("%Y-%m")
+    return sum(1 for e in off_days if e.get("user_id") == user_id and (e.get("date") or "").startswith(month))
+
+
+def build_date_range():
+    today = _local_now().date()
+    start = today + timedelta(days=2)  # prvi dostupan dan = prekosutra
+    return [start + timedelta(days=i) for i in range(60)]  # narednih 60 dana
+
+
+load_off_days()
+
+# ==== anti-spam za AI pozive ====
+AI_BLOCKED_UNTIL = None
+
+
+def ai_available():
+    return (AI_BLOCKED_UNTIL is None) or (datetime.utcnow() >= AI_BLOCKED_UNTIL)
+
+
+def backoff_ai(minutes=30):
+    global AI_BLOCKED_UNTIL
+    AI_BLOCKED_UNTIL = datetime.utcnow() + timedelta(minutes=minutes)
+
+
+async def safe_generate_fus(mm_line: str, channel_id: int) -> list[str]:
+    """Proba AI, ako ne moze ili nema AI, pada na offline, bez rate limita."""
+    # ako nema AI ili smo u backoff stanju → offline
+    if (not USE_AI_FU) or (not client) or (not ai_available()):
+        fus = await generate_fus_offline(mm_line)
+        print(f"[AI_FU] offline only, got {len(fus)} fus")
+        return fus
+    try:
+        fus = await generate_fus(mm_line)
+        if fus:
+            print(f"[AI_FU] ai ok, got {len(fus)} fus")
+            return fus
+        print("[AI_FU] ai returned empty, using offline fallback")
+        return await generate_fus_offline(mm_line)
+    except Exception as e:
+        text = str(e).lower()
+        if "insufficient_quota" in text or "error code: 429" in text or "quota" in text:
+            backoff_ai(60)
+            print("[AI_FU] quota hit, switching to offline for 60 minutes")
+        else:
+            print("[AI_FU] fail, offline fallback:", e)
+        return await generate_fus_offline(mm_line)
+
+
+async def generate_fus_offline(mm_line: str) -> list[str]:
+    txt = await gen_fu_offline(mm_line)
+    lines = [ln for ln in txt.splitlines() if ln.strip().startswith("fu")]
+    return lines[:4]
+
+
+
+
+
+def _local_now():
+    """Tačno vreme za Beograd (automatski CET/CEST)"""
+    return datetime.now(ZoneInfo("Europe/Belgrade"))
+
+
+
+
+
+
+
+
+
+async def sort_team_categories(guild):
+    categories = guild.categories
+    non_team = [c for c in categories if not c.name.upper().startswith("TEAM ")]
+    team = [c for c in categories if c.name.upper().startswith("TEAM ")]
+    team_sorted = sorted(team, key=lambda c: c.name.lower())
+    start_pos = max(c.position for c in non_team)
+    pos = start_pos + 1
+    for cat in team_sorted:
+        await cat.edit(position=pos)
+        pos += 1
+        await asyncio.sleep(0.35)
+    print("TEAM categories sorted")
+
+
+
+# ====== AI/FU HELPERI ======
+def _sanitize_mm_text(s: str) -> str:
+    s = (s or "").lower().strip()
+    s = re.sub(r"[\U00010000-\U0010ffff]", "", s)  # skini emojije (van BMP)
+    s = s.replace("—", " ").replace("-", " ")  # zabrana crtica i duge crte
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+
+async def gen_fu_offline(question: str) -> str:
+    q = _sanitize_mm_text(question)
+    if any(k in q for k in ["bath", "shower", "tub"]):
+        fu1 = "fu1: you like it hot or just steamy"
+        fu2 = "fu2: i’ll sit on the edge and make the water useless"
+        fu3 = "fu3: which part do you soap first when i step in"
+    elif any(k in q for k in ["bed", "couch", "sofa", "ride"]):
+        fu1 = "fu1: on your lap or on my face"
+        fu2 = "fu2: i bounce till your legs shake"
+        fu3 = "fu3: how long till you beg me to slow down"
+    elif any(k in q for k in ["minute", "last", "control", "tease"]):
+        fu1 = "fu1: bite or kiss first"
+        fu2 = "fu2: i keep you on the edge till you whine"
+        fu3 = "fu3: where do you lose control the fastest"
+    else:
+        banks = [
+            (
+                "fu1: taster or toucher",
+                "fu2: i’ll keep it just out of reach till you ask nice",
+                "fu3: where do you want me first",
+            ),
+            (
+                "fu1: slow or rough tonight",
+                "fu2: i set the pace you just try to keep up",
+                "fu3: what safe word are you not going to use",
+            ),
+            (
+                "fu1: hands behind your back or on my hips",
+                "fu2: i make you work for every inch",
+                "fu3: what do you want me to say when you break",
+            ),
+        ]
+        fu1, fu2, fu3 = random.choice(banks)
+    return f"!mma\n{q}\n\n{fu1}\n{fu2}\n{fu3}"
+
+
+AI_FU_SYSTEM = (
+    "from now on you write engaging follow ups.\n"
+    "format and rules:\n"
+    "!mma\n"
+    "<short simple question already written by the user>\n\n"
+    "you never write the question yourself.\n"
+    "you only write follow ups for an existing !mma line.\n\n"
+    "critical logic:\n"
+    "- before writing follow ups you must silently infer the most likely fan reply to the !mma question.\n"
+    "- the inferred reply is never shown.\n"
+    "- do not answer the !mma question.\n"
+    "- do not react directly to the !mma question.\n"
+    "- always assume the fan has already replied.\n"
+    "- fu1 must react to the inferred fan reply.\n"
+    "- for vague questions assume the fan replied with curiosity confusion surprise or a request for clarification.\n"
+    "- write follow ups that work for the most likely category of replies rather than one exact reply.\n\n"
+    "fu1: response to the inferred fan reply. statement only. no question.\n"
+    "fu1.5: open ended question related to fu1.\n"
+    "fu2: statement that deepens the conversation.\n"
+    "fu2.5: open ended question related to fu2.\n"
+    "fu3: final engaging statement.\n"
+    "fu3.5: one more open ended question.\n\n"
+    "hard style rules:\n"
+    "- everything must be in lowercase.\n"
+    "- no bold no emojis.\n"
+    "- no commas no dashes. only periods and spaces.\n"
+    "- vary structure and wording every time.\n"
+    "- never repeat lines.\n"
+    "- fu1.5 fu2.5 and fu3.5 cannot be answered with yes or no.\n"
+    "- never use the phrase either way.\n"
+    "- never start with soft intros like ever wondered or what if.\n\n"
+    "output rules:\n"
+    "- output only fu lines.\n"
+    "- never output !mma.\n"
+    "- never output the question.\n"
+    "- output only lines starting with: fu1: fu1.5: fu2: fu2.5: fu3: fu3.5:\n"
+)
+
+
+def _fu_prompt(mm_line: str) -> str:
+    return (
+        "user mm line:\n"
+        f"!mma {mm_line}\n\n"
+        "generate fus for this mm.\n"
+        "follow all system rules.\n"
+        "do not rewrite the question.\n"
+        "do not add anything except fu1 fu1.5 fu2 fu2.5 fu3 fu3.5 lines.\n"
+    )
+
+
+async def generate_fus(mm_line: str) -> list[str]:
+    if not client:
+        return []
+    prompt = _fu_prompt(mm_line)
+    # OpenAI python lib je sync; izvrši u thread-u da ne blokira event loop
+    def _call():
+        rsp = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": AI_FU_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.9,
+            max_tokens=120,
+        )
+        return rsp.choices[0].message.content.strip()
+
+    text = await asyncio.to_thread(_call)
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    labeled, i = [], 1
+    for ln in lines:
+        if ":" in ln[:8].lower():
+            labeled.append(ln)
+        else:
+            key = (
+                "fu1:"
+                if i == 1
+                else ("fu1.5:" if i == 2 else ("fu2:" if i == 3 else "fu2.5:"))
+            )
+            labeled.append(f"{key} {ln.lower()}")
+        i += 1
+    return labeled[:4]
+
+
+# ---------- ROLE LOOKUP ----------
+def norm(s: str) -> str:
+    return re.sub(r"[^A-Z0-9]+", "", (s or "").upper())
+
+
+def parse_roles_from_text(guild: discord.Guild, text: str) -> list[discord.Role]:
+    ids = re.findall(r"<@&(\d+)>", text or "")
+    return [guild.get_role(int(x)) for x in ids if guild.get_role(int(x))]
+
+
+def parse_user_ids(text: str) -> list[int]:
+    return [int(x) for x in re.findall(r"<@!?(\d+)>", text or "")]
+
+
+async def ensure_member(guild: discord.Guild, user_id: int):
+    m = guild.get_member(user_id)
+    if m:
+        return m
+    try:
+        return await guild.fetch_member(user_id)
+    except:
+        return None
+
+
+def member_from_token(guild: discord.Guild, token: str):
+    ids = parse_user_ids(token)
+    if ids:
+        return guild.get_member(ids[0]) or None
+    cleaned = token.replace("@", "").strip()
+    if not cleaned:
+        return None
+    for m in guild.members:
+        if m.display_name.lower() == cleaned.lower() or (
+            m.name and m.name.lower() == cleaned.lower()
+        ):
+            return m
+    target = norm(cleaned)
+    for m in guild.members:
+        if norm(m.display_name) == target or norm(m.name) == target:
+            return m
+    return None
+
+
+def can_touch_role(bot_member: discord.Member, role: discord.Role) -> bool:
+    if role is None:
+        return False
+    if role.is_default():
+        return False
+    if role.managed:
+        return False
+    return bot_member.guild_permissions.manage_roles and bot_member.top_role > role
+
+
+def why_blocked(bot_member: discord.Member, role: discord.Role):
+    r = []
+    if role.is_default():
+        r.append("everyone")
+    if role.managed:
+        r.append("managed")
+    if not bot_member.guild_permissions.manage_roles:
+        r.append("no Manage Roles")
+    if bot_member.top_role <= role:
+        r.append("bot below role")
+    return r or ["ok"]
+
+
+# ==================== PERMISSION CHECKS ====================
+def need_manage_roles():
+    def predicate(interaction: discord.Interaction):
+        gp = interaction.user.guild_permissions
+        if gp.manage_roles or gp.administrator:
+            return True
+        raise app_commands.CheckFailure("treba ti Manage Roles.")
+
+    return app_commands.check(predicate)
+
+
+def need_off_manager():
+    async def predicate(interaction: discord.Interaction):
+        if any(r.id == OFF_CANCEL_ROLE_ID for r in interaction.user.roles):
+            return True
+        await interaction.response.send_message("Samo manager rola može ovo.", ephemeral=True)
+        return False
+
+    return app_commands.check(predicate)
+
+
+def need_manage_channels():
+    async def predicate(interaction: discord.Interaction):
+        if not interaction.user.guild_permissions.manage_channels:
+            await interaction.response.send_message(
+                "Nemaš Manage Channels permisiju.", ephemeral=True
+            )
+            return False
+        return True
+
+    return app_commands.check(predicate)
+
+
+
+
+async def safe_add_roles(
+    member: discord.Member, roles: list[discord.Role], reason: str
+):
+    added = []
+    for i in range(0, len(roles), CHUNK_SIZE):
+        chunk = roles[i : i + CHUNK_SIZE]
+        for attempt in range(1, RETRIES + 1):
+            try:
+                if chunk:
+                    await member.add_roles(*chunk, reason=reason)
+                    added.extend(chunk)
+                await asyncio.sleep(SLEEP_BETWEEN_CALLS)
+                break
+            except discord.Forbidden:
+                raise
+            except Exception:
+                if attempt >= RETRIES:
+                    raise
+                await asyncio.sleep(RETRY_BASE_SLEEP * attempt)
+    return added
+
+
+async def safe_remove_roles(
+    member: discord.Member, roles: list[discord.Role], reason: str
+):
+    removed = []
+    for i in range(0, len(roles), CHUNK_SIZE):
+        chunk = roles[i : i + CHUNK_SIZE]
+        for attempt in range(1, RETRIES + 1):
+            try:
+                if chunk:
+                    await member.remove_roles(*chunk, reason=reason)
+                    removed.extend(chunk)
+                await asyncio.sleep(SLEEP_BETWEEN_CALLS)
+                break
+            except discord.Forbidden:
+                raise
+            except Exception:
+                if attempt >= RETRIES:
+                    raise
+                await asyncio.sleep(RETRY_BASE_SLEEP * attempt)
+    return removed
+
+
+@tree.command(description="dodeli više rola jednom useru", guild=GUILD_OBJ)
+@need_manage_roles()
+async def assign(interaction: discord.Interaction, user: discord.Member, roles: str):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    guild = interaction.guild
+    bot_member = guild.me
+    role_objs = parse_roles_from_text(guild, roles)
+    if not role_objs:
+        return await interaction.followup.send(
+            "pinguj role: @Role1 @Role2", ephemeral=True
+        )
+    ok = [r for r in role_objs if can_touch_role(bot_member, r)]
+    bad = [r for r in role_objs if r not in ok]
+    try:
+        added = await safe_add_roles(user, ok, reason=f"by {interaction.user}")
+        msg = [
+            f"dodato {user.display_name}: {', '.join(r.name for r in added) or 'ništa'}"
+        ]
+        for r in bad:
+            msg.append(f"preskočeno {r.name}: {' / '.join(why_blocked(bot_member, r))}")
+        await interaction.followup.send(
+            "```\n" + "\n".join(msg) + "\n```", ephemeral=True
+        )
+    except Exception as e:
+        await interaction.followup.send(f"fail: {e}", ephemeral=True)
+
+# ========== /d - Brisanje trenutnog kanala (bez potvrde) ==========
+@tree.command(
+    name="d",
+    description="Briše trenutni kanal u kojem se komanda koristi",
+    guild=GUILD_OBJ
+)
+@need_manage_channels()
+async def delete_channel(interaction: discord.Interaction):
+    channel = interaction.channel
+
+    if not isinstance(channel, discord.TextChannel):
+        await interaction.response.send_message("❌ Ova komanda radi samo u tekstualnim kanalima.", ephemeral=True)
+        return
+
+    channel_name = channel.name
+
+    try:
+        # Prvo odgovori, pa onda obriši
+        await interaction.response.send_message(
+            f"🗑 Brišem kanal `{channel_name}`...",
+            ephemeral=True
+        )
+        await asyncio.sleep(0.8)  # malo vremena da se poruka pošalje
+        await channel.delete(reason=f"/d by {interaction.user}")
+    except discord.Forbidden:
+        await interaction.followup.send("❌ Nemam dozvolu da obrišem ovaj kanal.", ephemeral=True)
+    except Exception as e:
+        try:
+            await interaction.followup.send(f"❌ Greška: {e}", ephemeral=True)
+        except:
+            pass
+
+# ========== /dcat - BRISANJE KANALA + KATEGORIJE ==========
+@tree.command(
+    name="dcat",
+    description="Briše trenutni kanal + celu kategoriju u kojoj se nalazi (OPREZNO!)",
+    guild=GUILD_OBJ
+)
+@need_manage_channels()  # ili @need_admin() ako imaš tu dekorator
+async def dcat(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    channel = interaction.channel
+    if not channel:
+        await interaction.followup.send("❌ Nije moguće dohvatiti kanal.", ephemeral=True)
+        return
+
+    category = channel.category
+    if not category:
+        await interaction.followup.send("❌ Ovaj kanal nije u kategoriji.", ephemeral=True)
+        return
+
+    channel_name = channel.name
+    category_name = category.name
+    channel_count = len(category.channels)
+
+    try:
+        # Prvo šaljemo potvrdu
+        await interaction.followup.send(
+            f"🗑 **Brišem kanal** `{channel_name}`\n"
+            f"📁 **I kategoriju** `{category_name}` (ima {channel_count} kanala)\n\n"
+            f"**Ovo se ne može vratiti!** Potvrdi sa `da` ako si siguran.",
+            ephemeral=True
+        )
+
+        # Čekamo potvrdu od korisnika (30 sekundi)
+        def check(msg):
+            return msg.author == interaction.user and msg.channel == interaction.channel and msg.content.lower() in ["da", "yes", "ok"]
+
+        try:
+            msg = await bot.wait_for('message', check=check, timeout=30.0)
+        except asyncio.TimeoutError:
+            await interaction.followup.send("⏰ Vreme je isteklo. Ništa nije obrisano.", ephemeral=True)
+            return
+
+        # Brisanje
+        await channel.delete(reason=f"dcat by {interaction.user}")
+        await asyncio.sleep(1)  # malo pauze
+
+        await category.delete(reason=f"dcat by {interaction.user}")
+
+        await interaction.followup.send(
+            f"✅ **Uspešno obrisano!**\n"
+            f"Kanal: `{channel_name}`\n"
+            f"Kategorija: `{category_name}`",
+            ephemeral=True
+        )
+
+    except discord.Forbidden:
+        await interaction.followup.send("❌ Nemam dozvolu da brišem kanale/kategorije.", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Greška: {e}", ephemeral=True)
+
+@tree.command(description="skini konkretne role sa usera", guild=GUILD_OBJ)
+@need_manage_roles()
+async def deassign(interaction: discord.Interaction, user: discord.Member, roles: str):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    guild = interaction.guild
+    bot_member = guild.me
+    role_objs = parse_roles_from_text(guild, roles)
+    if not role_objs:
+        return await interaction.followup.send(
+            "pinguj role: @Role1 @Role2", ephemeral=True
+        )
+    ok = [r for r in role_objs if can_touch_role(bot_member, r)]
+    bad = [r for r in role_objs if r not in ok]
+    try:
+        removed = await safe_remove_roles(user, ok, reason=f"by {interaction.user}")
+        msg = [
+            f"skinuto {user.display_name}: {', '.join(r.name for r in removed) or 'ništa'}"
+        ]
+        for r in bad:
+            msg.append(f"preskočeno {r.name}: {' / '.join(why_blocked(bot_member, r))}")
+        await interaction.followup.send(
+            "```\n" + "\n".join(msg) + "\n```", ephemeral=True
+        )
+    except Exception as e:
+        await interaction.followup.send(f"fail: {e}", ephemeral=True)
+
+
+@tree.command(description="skini sve role koje bot sme (jedan user)", guild=GUILD_OBJ)
+@need_manage_roles()
+async def clean(interaction: discord.Interaction, user: discord.Member):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    guild = interaction.guild
+    bot_member = guild.me
+    removable = [r for r in user.roles if can_touch_role(bot_member, r)]
+    blocked = [r for r in user.roles if r not in removable and not r.is_default()]
+    if not removable:
+        return await interaction.followup.send(
+            f"nema šta da skidam sa {user.display_name}", ephemeral=True
+        )
+    removed = await safe_remove_roles(user, removable, reason=f"by {interaction.user}")
+    msg = [
+        f"obrisano {user.display_name}: {', '.join(r.name for r in removed) or 'ništa'}"
+    ]
+    if blocked:
+        msg.append("preskočeno:")
+        for r in blocked:
+            msg.append(f"- {r.name}: {' / '.join(why_blocked(bot_member, r))}")
+    await interaction.followup.send("```\n" + "\n".join(msg) + "\n```", ephemeral=True)
+
+# ========== /migrateprefix - Zamena TEAM → > prefix ==========
+@tree.command(
+    name="migrateprefix",
+    description="Jednokratno: menja sve TEAM role u > prefix",
+    guild=GUILD_OBJ
+)
+@need_manage_roles()
+async def migrate_prefix(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    guild = interaction.guild
+    bot_member = guild.me
+
+    # Pronalazimo sve TEAM role
+    team_roles = [
+        r for r in guild.roles 
+        if r.name.upper().startswith("TEAM ") 
+        and r < bot_member.top_role 
+        and not r.managed
+    ]
+
+    if not team_roles:
+        return await interaction.followup.send("❌ Nisam pronašao nijednu TEAM rolu.", ephemeral=True)
+
+    await interaction.followup.send(
+        f"🔄 Počinjem migraciju **{len(team_roles)}** rola...\n"
+        "Ovo može potrajati. Ne zatvaraj Discord.",
+        ephemeral=True
+    )
+
+    success = 0
+    errors = []
+
+    for role in team_roles:
+        try:
+            old_name = role.name
+            new_name = ">" + old_name[5:].strip()  # TEAM XXX → >XXX
+
+            if new_name == old_name:
+                continue
+
+            await role.edit(name=new_name, reason=f"Migrate prefix by {interaction.user}")
+            success += 1
+            print(f"✅ {old_name} → {new_name}")
+            await asyncio.sleep(1.2)  # da ne bi rate limit
+
+        except discord.Forbidden:
+            errors.append(f"❌ Nema permisiju za: {role.name}")
+        except Exception as e:
+            errors.append(f"❌ Greška kod {role.name}: {e}")
+
+    # Završni izveštaj
+    embed = discord.Embed(
+        title="✅ Migracija prefixa završena",
+        color=0x00ff88
+    )
+    embed.add_field(name="Uspešno promenjeno", value=f"{success}/{len(team_roles)} rola", inline=False)
+
+    if errors:
+        embed.add_field(name="Greške", value="\n".join(errors[:15]), inline=False)  # max 15 grešaka
+
+    embed.set_footer(text=f"Izvršio: {interaction.user}")
+
+    await interaction.followup.send(embed=embed)
+
+@tree.command(
+    name="a", description="batch assign: @u1 @r1 @r2 ; @u2 @r3 ...", guild=GUILD_OBJ
+)
+@need_manage_roles()
+async def a_batch(interaction: discord.Interaction, payload: str):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    guild = interaction.guild
+    bot_member = guild.me
+    text = payload.replace(";", " ")
+    tokens = re.findall(r"<@!?(\d+)>|<@&(\d+)>", text)
+    batches, current_uid, current_roles = [], None, []
+    for uid, rid in tokens:
+        if uid:
+            if current_uid and current_roles:
+                batches.append((current_uid, current_roles))
+                current_roles = []
+            current_uid = int(uid)
+        else:
+            role = guild.get_role(int(rid))
+            if current_uid:
+                current_roles.append(role)
+    if current_uid and current_roles:
+        batches.append((current_uid, current_roles))
+    if not batches:
+        return await interaction.followup.send(
+            "nisam našao user+role kombinacije", ephemeral=True
+        )
+    lines = []
+    for idx, (uid, roles) in enumerate(batches, start=1):
+        member = await ensure_member(guild, uid)
+        if not member:
+            lines.append(f"[{idx}] user nije nađen")
+            continue
+        ok = [r for r in roles if can_touch_role(bot_member, r)]
+        try:
+            added = await safe_add_roles(
+                member, ok, reason=f"batch by {interaction.user}"
+            )
+            lines.append(
+                f"[{idx}] {member.display_name} dodato: {', '.join(r.name for r in added) or 'ništa'}"
+            )
+        except Exception as e:
+            lines.append(f"[{idx}] {member.display_name} FAIL: {e}")
+        if idx % PROGRESS_EVERY_N == 0:
+            await interaction.followup.send(
+                f"napredak: {idx}/{len(batches)} gotovih…", ephemeral=True
+            )
+    msg = "rezime:\n" + "\n".join(lines)
+    for i in range(0, len(msg), 1800):
+        await interaction.followup.send(f"```\n{msg[i:i+1800]}\n```", ephemeral=True)
+
+
+@tree.command(
+    name="cleanmulti",
+    description="clean više usera; zadrži navedene role (keep)",
+    guild=GUILD_OBJ,
+)
+@need_manage_roles()
+async def clean_multi(interaction: discord.Interaction, users: str, keep: str = ""):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    guild = interaction.guild
+    bot_member = guild.me
+    user_ids = parse_user_ids(users)
+    keep_roles = parse_roles_from_text(guild, keep or "")
+    keep_ids = {r.id for r in keep_roles}
+    if not user_ids:
+        return await interaction.followup.send("nisi tagovao korisnike", ephemeral=True)
+    lines = []
+    for idx, uid in enumerate(user_ids, start=1):
+        member = await ensure_member(guild, uid)
+        if not member:
+            lines.append(f"[{idx}] user nije nađen")
+            continue
+        removable = [
+            r
+            for r in member.roles
+            if can_touch_role(bot_member, r) and r.id not in keep_ids
+        ]
+        blocked = [
+            r
+            for r in member.roles
+            if (r.id in keep_ids)
+            or (not can_touch_role(bot_member, r) and not r.is_default())
+        ]
+        try:
+            removed = await safe_remove_roles(
+                member, removable, reason=f"cleanmulti by {interaction.user}"
+            )
+            ok_names = ", ".join(r.name for r in removed) if removed else "ništa"
+            if blocked:
+                why = "; ".join(
+                    f"{r.name} [{' / '.join(['KEEP'] if r.id in keep_ids else why_blocked(bot_member, r))}]"
+                    for r in blocked
+                    if r
+                )
+                lines.append(
+                    f"[{idx}] {member.display_name} obrisano: {ok_names} preskočeno: {why}"
+                )
+            else:
+                lines.append(f"[{idx}] {member.display_name} obrisano: {ok_names}")
+        except Exception as e:
+            lines.append(f"[{idx}] {member.display_name} FAIL: {e}")
+        if idx % PROGRESS_EVERY_N == 0:
+            await interaction.followup.send(
+                f"napredak: {idx}/{len(user_ids)} gotovih…", ephemeral=True
+            )
+    msg = "rezime /cleanmulti:\n" + "\n".join(lines)
+    for i in range(0, len(msg), 1800):
+        await interaction.followup.send(f"```\n{msg[i:i+1800]}\n```", ephemeral=True)
+
+
+# ---------- /farm (modal forma) ----------
+# Maksimalan broj podsetnika sa tagom (off day potvrda i farm potvrda)
+MAX_TAG_REMINDERS = 6
+FARM_REMINDER_TIMES = [3600, 7200, 10800, 14400, 18000, 21600][:MAX_TAG_REMINDERS]  # 1h..6h
+farm_reminders = {}  # message_id -> {"user_id", "channel_id", "created_at", "sent":[b,b,b], "done": bool}
+
+
+class FarmModal(Modal, title="Farm unos"):
+    def __init__(self, opener: discord.Member):
+        super().__init__(timeout=None)
+        self.opener = opener
+        self.amount = TextInput(
+            label="Iznos", placeholder="npr. 25 ili $25", required=True, max_length=32
+        )
+        self.model_name = TextInput(
+            label="Ime modela",
+            placeholder="npr. cami / haley / ...",
+            required=True,
+            max_length=100,
+        )
+        self.fan_username = TextInput(
+            label="Username fana",
+            placeholder="npr. @fan123 ili fan#0001",
+            required=True,
+            max_length=100,
+        )
+        self.more_details = TextInput(
+            label="Više detalja",
+            style=TextStyle.paragraph,
+            placeholder="optionalno: linkovi, napomena…",
+            required=False,
+            max_length=1000,
+        )
+        self.add_item(self.amount)
+        self.add_item(self.model_name)
+        self.add_item(self.fan_username)
+        self.add_item(self.more_details)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        farm_roles = " ".join(
+            f"<@&{rid}>" for rid in [1410958063824801802, 1410962105749995591, 1474070997274464379]
+        )
+        lines = [
+            f"**Novi farm unos** (by {self.opener.mention}):",
+            f"- Iznos: `{self.amount.value.strip()}`",
+            f"- Model: `{self.model_name.value.strip()}`",
+            f"- Fan: `{self.fan_username.value.strip()}`",
+        ]
+        extra = self.more_details.value.strip() if self.more_details.value else ""
+        if extra:
+            lines.append(f"- Detalji: {extra}")
+
+        # 1) forma (bez pitanja)
+        await interaction.response.send_message("\n".join(lines))
+        msg = await interaction.original_response()
+        try:
+            await msg.add_reaction("✅")
+            await msg.add_reaction("🚫")
+        except:
+            pass
+
+        # 2) pitanje + tag onog ko je poslao + ✅ react + reminder tracking
+        try:
+            q_msg = await interaction.channel.send(
+                f"**Pitanje:** da li je fan dodat na odgovarajuće liste i da li su ažurirane beleške o istom?\n{self.opener.mention}"
+            )
+            await q_msg.add_reaction("✅")
+            farm_reminders[q_msg.id] = {
+                "user_id": self.opener.id,
+                "channel_id": interaction.channel.id,
+                "created_at": time.time(),
+                "sent": [False] * len(FARM_REMINDER_TIMES),
+                "done": False,
+            }
+        except Exception as e:
+            print("[FARM] question send fail:", e)
+
+        # 3) zasebna poruka sa tagom rola
+        try:
+            await interaction.channel.send(farm_roles)
+        except Exception as e:
+            print("[FARM] role ping fail:", e)
+
+
+@tree.command(name="farm", description="Otvori formu za farm unos", guild=GUILD_OBJ)
+async def farm(interaction: discord.Interaction):
+    await interaction.response.send_modal(FarmModal(opener=interaction.user))
+
+
+# ========== QC - JEDNOSTAVNA VERZIJA SA ČUVANJEM PODATAKA ==========
+@tree.command(name="qc", description="Pošalji Daily QC listu chattera", guild=GUILD_OBJ)
+async def qc(interaction: discord.Interaction):
+    await interaction.response.send_message(
+        "**Daily QC - Unos chattera**\n\n"
+        "Pošalji listu chattera (jedno ime po liniji):",
+        ephemeral=True
+    )
+
+    def check(m):
+        return m.author.id == interaction.user.id and m.channel.id == interaction.channel.id
+
+    try:
+        msg = await bot.wait_for('message', check=check, timeout=300)
+        
+        chatters = [line.strip() for line in msg.content.strip().split("\n") if line.strip()]
+        
+        if not chatters:
+            return await interaction.followup.send("❌ Nisi uneo nijednog chattera.", ephemeral=True)
+
+        now = datetime.now()
+
+        # === ČUVANJE ZA /QCURRENT ===
+        month_key = (now.year, now.month, interaction.user.id)
+        qc_history[month_key].append({
+            'date': now.day,
+            'count': len(chatters),
+            'timestamp': now
+        })
+
+        # Broj QC-a ovog meseca
+        monthly_count = len(qc_history[month_key])
+
+        # Pravljenje reporta
+        report = f"**qc broj {monthly_count} ovog meseca**\n"
+        report += f"**Datum i vreme:** {now.strftime('%d.%m.%Y %H:%M')}\n"
+        report += f"**Broj chattera:** {len(chatters)}\n"
+        report += f"**Popunio:** {interaction.user.mention}\n\n"
+        report += "**Chatteri:**\n"
+        
+        for i, chatter in enumerate(chatters, 1):
+            report += f"{i}. {chatter}\n"
+
+        qc_channel = interaction.guild.get_channel(1493996105380266114)
+        if qc_channel:
+            await qc_channel.send(report)
+            await qc_channel.send(
+                f"<@{923657835164889119}> <@{886983698321391667}> "
+                f"**Daily QC je poslat (broj {monthly_count} ovog meseca).**"
+            )
+
+        await interaction.followup.send(
+            f"✅ QC uspešno poslat (ovo je tvoj **{monthly_count}.** QC ovog meseca).", 
+            ephemeral=True
+        )
+
+    except asyncio.TimeoutError:
+        await interaction.followup.send("Vreme za unos liste je isteklo.", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Greška: {e}", ephemeral=True)
+
+
+
+@tree.command(name="qcurrent", description="Pregled QC reporta za trenutni mesec", guild=GUILD_OBJ)
+@need_manage_roles()
+async def qcurrent(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    now = datetime.now()
+    current_month = (now.year, now.month)
+
+    user_stats = defaultdict(list)
+
+    for key, entries in qc_history.items():
+        year, month, user_id = key
+        if (year, month) == current_month:
+            user = interaction.guild.get_member(user_id)
+            username = user.display_name if user else f"@{user_id}"
+            for entry in entries:
+                user_stats[username].append((entry['date'], entry['count']))
+
+    if not user_stats:
+        return await interaction.followup.send("Još nema QC reporta ovog meseca.", ephemeral=True)
+
+    lines = []
+    total_reports = 0
+
+    for username, data in sorted(user_stats.items()):
+        data = sorted(data)
+        count = len(data)
+        total_reports += count
+        dates_str = ", ".join([f"{day}. ({num})" for day, num in data])
+        lines.append(f"**{username}** - {count} qc reportova\n{dates_str}")
+
+    response = f"**QC Report - {now.strftime('%B %Y')}**\n\n"
+    response += "\n\n".join(lines)
+    response += f"\n\n**Ukupno: {total_reports} QC reportova ovog meseca**"
+
+    embed = discord.Embed(description=response, color=0x00ff88)
+    embed.set_footer(text=f"Generisano: {now.strftime('%d.%m.%Y %H:%M')}")
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+# ========== /ratio - RATIO REPORT (sa 20% odbitkom + ko je poslao) ==========
+class RatioModal(Modal, title="Ratio Report"):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+        self.model = TextInput(
+            label="Ime modela",
+            placeholder="npr. Celeste ili Kara",
+            required=True,
+            max_length=100
+        )
+        self.shift = TextInput(
+            label="Shift",
+            placeholder="GRAVEYARD / AFTERNOON / MAIN",
+            required=True,
+            max_length=50
+        )
+        self.gross_made = TextInput(
+            label="Gross Made ($)",
+            placeholder="npr. 1550",
+            required=True,
+            max_length=20
+        )
+        self.new_subs = TextInput(
+            label="New Subs",
+            placeholder="npr. 45",
+            required=True,
+            max_length=10
+        )
+        self.avg_sub_price = TextInput(
+            label="Avg Sub Price ($)",
+            placeholder="npr. 8.5",
+            required=True,
+            max_length=10
+        )
+
+        self.add_item(self.model)
+        self.add_item(self.shift)
+        self.add_item(self.gross_made)
+        self.add_item(self.new_subs)
+        self.add_item(self.avg_sub_price)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            model_name = self.model.value.strip()
+            shift_name = self.shift.value.strip().upper()
+            gross_made = float(self.gross_made.value.replace(',', '.').strip())
+            new_subs = int(self.new_subs.value.strip())
+            avg_sub_price = float(self.avg_sub_price.value.replace(',', '.').strip())
+
+            if new_subs <= 0:
+                ratio_formatted = "N/A (0 subs)"
+            else:
+                net_made = gross_made * 0.8
+                effective_sub_price = avg_sub_price * 0.8
+                expected = new_subs * effective_sub_price
+                ratio_value = net_made / expected
+
+                if ratio_value >= 1:
+                    ratio_formatted = f"1:{ratio_value:.1f}"
+                else:
+                    ratio_formatted = f"{ratio_value:.1f}:1"
+
+            now = _local_now()
+
+            # === PUNA PORUKA U PRIVATNI KANAL (sa imenom chattera) ===
+            full_report = (
+                f"**Ratio Report**\n"
+                f"**Poslao:** {interaction.user.mention} ({interaction.user.display_name})\n"
+                f"**Datum i vreme:** {now.strftime('%d.%m.%Y %H:%M')}\n"
+                f"**Model:** {model_name}\n"
+                f"**Shift:** {shift_name}\n"
+                f"**Gross Made:** ${gross_made:,.0f}\n"
+                f"**Net Made (posle 20%):** ${net_made:,.0f}\n"
+                f"**New Subs:** {new_subs}\n"
+                f"**Avg Sub Price:** ${avg_sub_price:.2f}\n"
+                f"**Effective Sub Price (posle 20%):** ${effective_sub_price:.2f}\n"
+                f"**Ratio:** `{ratio_formatted}`"
+            )
+
+            private_channel = bot.get_channel(1496174722151354418)
+            if private_channel:
+                await private_channel.send(full_report)
+
+            # === KRATKA POTVRDA U JAVNOM KANALU ===
+            short_confirm = (
+                f"✅ {interaction.user.mention} je uspešno poslao ratio za **{model_name}** "
+                f"({now.strftime('%d.%m.%Y %H:%M')}, {shift_name} smena).\n"
+            )
+            await interaction.response.send_message(short_confirm, ephemeral=False)
+
+        except ValueError:
+            await interaction.response.send_message(
+                "❌ Greška pri unosu brojeva. Proveri da li si uneo validne brojeve (Gross Made, New Subs, Avg Sub Price).",
+                ephemeral=True
+            )
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Neočekivana greška: {e}", ephemeral=True)
+
+
+@tree.command(
+    name="ratio",
+    description="Popuni i pošalji Ratio Report (sa 20% odbitkom)",
+    guild=GUILD_OBJ
+)
+async def ratio_command(interaction: discord.Interaction):
+    await interaction.response.send_modal(RatioModal())
+
+
+@tree.command(name="sortteamroles", description="Bulk sort TEAM roles", guild=GUILD_OBJ)
+@need_manage_roles()
+async def sortteamroles(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+    bot_top = guild.me.top_role.position
+    editable = [
+        r
+        for r in guild.roles
+        if not r.managed and r != guild.default_role and r.position < bot_top
+    ]
+    team = sorted(
+        [r for r in editable if r.name.startswith("TEAM ")],
+        key=lambda r: r.name.lower(),
+    )
+    non_team = sorted(
+        [r for r in editable if not r.name.startswith("TEAM ")],
+        key=lambda r: r.position,
+        reverse=True,  # da zadrži postojeći red gore
+    )
+    final_stack = non_team + team
+    # 🔥 OVO JE KLJUČ
+    final_stack.reverse()
+    payload = {role: i + 1 for i, role in enumerate(final_stack)}
+    await guild.edit_role_positions(payload)
+    await interaction.followup.send(
+        "Roles sorted: NON TEAM top → TEAM A-Z bottom", ephemeral=True
+    )
+
+@tree.command(
+    name="sortteamcats",
+    description="Sortira TEAM kategorije A-Z (od vrha ka dnu)",
+    guild=GUILD_OBJ
+)
+@need_manage_roles()
+async def sortteamcats(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+    
+    try:
+        await sort_team_categories(guild)
+        await interaction.followup.send("✅ TEAM kategorije su uspešno sortirane (A-Z).", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Greška pri sortiranju kategorija: {e}", ephemeral=True)
+
+# ========== /cic - Clock In Check + Blanko lista za copy ==========
+@tree.command(
+    name="cic",
+    description="Clock In Check - pojedinačne poruke + blanko lista za copy",
+    guild=GUILD_OBJ
+)
+@need_manage_roles()
+async def cic(interaction: discord.Interaction, shift: str = None):
+    await interaction.response.defer(ephemeral=True)
+
+    if shift is None:
+        ch_name = interaction.channel.name.lower()
+        if "grave" in ch_name: shift = "grave"
+        elif "after" in ch_name or "afternoon" in ch_name: shift = "after"
+        elif "main" in ch_name: shift = "main"
+        else:
+            return await interaction.followup.send("❌ Koristi: `/cic grave` / `after` / `main`", ephemeral=True)
+
+    mgmt_channel = bot.get_channel(1498220907775262750)
+    schedule_channel = bot.get_channel(SCHEDULE_CHANNEL.get(shift))
+
+    if not mgmt_channel or not schedule_channel:
+        return await interaction.followup.send("❌ Neki kanal nije pronađen.", ephemeral=True)
+
+    # Pronalazak poslednjeg rasporeda
+    messages = [msg async for msg in schedule_channel.history(limit=30)]
+    schedule_msg = None
+    for msg in messages:
+        if "@" in msg.content and any(x in msg.content for x in [":", "/", ","]):
+            schedule_msg = msg
+            break
+
+    if not schedule_msg:
+        return await interaction.followup.send(f"❌ Nisam pronašao raspored u {shift.upper()} kanalu.", ephemeral=True)
+
+    # Parsiranje chattera
+    text = schedule_msg.content
+    pattern = re.compile(r'(@[\.\w]+|<\@!?\d+>)(.*?)((?=@[\.\w]+|<\@!?\d+>)|$)', re.S)
+    blocks = pattern.findall(text)
+
+    chatter_names = []
+    for first_user, content, _ in blocks:
+        assignees = re.findall(r'(@[\.\w]+|<\@!?\d+>)', first_user + content)
+        for token in assignees:
+            member = member_from_token(interaction.guild, token)
+            name = member.display_name if member else token
+            chatter_names.append(name)
+
+    unique_names = list(dict.fromkeys(chatter_names))  # uklanja duplikate
+
+    # === 1. Header poruka ===
+    await mgmt_channel.send(
+        f"**🕒 {shift.upper()} CLOCK IN CHECK**\n"
+        f"**Raspored:** {schedule_msg.jump_url}\n"
+        f"**Ukupno:** {len(unique_names)} chattera\n"
+        "────────────────────"
+    )
+
+    # === 2. Pojedinačne poruke sa ✅ ===
+    for i, name in enumerate(unique_names, 1):
+        msg = await mgmt_channel.send(f"`{i:2d}.` **{name}**")
+        await msg.add_reaction("✅")
+
+    # === 3. BLANKO PORUKA ZA COPY (ono što si tražio) ===
+    blanko_lista = ", ".join(unique_names)
+    await mgmt_channel.send(f"!check {blanko_lista}")
+
+    await interaction.followup.send(
+        f"✅ Gotovo! Poslao sam **{len(unique_names)}** chattera u management kanal.\n"
+        "Na dnu je **blanko lista** koju možeš desni klik → Copy.", 
+        ephemeral=True
+    )
+
+# ========== /vis - Dodeli vidljivost roli za sve TEAM kategorije ==========
+@tree.command(
+    name="vis",
+    description="Dodeljuje @roli vidljivost na sve TEAM kategorije i kanale u njima",
+    guild=GUILD_OBJ
+)
+@need_manage_channels()
+async def vis(interaction: discord.Interaction, role: discord.Role):
+    await interaction.response.defer(ephemeral=True)
+
+    guild = interaction.guild
+    team_categories = [cat for cat in guild.categories if cat.name.upper().startswith("TEAM ")]
+
+    if not team_categories:
+        return await interaction.followup.send("❌ Nisam pronašao nijednu TEAM kategoriju.", ephemeral=True)
+
+    success = 0
+    errors = []
+
+    await interaction.followup.send(f"🔄 Počinjem dodeljivanje vidljivosti roli **{role.name}** na {len(team_categories)} TEAM kategorija...", ephemeral=True)
+
+    for category in team_categories:
+        try:
+            # 1. Dodeli permisiju na kategoriju
+            await category.set_permissions(role, view_channel=True, reason=f"/vis by {interaction.user}")
+            await asyncio.sleep(1.2)
+
+            # 2. Dodeli permisiju na sve kanale unutar kategorije
+            for channel in category.channels:
+                if isinstance(channel, discord.TextChannel) or isinstance(channel, discord.VoiceChannel):
+                    await channel.set_permissions(role, view_channel=True, reason=f"/vis by {interaction.user}")
+                    await asyncio.sleep(1.0)
+
+            success += 1
+            print(f"[VIS] Uspešno za kategoriju: {category.name}")
+
+        except discord.Forbidden:
+            errors.append(f"❌ Nema permisiju za kategoriju {category.name}")
+        except Exception as e:
+            errors.append(f"❌ Greška kod {category.name}: {e}")
+
+    # Završni izveštaj
+    embed = discord.Embed(
+        title="✅ /vis završeno",
+        color=0x00ff88
+    )
+    embed.add_field(name="Uspešno obrađeno", value=f"{success}/{len(team_categories)} TEAM kategorija", inline=False)
+    
+    if errors:
+        embed.add_field(name="Greške", value="\n".join(errors[:10]), inline=False)  # max 10 grešaka
+    else:
+        embed.add_field(name="Status", value="Sve TEAM kategorije i kanali su uspešno ažurirani.", inline=False)
+
+    embed.set_footer(text=f"Izvršio: {interaction.user}")
+
+    await interaction.followup.send(embed=embed)
+
+# ========== /ticket - Uslovna vidljivost po shiftu ==========
+TICKET_CATEGORY_ID = 1504735887307837513
+TRANSCRIPT_CATEGORY_ID = 1504739040706953228
+
+# Shift roles i njihovi supervizori
+SHIFT_SUPERVISOR_MAP = {
+    1410962300554313870: 1504564869569970196,   # Graveyard Shift → Graveyard Supervisor
+    # Ako kasnije imaš i za Afternoon/Main, dodaj ovde:
+    # 1410962344124612710: 1234567890,         # Afternoon Shift → Supervisor
+    # 1410962407454675047: 9876543210,         # Main Shift → Supervisor
+}
+
+# ko sme da zatvori reassign reakcijom ✅ (popuni se odmah ispod)
+REASSIGN_DONE_ROLE_IDS = set()
+
+OTHER_SUPPORT_ROLES = [
+    1410962105749995591,
+    1410958063824801802,
+    1474070997274464379,
+    1504564869569970196
+]
+
+async def create_ticket_channel(guild, member, razlog):
+    """Kreira ticket kanal za member-a (isto kao /ticket). Vraća kanal ili baca exception."""
+    category = guild.get_channel(TICKET_CATEGORY_ID)
+    ticket_name = f"ticket-{member.name}"
+
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        member: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_messages=True),
+    }
+
+    # Dodajemo ostale support role
+    for role_id in OTHER_SUPPORT_ROLES:
+        role = guild.get_role(role_id)
+        if role:
+            overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_messages=True)
+
+    # === USLOVNA VIDLJIVOST ZA SUPERVIZORA ===
+    supervisor_to_ping = None
+    for shift_role_id, sup_role_id in SHIFT_SUPERVISOR_MAP.items():
+        if any(r.id == shift_role_id for r in member.roles):
+            supervisor_to_ping = sup_role_id
+            break
+
+    if supervisor_to_ping:
+        sup_role = guild.get_role(supervisor_to_ping)
+        if sup_role:
+            overwrites[sup_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_messages=True)
+
+    ticket_channel = await guild.create_text_channel(
+        name=ticket_name,
+        category=category,
+        overwrites=overwrites,
+        reason=f"Ticket by {member}"
+    )
+
+    # === Pingovi van embeda ===
+    mentions = [f"<@{member.id}>"]
+    if supervisor_to_ping:
+        mentions.append(f"<@&{supervisor_to_ping}>")
+    for rid in OTHER_SUPPORT_ROLES:
+        mentions.append(f"<@&{rid}>")
+    await ticket_channel.send(" ".join(mentions))
+
+    # === Embed ===
+    embed = discord.Embed(
+        title="🎟️ Novi Ticket",
+        description=f"**Korisnik:** {member.mention}\n**Razlog:** {razlog}",
+        color=0x00b0f4,
+        timestamp=discord.utils.utcnow()
+    )
+    embed.set_footer(text="Koristite /close za zatvaranje sa transcriptom\n/delete za brisanje bez transcripta")
+    await ticket_channel.send(embed=embed)
+    return ticket_channel
+
+
+REASSIGN_DONE_ROLE_IDS = set(OTHER_SUPPORT_ROLES) | {OFF_CANCEL_ROLE_ID}
+
+
+@tree.command(
+    name="ticket",
+    description="Otvori novi ticket",
+    guild=GUILD_OBJ
+)
+@app_commands.describe(razlog="Razlog otvaranja ticketa")
+async def ticket(interaction: discord.Interaction, razlog: str):
+    await interaction.response.defer(ephemeral=True)
+    try:
+        ticket_channel = await create_ticket_channel(interaction.guild, interaction.user, razlog)
+        await interaction.followup.send(
+            f"✅ Ticket je uspešno otvoren! → {ticket_channel.mention}",
+            ephemeral=True
+        )
+    except Exception as e:
+        await interaction.followup.send(f"❌ Greška: {e}", ephemeral=True)
+
+
+# ========== AUTO ONBOARDING (novi član na serveru) ==========
+JOIN_ROLE_IDS = [1410962215770656768, 1438523502901592064]
+JOIN_TICKET_RAZLOG = "Onboarding — novi član"
+
+WELCOME_TEXT = """Hej, {mention}
+
+drago nam je da si prosao test obuke i da uskoro kreces sa radom
+
+Molimo te da budes strpljiv i da bez obzira da li imao ili nemao iskustva, pratis nase upute i radis kao sto si radio i na obukama
+
+Prvo polazis od pregledavanja svih kanala na telegramu u folderu LV start: 
+
+https://t.me/addlist/s2nHCQZUNXI0OTY0
+
+i zatim ces odraditi 2 kratka testa koja se ticu osnovnih i tehnickih pitanja.
+
+kratak rezime kanala:
+
+U kanalu #pravilnik ces naci sve o pravilima, uslovima koji se ticu setup-a bez kojih ne mozes kretati u koliko nemas mogucnost za stabilnom internet konekcijom, pc racunarom ili laptopom (pozeljno oba) i slusalicama sa mikrofonom uz sve pratece hardverske komponente. vise o role-ama koje su zastupljene na discord serveru i pravila komunikacije,
+
+Sekcija zabranjeno i zabranjeno primeri je prebitna i zato obrati paznju da predjes tu sekciju posle sekcije pravilno
+
+Sekcija schedules gde jasno stoji sve oko rasporeda, kako sta, day-a off itd
+
+Inspo je kanal gde saljemo ideje, iako smo sada presli na drugaciju taktiku tj da saljemo objasnjenja, ideje i primere za svaki segment u poseban kanal (sekcija IMPORTANT)
+
+New features - kanal gde smo objedinili obavestenja za AI alate koje ce ti pomoci da vremenom pravis bolje rezultate ali i da imas neke od informacija na dohvat ruke. Pazljivo procitaj sve jer je jako bitno razumevanje bas svega sto je u kanalu
+
+Announcements - kanal za obavestenja gde saljemo najbitnije stvari a ticu se performansi, upitnika za feedback, skretanje paznje na pojedinosti, greske koje se ponavljaju itd.
+
+svaki od ostalih kanala koji je pod sekcijom LV start sluzi za smernice koje ti mogu pomoci u laksem snalazenju, hendlovanju vise trafika, pravilima u odredjenim situacijama, primerima, detaljnim review-ovima farmi itd. Posveti paznju ovoj sekciji jer sto vise stvari pohvatas, pravices vise love
+
 Obavezno predji sve sekcije jer pre pocetka rada ces imati jos jedan "mini test" gde ces na osnovu prikupljenog znanja odgovoriti na par pitanja cisto da budemo sigurni da si sve procitao.
 
 Moze da zvuci dosadno, naporno itd ali znamo da neke od stvari su toliko detaljno objasnjene da ce ti ustedeli masu vremena i pomoci pri vecem broju prodaja pa samim tim i boljim prihodima.
