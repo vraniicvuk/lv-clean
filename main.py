@@ -4693,6 +4693,168 @@ def _disabled_view(label, emoji, style):
     return v
 
 
+# ========== ONBOARD FLOW: test -> smena -> tim -> QC kanal ==========
+OB_TEAMS = [str(i) for i in range(1, 12)] + ["COVER"]
+# popuni ID-jeve kad stignu; ako je prazno, bot traži po imenu ("TEAM 3", "COVER TEAM")
+TEAM_ROLE_IDS = {}        # "3": role_id
+TEAM_CATEGORY_IDS = {}    # "3": category_id
+TEAM_QC_ROLE_IDS = {}     # "3": qc_role_id
+
+
+def _team_label(code):
+    return "COVER TEAM" if code == "COVER" else f"TEAM {code}"
+
+
+def _norm(s):
+    return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+
+
+def _find_team_role(guild, code):
+    rid = TEAM_ROLE_IDS.get(code)
+    if rid:
+        return guild.get_role(rid)
+    want = _norm(_team_label(code))
+    return discord.utils.find(lambda r: _norm(r.name) == want, guild.roles)
+
+
+def _find_team_category(guild, code):
+    cid = TEAM_CATEGORY_IDS.get(code)
+    if cid:
+        return guild.get_channel(cid)
+    want = _norm(_team_label(code))
+    return discord.utils.find(lambda c: _norm(c.name) == want, guild.categories)
+
+
+class ShiftPickSelect(discord.ui.Select):
+    def __init__(self):
+        super().__init__(
+            placeholder="Izaberi smenu",
+            custom_id="lvob_shift",
+            options=[
+                discord.SelectOption(label="MAIN", value="main"),
+                discord.SelectOption(label="AFTERNOON", value="afternoon"),
+                discord.SelectOption(label="GRAVEYARD", value="graveyard"),
+            ],
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        msg = interaction.message
+        target = msg.mentions[0] if msg.mentions else None
+        if not target or interaction.user.id != target.id:
+            return await interaction.response.send_message("❌ Smenu bira samo chatter kome je poruka namenjena.", ephemeral=True)
+        shift = self.values[0]
+        guild = interaction.guild
+        member = guild.get_member(target.id) or await guild.fetch_member(target.id)
+        role = guild.get_role(SHIFT_ROLES[shift])
+        await interaction.response.defer()
+        try:
+            old = [guild.get_role(rid) for k, rid in SHIFT_ROLES.items() if k != shift]
+            old = [x for x in old if x and x in member.roles]
+            if old:
+                await member.remove_roles(*old, reason="onboard: promena smene")
+            if role:
+                await member.add_roles(role, reason="onboard: izbor smene")
+        except Exception as e:
+            return await interaction.followup.send(f"❌ Ne mogu da dodelim rolu smene: {e}", ephemeral=True)
+        try:
+            await msg.edit(content=msg.content + f"\n\n✅ Izabrano: **{SHIFT_LABELS[shift]}**", view=None)
+        except Exception:
+            pass
+        await interaction.channel.send(
+            f"{member.mention} je izabrao/la smenu **{SHIFT_LABELS[shift]}**.\n"
+            f"<@&{REQ_MANAGER_ROLE_ID}> — dodeli tim:",
+            view=TeamPickView(),
+            allowed_mentions=discord.AllowedMentions(users=False, roles=True, everyone=False),
+        )
+
+
+class ShiftPickView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(ShiftPickSelect())
+
+
+class TeamPickSelect(discord.ui.Select):
+    def __init__(self):
+        super().__init__(
+            placeholder="Dodeli tim",
+            custom_id="lvob_team",
+            options=[discord.SelectOption(label=_team_label(c), value=c) for c in OB_TEAMS],
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not any(r.id == REQ_MANAGER_ROLE_ID for r in getattr(interaction.user, "roles", [])):
+            return await interaction.response.send_message("❌ Tim dodeljuje samo manager.", ephemeral=True)
+        msg = interaction.message
+        target = msg.mentions[0] if msg.mentions else None
+        if not target:
+            return await interaction.response.send_message("❌ Ne nalazim chattera u poruci.", ephemeral=True)
+        code = self.values[0]
+        guild = interaction.guild
+        await interaction.response.defer()
+        member = guild.get_member(target.id) or await guild.fetch_member(target.id)
+        notes = []
+
+        role = _find_team_role(guild, code)
+        if role:
+            try:
+                await member.add_roles(role, reason=f"onboard: {_team_label(code)} by {interaction.user}")
+            except Exception as e:
+                notes.append(f"⚠️ rola tima: {e}")
+        else:
+            notes.append(f"⚠️ Ne nalazim rolu {_team_label(code)} — dodeli ručno.")
+
+        cat = _find_team_category(guild, code)
+        qc_role = guild.get_role(TEAM_QC_ROLE_IDS[code]) if TEAM_QC_ROLE_IDS.get(code) else None
+        qc_ch = None
+        ch_name = "qc-" + re.sub(r"[^a-z0-9]+", "-", member.display_name.lower()).strip("-")
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            member: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, attach_files=True),
+            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
+        }
+        if qc_role:
+            overwrites[qc_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+        else:
+            notes.append(f"⚠️ QC rola za {_team_label(code)} nije podešena — dodaj je ručno na kanal.")
+        if not cat:
+            notes.append(f"⚠️ Ne nalazim kategoriju {_team_label(code)} — kanal pravim bez kategorije.")
+        try:
+            qc_ch = await guild.create_text_channel(ch_name, category=cat, overwrites=overwrites, reason="onboard QC kanal")
+            await qc_ch.send(
+                f"👋 {member.mention} — ovo je tvoj privatni QC kanal ({_team_label(code)})."
+                + (f" {qc_role.mention}" if qc_role else ""),
+                allowed_mentions=discord.AllowedMentions(users=True, roles=True, everyone=False),
+            )
+        except Exception as e:
+            notes.append(f"❌ QC kanal nije napravljen: {e}")
+
+        try:
+            await msg.edit(content=msg.content + f"\n\n✅ Dodeljeno: **{_team_label(code)}** ({interaction.user.mention})", view=None)
+        except Exception:
+            pass
+        await interaction.channel.send(
+            f"✅ {member.mention} je dodeljen/a u **{_team_label(code)}**."
+            + (f" QC kanal: {qc_ch.mention}" if qc_ch else "")
+            + ("\n" + "\n".join(notes) if notes else ""),
+            allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+        )
+
+
+class TeamPickView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(TeamPickSelect())
+
+
+async def send_shift_pick(channel, member):
+    await channel.send(
+        f"{member.mention} 🎉 Test je predat! Izaberi smenu koju želiš da radiš:",
+        view=ShiftPickView(),
+        allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+    )
+
+
 class TestDoneView(discord.ui.View):
     """Persistentno dugme ispod svakog testa (radi i posle restarta)."""
 
@@ -4744,6 +4906,10 @@ class TestDoneView(discord.ui.View):
                 _test_update, t["id"],
                 done2=now.isoformat(), review_msg_id=review.id, stage=3, last_reminder=now.isoformat(),
             )
+            try:
+                await send_shift_pick(channel, interaction.user)
+            except Exception as e:
+                print(f"[ONBOARD] shift pick fail: {e}", flush=True)
 
 
 class TestReviewView(discord.ui.View):
@@ -5850,6 +6016,8 @@ async def _setup_hook():
     bot.add_view(TestDoneView())
     bot.add_view(TestReviewView())
     bot.add_view(ReqDecisionView())
+    bot.add_view(ShiftPickView())
+    bot.add_view(TeamPickView())
 
 bot.setup_hook = _setup_hook
 bot.run(TOKEN)
