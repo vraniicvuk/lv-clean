@@ -4359,6 +4359,32 @@ async def _before_cover_reminder():
     await bot.wait_until_ready()
 
 
+# ---------- /mojid (upis Discord ID-a u BOGY-jev sheet) ----------
+MOJID_URL = os.getenv("MOJID_URL", "https://support-bot-olive.vercel.app/api/mojid")
+
+
+@tree.command(name="mojid", description="Upiši svoj Discord ID u spisak (ime kako piše u rasporedu, npr. ilke)", guild=GUILD_OBJ)
+@app_commands.describe(ime="Tvoje ime kako piše u rasporedu, npr. ilke")
+async def mojid(interaction: discord.Interaction, ime: str):
+    await interaction.response.defer(ephemeral=True)
+    import aiohttp
+    payload = {
+        "token": BRIDGE_TOKEN,
+        "ime": ime,
+        "discord_id": str(interaction.user.id),
+        "username": interaction.user.name,
+    }
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=40)) as session:
+            async with session.post(MOJID_URL, json=payload) as r:
+                data = await r.json(content_type=None)
+        msg = data.get("message") or ("✅ Upisano." if data.get("ok") else "❌ Nije uspelo, javi BOGY-ju.")
+    except Exception as e:
+        print("[MOJID] fail:", e, flush=True)
+        msg = "❌ Nije uspelo, probaj ponovo za par minuta ili javi BOGY-ju."
+    await interaction.followup.send(msg, ephemeral=True)
+
+
 # ---------- BRIDGE (telegram -> discord) ----------
 _bridge_started = False
 
