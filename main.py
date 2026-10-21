@@ -4542,6 +4542,7 @@ async def start_bridge_server():
     app.router.add_post("/announcement", handle_bridge_announcement)
     app.router.add_get("/qc_inbox", handle_qc_inbox)
     app.router.add_post("/qc_inbox/ack", handle_qc_ack)
+    app.router.add_post("/roles", handle_roles)
     app.router.add_get("/reassigns_xlsx", handle_reassigns_xlsx)
     runner = web.AppRunner(app)
     await runner.setup()
@@ -5572,6 +5573,60 @@ async def handle_reassigns_xlsx(request):
         content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{fname}"', "X-Rows": str(rows)},
     )
+
+
+ALLOWED_RT_ROLES = {f"team {i}" for i in range(1, 13)} | {"cover team", "graveyard", "afternoon", "main"}
+
+
+async def handle_roles(request):
+    """POST /roles {token, changes:[{ime, discord_id, add:[naziv role], remove:[naziv role]}]}"""
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid json"}, status=400)
+    if not _qc_token_ok(request, data):
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
+    if not guild:
+        return web.json_response({"ok": False, "error": "guild not found"}, status=500)
+
+    by_name = {r.name.strip().lower(): r for r in guild.roles}
+    results = []
+    for ch in data.get("changes", []):
+        ime = str(ch.get("ime", ""))
+        try:
+            member = await ensure_member(guild, int(ch.get("discord_id")))
+            if not member:
+                results.append({"ime": ime, "ok": False, "error": "nije na serveru"})
+                continue
+
+            def pick(names):
+                out, missing = [], []
+                for n in names or []:
+                    key = str(n).strip().lower()
+                    role = by_name.get(key)
+                    if key not in ALLOWED_RT_ROLES:
+                        missing.append(f"{n} (nije dozvoljena)")
+                    elif role is None:
+                        missing.append(f"{n} (nema role)")
+                    elif not can_touch_role(guild.me, role):
+                        missing.append(f"{n} (bot nema pravo)")
+                    else:
+                        out.append(role)
+                return out, missing
+
+            to_add, miss_a = pick(ch.get("add"))
+            to_remove, miss_r = pick(ch.get("remove"))
+            if to_remove:
+                await member.remove_roles(*to_remove, reason="rteams: promena rasporeda")
+            if to_add:
+                await member.add_roles(*to_add, reason="rteams: promena rasporeda")
+            miss = miss_a + miss_r
+            results.append({"ime": ime, "ok": not miss, **({"error": ", ".join(miss)} if miss else {})})
+        except Exception as e:
+            print("[ROLES] fail:", ime, e, flush=True)
+            results.append({"ime": ime, "ok": False, "error": f"{type(e).__name__}"})
+    return web.json_response({"ok": True, "results": results})
 
 
 async def handle_qc_ack(request):
