@@ -4516,6 +4516,7 @@ async def start_bridge_server():
     app.router.add_post("/announcement", handle_bridge_announcement)
     app.router.add_get("/qc_inbox", handle_qc_inbox)
     app.router.add_post("/qc_inbox/ack", handle_qc_ack)
+    app.router.add_get("/reassigns_xlsx", handle_reassigns_xlsx)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", BRIDGE_PORT)
@@ -5515,6 +5516,36 @@ async def handle_qc_inbox(request):
         if GUILD_ID:
             it["jump_url"] = f"https://discord.com/channels/{GUILD_ID}/{it['channel_id']}/{it['message_id']}"
     return web.json_response({"ok": True, "items": items})
+
+
+async def handle_reassigns_xlsx(request):
+    """GET /reassigns_xlsx?od=DD.MM.YYYY&do=DD.MM.YYYY&status=open → .xlsx kao /exportr."""
+    if not _qc_token_ok(request):
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    start = parse_date_str(request.query.get("od", ""))
+    end = parse_date_str(request.query.get("do", "")) or start
+    if not start:
+        return web.json_response({"ok": False, "error": "od fali ili nije DD.MM.YYYY"}, status=400)
+    if start > end:
+        start, end = end, start
+    status = request.query.get("status", "open")
+    pool = []
+    if status in ("open", "all"):
+        pool += get_reassigns(done=False)
+    if status in ("done", "all"):
+        pool += get_reassigns(done=True)
+    selected = []
+    for r in pool:
+        d = parse_date_str(r.get("date"))
+        if d and start <= d <= end:
+            selected.append(r)
+    data, rows = await asyncio.to_thread(build_reassign_xlsx, selected)
+    fname = f"reassigns-{start.strftime('%d%m')}-{end.strftime('%d%m')}.xlsx"
+    return web.Response(
+        body=data,
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"', "X-Rows": str(rows)},
+    )
 
 
 async def handle_qc_ack(request):
