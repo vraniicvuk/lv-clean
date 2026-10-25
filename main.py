@@ -3571,9 +3571,14 @@ async def book_off_days(interaction, start_date, end_date, shift):
         except Exception as e:
             print("[OFF] slanje u management kanal nije uspelo:", e, flush=True)
 
-    month_key = days[0].strftime("%Y-%m")
-    left = max(0, MAX_OFF_PER_MONTH - count_month_off_days(interaction.user.id, month_key))
-    month_label = days[0].strftime("%m.%Y")
+    _months = sorted({x.strftime("%Y-%m") for x in days})
+    left = ", ".join(
+        f"{datetime.strptime(mk, '%Y-%m').strftime('%m.%Y')}: {max(0, MAX_OFF_PER_MONTH - count_month_off_days(interaction.user.id, mk))}"
+        for mk in _months
+    )
+    month_label = "po mesecu" if len(_months) > 1 else days[0].strftime("%m.%Y")
+    if len(_months) == 1:
+        left = left.split(": ", 1)[1]
 
     msg = await interaction.edit_original_response(
         content=(
