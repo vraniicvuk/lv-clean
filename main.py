@@ -308,7 +308,15 @@ MAX_OFF_PER_MONTH = 4
 def count_month_off_days(user_id, month=None):
     """Broj off dana korisnika u datom mesecu (YYYY-MM); podrazumevano tekući mesec."""
     month = month or _local_now().strftime("%Y-%m")
-    return sum(1 for e in off_days if e.get("user_id") == user_id and (e.get("date") or "").startswith(month))
+    return len(month_off_dates(user_id, month))
+
+
+def month_off_dates(user_id, month):
+    """Jedinstveni off datumi korisnika u mesecu (duplikati se ne broje dvaput)."""
+    return sorted({
+        e.get("date") for e in off_days
+        if e.get("user_id") == user_id and (e.get("date") or "").startswith(month)
+    })
 
 
 def build_date_range():
@@ -1903,10 +1911,77 @@ def _mm_text_from_message(content: str) -> str:
     return raw
 
 
+# ===== ROLE PING -> Telegram (lv-tg povlači preko /role_pings) =====
+ROLE_PING_ID = 1410962105749995591
+
+
+def _role_ping_db():
+    conn = _db()
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS role_pings (id INTEGER PRIMARY KEY AUTOINCREMENT, message_id INTEGER UNIQUE, "
+        "channel_id INTEGER, channel_name TEXT, author TEXT, content TEXT, url TEXT, created_at TEXT, acked INTEGER DEFAULT 0)"
+    )
+    return conn
+
+
+def _role_ping_insert(message):
+    conn = _role_ping_db()
+    conn.execute(
+        "INSERT OR IGNORE INTO role_pings (message_id, channel_id, channel_name, author, content, url, created_at) VALUES (?,?,?,?,?,?,?)",
+        (
+            message.id, message.channel.id, getattr(message.channel, "name", "?"),
+            message.author.display_name, (message.clean_content or "")[:500], message.jump_url,
+            _local_now().isoformat(),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+async def handle_role_pings(request):
+    """GET /role_pings?token=... → nepreuzeti tagovi role (max 50)."""
+    if not _qc_token_ok(request):
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+
+    def _rows():
+        conn = _role_ping_db()
+        rows = conn.execute(
+            "SELECT id, channel_name, author, content, url, created_at FROM role_pings WHERE acked=0 ORDER BY id LIMIT 50"
+        ).fetchall()
+        conn.close()
+        return [dict(x) for x in rows]
+
+    return web.json_response({"ok": True, "items": await asyncio.to_thread(_rows)})
+
+
+async def handle_role_pings_ack(request):
+    """POST /role_pings/ack {token, ids:[...]}"""
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    if not _qc_token_ok(request, data):
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    ids = [int(i) for i in (data.get("ids") or []) if str(i).isdigit()]
+    if ids:
+        def _ack():
+            conn = _role_ping_db()
+            conn.execute(f"UPDATE role_pings SET acked=1 WHERE id IN ({','.join('?' * len(ids))})", ids)
+            conn.commit()
+            conn.close()
+        await asyncio.to_thread(_ack)
+    return web.json_response({"ok": True, "acked": len(ids)})
+
+
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
         return
+    try:
+        if message.guild and any(r.id == ROLE_PING_ID for r in message.role_mentions):
+            await asyncio.to_thread(_role_ping_insert, message)
+    except Exception as e:
+        print("[ROLEPING] capture fail:", e, flush=True)
     content_raw = message.content or ""
     content = content_raw.strip().lower()
     if content.startswith("!mm"):
@@ -3527,7 +3602,10 @@ async def book_off_days(interaction, start_date, end_date, shift):
             remaining = max(0, MAX_OFF_PER_MONTH - used)
             await interaction.response.send_message(
                 f"❌ Maksimalno {MAX_OFF_PER_MONTH} off dana za mesec {label}. "
-                f"Za taj mesec već imaš {used} — ostalo ti je {remaining}, a tražiš {cnt}.",
+                f"Za taj mesec već imaš {used} — ostalo ti je {remaining}, a tražiš {cnt}.\n"
+                f"Računaju se: " + ", ".join(
+                    datetime.strptime(x, "%Y-%m-%d").strftime("%d.%m.") for x in month_off_dates(interaction.user.id, month)
+                ),
                 ephemeral=True,
             )
             return
@@ -3539,7 +3617,10 @@ async def book_off_days(interaction, start_date, end_date, shift):
     except Exception as e:
         print("[OFF] defer fail:", e, flush=True)
 
+    _mine = {e.get("date") for e in off_days if e.get("user_id") == interaction.user.id}
     for day in days:
+        if day.isoformat() in _mine:
+            continue
         off_days.append({
             "user_id": interaction.user.id,
             "username": interaction.user.display_name,
@@ -4547,6 +4628,8 @@ async def start_bridge_server():
     app.router.add_post("/announcement", handle_bridge_announcement)
     app.router.add_get("/qc_inbox", handle_qc_inbox)
     app.router.add_post("/qc_inbox/ack", handle_qc_ack)
+    app.router.add_get("/role_pings", handle_role_pings)
+    app.router.add_post("/role_pings/ack", handle_role_pings_ack)
     app.router.add_post("/roles", handle_roles)
     app.router.add_get("/reassigns_xlsx", handle_reassigns_xlsx)
     runner = web.AppRunner(app)
