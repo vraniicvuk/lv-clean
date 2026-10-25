@@ -6131,9 +6131,8 @@ async def _before_dayoff_weekly():
 CHELP_TEXT = (
     "📖 **LV HANDLER — chatter komande**\n\n"
     "⏱ **CLOCK IN / OUT** (Telegram)\n"
-    "`!ci` — clock in za smenu. Na vreme: streak +1. Kasniš: streak se resetuje\n"
+    "`!ci` — clock in za smenu\n"
     "`!co` — clock out; odrađeno vreme se dodaje na ukupno\n"
-    "`!streak [@user]` — tvoj ili tuđi streak\n"
     "`!username <ime>` — ime koje bot prikazuje za tebe\n"
     "`!team t1 … t11 / ct` — postavi svoj tim\n"
     "`!check ime1, ime2, ...` — ko je od navedenih clockinovan\n\n"
