@@ -1911,6 +1911,177 @@ def _mm_text_from_message(content: str) -> str:
     return raw
 
 
+# ===== TICKET AI (Bogy): forward poruka iz tiketa + /answer /post /members =====
+TQ_URL = os.getenv("TICKET_AI_URL", "")        # njihov endpoint (poruke + klikovi)
+TQ_TOKEN = os.getenv("TICKET_AI_TOKEN", "")    # njihov token (šaljemo njima)
+TQ_CHATTER_ROLE = 1410962215770656768
+TQ_FORWARD_ROLES = {TQ_CHATTER_ROLE, 1410958063824801802, 1410962105749995591}  # chatter, manager, supervisor
+TQ_IN_TOKEN = os.getenv("TICKET_AI_IN_TOKEN", "")  # token kojim ONI zovu /answer /post /members
+
+
+def _tq_in_ok(request, data=None):
+    tok = request.headers.get("X-Bridge-Token") or request.query.get("token") or (data or {}).get("token")
+    return bool(TQ_IN_TOKEN) and tok == TQ_IN_TOKEN
+
+
+def _tq_is_ticket(channel):
+    n = (getattr(channel, "name", "") or "").lower()
+    return n.startswith("tiket") or n.startswith("ticket")
+
+
+async def _tq_send(payload):
+    if not TQ_URL:
+        return
+    import aiohttp
+    payload = {"token": TQ_TOKEN, **payload}
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as s:
+            async with s.post(TQ_URL, json=payload, headers={"X-Bridge-Token": TQ_TOKEN}) as resp:
+                if resp.status >= 300:
+                    print("[TQ] forward HTTP", resp.status, flush=True)
+    except Exception as e:
+        print("[TQ] forward fail:", e, flush=True)
+
+
+async def tq_forward_message(message):
+    if not (message.guild and _tq_is_ticket(message.channel)):
+        return
+    role_ids = [r.id for r in getattr(message.author, "roles", [])]
+    if not TQ_FORWARD_ROLES.intersection(role_ids):
+        return
+    asyncio.create_task(_tq_send({
+        "type": "message",
+        "text": message.content or "",
+        "channel_id": str(message.channel.id),
+        "channel_name": message.channel.name,
+        "message_id": str(message.id),
+        "author_id": str(message.author.id),
+        "author_name": message.author.display_name,
+        "role_ids": [str(x) for x in role_ids],
+    }))
+
+
+class TicketAnswerView(discord.ui.View):
+    def __init__(self, take=False, answer=True):
+        super().__init__(timeout=None)
+        if answer:
+            self.add_item(_TQButton("Pomoglo", "✅", discord.ButtonStyle.success, "tq:ok"))
+            self.add_item(_TQButton("Nije pomoglo", "❌", discord.ButtonStyle.danger, "tq:no"))
+            self.add_item(_TQButton("Hitno", "🚨", discord.ButtonStyle.secondary, "tq:urgent"))
+        if take:
+            self.add_item(_TQButton("Preuzimam", "🙋", discord.ButtonStyle.primary, "tq:take"))
+
+
+class _TQButton(discord.ui.Button):
+    def __init__(self, label, emoji, style, cid):
+        super().__init__(label=label, emoji=emoji, style=style, custom_id=cid)
+
+    async def callback(self, interaction: discord.Interaction):
+        btn = self.custom_id.split(":", 1)[1]
+        u = interaction.user
+        await _tq_send({
+            "type": "button",
+            "button": btn,
+            "user_id": str(u.id),
+            "user_name": u.display_name,
+            "role_ids": [str(r.id) for r in getattr(u, "roles", [])],
+            "channel_id": str(interaction.channel.id),
+            "channel_name": getattr(interaction.channel, "name", ""),
+            "message_id": str(interaction.message.id),
+        })
+        labels = {"ok": "✅ Pomoglo", "no": "❌ Nije pomoglo", "urgent": "🚨 Hitno", "take": "🙋 Preuzimam"}
+        if btn == "take":
+            try:
+                await interaction.response.send_message(f"🙋 {u.mention} je preuzeo/la.", allowed_mentions=discord.AllowedMentions.none())
+            except Exception:
+                pass
+            return
+        await interaction.response.send_message(f"Zabeleženo: {labels.get(btn, btn)}", ephemeral=True)
+
+
+class TicketAnswerFullView(TicketAnswerView):
+    """Registracija svih custom_id-jeva za persistent dugmad posle restarta."""
+    def __init__(self):
+        super().__init__(take=True, answer=True)
+
+
+async def _tq_json(request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    return data
+
+
+async def handle_tq_answer(request):
+    """POST /answer {token, channel_id, reply_to?, text} → odgovor sa ✅ ❌ 🚨."""
+    data = await _tq_json(request)
+    if not _tq_in_ok(request, data):
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    return await _tq_post(data, answer=True, take=bool(data.get("take", False)))
+
+
+async def handle_tq_post(request):
+    """POST /post {token, channel_id, text, reply_to?, take?=true} → objava (tagovi) sa dugmetom Preuzimam."""
+    data = await _tq_json(request)
+    if not _tq_in_ok(request, data):
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    return await _tq_post(data, answer=False, take=bool(data.get("take", True)))
+
+
+async def _tq_post(data, answer, take):
+    try:
+        ch = bot.get_channel(int(data.get("channel_id"))) or await bot.fetch_channel(int(data.get("channel_id")))
+    except Exception:
+        return web.json_response({"ok": False, "error": "channel not found"}, status=404)
+    if not _tq_is_ticket(ch):
+        return web.json_response({"ok": False, "error": "dozvoljeno samo u tiket kanalima"}, status=403)
+    text = (data.get("text") or "").strip()
+    if not text:
+        return web.json_response({"ok": False, "error": "text fali"}, status=400)
+    ref = None
+    if data.get("reply_to"):
+        try:
+            ref = discord.MessageReference(message_id=int(data["reply_to"]), channel_id=ch.id, fail_if_not_exists=False)
+        except Exception:
+            ref = None
+    view = TicketAnswerView(take=take, answer=answer) if (take or answer) else None
+    try:
+        msgs = []
+        chunks = [text[i:i + 1900] for i in range(0, len(text), 1900)]
+        for idx, part in enumerate(chunks):
+            last = idx == len(chunks) - 1
+            m = await ch.send(
+                part,
+                view=view if last else None,
+                reference=ref if idx == 0 else None,
+                allowed_mentions=discord.AllowedMentions(users=True, roles=True, everyone=False, replied_user=False),
+            )
+            msgs.append(str(m.id))
+    except Exception as e:
+        return web.json_response({"ok": False, "error": f"{type(e).__name__}: {e}"}, status=500)
+    return web.json_response({"ok": True, "message_id": msgs[-1], "message_ids": msgs})
+
+
+async def handle_tq_members(request):
+    """GET /members?role=<id>&token=... → [{id, name}]"""
+    if not _tq_in_ok(request):
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
+    if not guild:
+        return web.json_response({"ok": False, "error": "guild not found"}, status=500)
+    try:
+        role = guild.get_role(int(request.query.get("role", "0")))
+    except Exception:
+        role = None
+    if not role:
+        return web.json_response({"ok": False, "error": "role not found"}, status=404)
+    return web.json_response({
+        "ok": True, "role": role.name,
+        "members": [{"id": str(m.id), "name": m.display_name, "username": m.name} for m in role.members],
+    })
+
+
 # ===== ROLE PING -> Telegram (lv-tg povlači preko /role_pings) =====
 ROLE_PING_ID = 1410962105749995591
 
@@ -1977,6 +2148,10 @@ async def handle_role_pings_ack(request):
 async def on_message(message: discord.Message):
     if message.author.bot:
         return
+    try:
+        await tq_forward_message(message)
+    except Exception as e:
+        print("[TQ] on_message fail:", e, flush=True)
     try:
         if message.guild and any(r.id == ROLE_PING_ID for r in message.role_mentions):
             await asyncio.to_thread(_role_ping_insert, message)
@@ -4631,6 +4806,9 @@ async def start_bridge_server():
     app.router.add_post("/qc_inbox/ack", handle_qc_ack)
     app.router.add_get("/role_pings", handle_role_pings)
     app.router.add_post("/role_pings/ack", handle_role_pings_ack)
+    app.router.add_post("/answer", handle_tq_answer)
+    app.router.add_post("/post", handle_tq_post)
+    app.router.add_get("/members", handle_tq_members)
     app.router.add_post("/roles", handle_roles)
     app.router.add_get("/reassigns_xlsx", handle_reassigns_xlsx)
     runner = web.AppRunner(app)
@@ -6218,6 +6396,7 @@ async def _setup_hook():
     bot.add_view(ReqDecisionView())
     bot.add_view(ShiftPickView())
     bot.add_view(TeamPickView())
+    bot.add_view(TicketAnswerFullView())
 
 bot.setup_hook = _setup_hook
 bot.run(TOKEN)
