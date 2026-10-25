@@ -2014,6 +2014,7 @@ AS_CHANNELS = {
     "9": 1520415630296092682,
     "10": 1520415659089985566,
     "11": 1520415681802141847,
+    "12": 1562218059349893221,
 }
 COVER_CATEGORY_ID = 1520385768214888530
 
@@ -4810,10 +4811,10 @@ def _disabled_view(label, emoji, style):
 
 
 # ========== ONBOARD FLOW: test -> smena -> tim -> QC kanal ==========
-OB_TEAMS = [str(i) for i in range(1, 12)] + ["COVER"]
+OB_TEAMS = [str(i) for i in range(1, 13)] + ["COVER"]
 # popuni ID-jeve kad stignu; ako je prazno, bot traži po imenu ("TEAM 3", "COVER TEAM")
 TEAM_ROLE_IDS = {}        # "3": role_id
-TEAM_CATEGORY_IDS = {}    # "3": category_id
+TEAM_CATEGORY_IDS = {"12": 1562217859248029867}    # "3": category_id
 TEAM_QC_ROLE_IDS = {}     # "3": qc_role_id
 
 
