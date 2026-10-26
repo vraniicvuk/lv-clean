@@ -3899,6 +3899,47 @@ async def off(interaction: discord.Interaction):
     )
 
 
+class MultiOffReqView(discord.ui.View):
+    """Kad /multioff opseg ima zauzete dane → zahtev menadžeru (kao /reqoff)."""
+
+    def __init__(self, start, end, shift, days, conflict):
+        super().__init__(timeout=600)
+        self.start, self.end, self.shift, self.days, self.conflict = start, end, shift, days, conflict
+
+    @discord.ui.button(label="Pošalji zahtev menadžeru", emoji="📨", style=discord.ButtonStyle.primary)
+    async def send_req(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="⏳ Šaljem zahtev menadžerima...", view=None)
+        per_month = {}
+        for x in self.days:
+            per_month.setdefault(x.strftime("%Y-%m"), 0)
+            per_month[x.strftime("%Y-%m")] += 1
+        month_txt = ", ".join(
+            f"{datetime.strptime(m, '%Y-%m').strftime('%m.%Y')}: već {count_month_off_days(interaction.user.id, m)} + traži {c} (max {MAX_OFF_PER_MONTH})"
+            for m, c in sorted(per_month.items())
+        )
+        busy_lines = []
+        for x in self.conflict:
+            who = [str(e.get("username")) for e in off_days
+                   if e.get("date") == x.isoformat() and e.get("shift") == self.shift and e.get("user_id") != interaction.user.id]
+            busy_lines.append(f"{x.strftime('%d.%m.')} — {', '.join(who) or 'zauzeto'}")
+        req_id = await asyncio.to_thread(
+            _req_insert,
+            kind="multioff", user_id=interaction.user.id, username=interaction.user.display_name, shift=self.shift,
+            date=self.start.isoformat(), reason=self.end.isoformat(), status="pending",
+            channel_id=interaction.channel.id, created_at=_local_now().isoformat(),
+        )
+        await _post_request(
+            interaction, req_id,
+            f"📨 **ZAHTEV ZA MULTI OFF**\n"
+            f"**Chatter:** {interaction.user.mention} ({interaction.user.display_name})\n"
+            f"**Period:** {self.start.strftime('%d.%m.%Y')} → {self.end.strftime('%d.%m.%Y')} ({len(self.days)} dana)\n"
+            f"**Smena:** {self.shift}\n"
+            f"**Zauzeto:**\n" + "\n".join(busy_lines) + "\n"
+            f"**Off dana po mesecu:** {month_txt}",
+        )
+        await interaction.edit_original_response(content="✅ Zahtev poslat — čeka odobrenje menadžera.")
+
+
 @tree.command(name="multioff", description="Rezerviši više uzastopnih dana (putovanje, svadba...)", guild=GUILD_OBJ)
 async def multioff(interaction: discord.Interaction):
     shift = await _require_shift(interaction)
@@ -3908,18 +3949,39 @@ async def multioff(interaction: discord.Interaction):
     dates = build_date_range()
 
     async def on_start(i, d):
-        if d in taken:
-            await i.response.send_message(
-                "❌ Taj datum je već zauzet u tvojoj smeni — izaberi drugi.", ephemeral=True
-            )
-            return
-        end_dates = [x for x in dates if x > d]
+        end_dates = [x for x in dates if x >= d]
         if not end_dates:
             await i.response.send_message("❌ Nema dostupnih datuma posle tog dana.", ephemeral=True)
             return
 
         async def on_end(i2, d2):
-            await book_off_days(i2, d, d2, shift)
+            days = []
+            x = d
+            while x <= d2:
+                days.append(x)
+                x += timedelta(days=1)
+            conflict = [x for x in days if x in taken]
+            if not conflict:
+                await book_off_days(i2, d, d2, shift)
+                return
+            busy = ", ".join(x.strftime("%d.%m.") for x in conflict)
+            if not _in_ticket(i2):
+                await i2.response.edit_message(
+                    content=(
+                        f"⚠️ Zauzeti dani u tvojoj smeni: **{busy}**.\n"
+                        "Možeš da pošalješ zahtev menadžeru — pokreni **/multioff u svom tiketu** i izaberi iste datume."
+                    ),
+                    view=None,
+                )
+                return
+            await i2.response.edit_message(
+                content=(
+                    f"⚠️ **{d.strftime('%d.%m.%Y')} → {d2.strftime('%d.%m.%Y')}** ({len(days)} dana)\n"
+                    f"Zauzeti dani u tvojoj smeni: **{busy}**.\n"
+                    "Klikni dugme da pošalješ zahtev menadžeru — on odlučuje."
+                ),
+                view=MultiOffReqView(d, d2, shift, days, conflict),
+            )
 
         view2 = OffDayPickerView(taken, end_dates, on_end)
         await i.response.edit_message(
@@ -5471,7 +5533,31 @@ class ReqDecisionView(discord.ui.View):
         d = datetime.strptime(req["date"], "%Y-%m-%d").date()
         when = f"{d.strftime('%d.%m.%Y')} ({SR_WEEKDAYS[d.weekday()]})"
 
-        if req["kind"] == "off":
+        if req["kind"] == "multioff":
+            d_end = datetime.strptime(req["reason"], "%Y-%m-%d").date()
+            when = f"{d.strftime('%d.%m.%Y')} → {d_end.strftime('%d.%m.%Y')}"
+            day = d
+            while day <= d_end:
+                iso = day.isoformat()
+                if not any(e.get("user_id") == req["user_id"] and e.get("date") == iso for e in off_days):
+                    off_days.append({
+                        "user_id": req["user_id"],
+                        "username": req["username"],
+                        "date": iso,
+                        "shift": req["shift"],
+                        "message_id": None,
+                        "confirmed": True,
+                        "group_id": f"req-{req['id']}",
+                        "channel_id": req["channel_id"],
+                        "approved_by": interaction.user.id,
+                        "needs_cover": 1,
+                        "cover_reminder_due": (day - timedelta(days=3)).isoformat(),
+                    })
+                day += timedelta(days=1)
+            await asyncio.to_thread(save_off_days)
+            title = "MULTI OFF (zahtev odobren)"
+            detail = f"**Period:** {when}\n**Smena:** {req['shift']}\n⚠️ Treba cover za zauzete dane"
+        elif req["kind"] == "off":
             # ponovna provera — u međuvremenu je neko drugi možda odobren
             if any(
                 e.get("date") == req["date"] and e.get("shift") == req["shift"]
