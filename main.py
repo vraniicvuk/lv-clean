@@ -3940,6 +3940,77 @@ class MultiOffReqView(discord.ui.View):
         await interaction.edit_original_response(content="✅ Zahtev poslat — čeka odobrenje menadžera.")
 
 
+SHIFT_NAMES = {"main": "MAIN", "afternoon": "AFTERNOON", "graveyard": "GRAVEYARD"}
+
+
+def _member_shift(member):
+    ids = {r.id for r in getattr(member, "roles", [])}
+    for k, rid in SHIFT_ROLES.items():
+        if rid in ids:
+            return SHIFT_NAMES.get(k, k.upper())
+    return None
+
+
+async def shiftchange_date_autocomplete(interaction: discord.Interaction, current: str):
+    today = _local_now().date()
+    q = (current or "").lower()
+    out = []
+    for i in range(0, 15):
+        d = today + timedelta(days=i)
+        lab = "DANAS" if i == 0 else ("SUTRA" if i == 1 else SR_WEEKDAYS[d.weekday()])
+        name = f"{d.strftime('%d.%m.%Y')} — {lab}"
+        if q and q not in name.lower():
+            continue
+        out.append(app_commands.Choice(name=name, value=d.isoformat()))
+    return out[:25]
+
+
+@tree.command(name="shiftchange", description="Zahtev za zamenu smene sa kolegom (rotacija) — samo u tiketu", guild=GUILD_OBJ)
+@app_commands.describe(
+    sa_kim="Sa kim menjaš smenu (kolega je pristao)",
+    datum="Kog dana menjate smene",
+    napomena="Opciono — kratko objašnjenje",
+)
+@app_commands.autocomplete(datum=shiftchange_date_autocomplete)
+async def shiftchange(interaction: discord.Interaction, sa_kim: discord.Member, datum: str, napomena: str = ""):
+    if not _in_ticket(interaction):
+        return await _deny_outside_ticket(interaction)
+    if sa_kim.id == interaction.user.id or sa_kim.bot:
+        return await interaction.response.send_message("❌ Izaberi kolegu sa kojim menjaš smenu.", ephemeral=True)
+    d = parse_date_str(datum)
+    if not d:
+        return await interaction.response.send_message("❌ Izaberi datum iz liste.", ephemeral=True)
+    if d < _local_now().date():
+        return await interaction.response.send_message("❌ Datum je u prošlosti.", ephemeral=True)
+    my_shift = _member_shift(interaction.user)
+    partner_shift = _member_shift(sa_kim)
+    if not my_shift or not partner_shift:
+        who = interaction.user.display_name if not my_shift else sa_kim.display_name
+        return await interaction.response.send_message(f"❌ {who} nema rolu smene (MAIN / AFTERNOON / GRAVEYARD).", ephemeral=True)
+    if my_shift == partner_shift:
+        return await interaction.response.send_message(f"❌ Oboje ste u istoj smeni ({my_shift}) — nema šta da se menja.", ephemeral=True)
+    await interaction.response.send_message("⏳ Šaljem zahtev menadžerima...", ephemeral=True)
+    req_id = await asyncio.to_thread(
+        _req_insert,
+        kind="shiftchange", user_id=interaction.user.id, username=interaction.user.display_name, shift=my_shift,
+        date=d.isoformat(), status="pending", channel_id=interaction.channel.id, created_at=_local_now().isoformat(),
+        reason=json.dumps({
+            "partner_id": sa_kim.id, "partner_name": sa_kim.display_name,
+            "my_shift": my_shift, "partner_shift": partner_shift, "note": napomena,
+        }),
+    )
+    when = f"{d.strftime('%d.%m.%Y')} ({SR_WEEKDAYS[d.weekday()]})"
+    await _post_request(
+        interaction, req_id,
+        f"🔄 **ZAHTEV ZA ZAMENU SMENE**\n"
+        f"**Datum:** {when}\n"
+        f"**{interaction.user.display_name}** ({interaction.user.mention}): {my_shift} → **{partner_shift}**\n"
+        f"**{sa_kim.display_name}** ({sa_kim.mention}): {partner_shift} → **{my_shift}**"
+        + (f"\n**Napomena:** {napomena}" if napomena else ""),
+    )
+    await interaction.edit_original_response(content="✅ Zahtev za zamenu smene poslat — čeka odobrenje menadžera.")
+
+
 @tree.command(name="multioff", description="Rezerviši više uzastopnih dana (putovanje, svadba...)", guild=GUILD_OBJ)
 async def multioff(interaction: discord.Interaction):
     shift = await _require_shift(interaction)
@@ -5532,8 +5603,21 @@ class ReqDecisionView(discord.ui.View):
             return
         d = datetime.strptime(req["date"], "%Y-%m-%d").date()
         when = f"{d.strftime('%d.%m.%Y')} ({SR_WEEKDAYS[d.weekday()]})"
+        _partner = None
 
-        if req["kind"] == "multioff":
+        if req["kind"] == "shiftchange":
+            try:
+                sc = json.loads(req.get("reason") or "{}")
+            except Exception:
+                sc = {}
+            _partner = sc.get("partner_id")
+            title = "SHIFT CHANGE (zahtev odobren)"
+            detail = (
+                f"**Datum:** {when}\n"
+                f"<@{req['user_id']}>: {sc.get('my_shift', '?')} → {sc.get('partner_shift', '?')}\n"
+                f"<@{_partner}>: {sc.get('partner_shift', '?')} → {sc.get('my_shift', '?')}"
+            )
+        elif req["kind"] == "multioff":
             d_end = datetime.strptime(req["reason"], "%Y-%m-%d").date()
             when = f"{d.strftime('%d.%m.%Y')} → {d_end.strftime('%d.%m.%Y')}"
             day = d
@@ -5601,7 +5685,7 @@ class ReqDecisionView(discord.ui.View):
         )
         try:
             await interaction.channel.send(
-                f"✅ <@{req['user_id']}> tvoj zahtev je **odobren**: {when}.",
+                f"✅ <@{req['user_id']}>" + (f" <@{_partner}>" if _partner else "") + f" tvoj zahtev je **odobren**: {when}.",
                 allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
             )
         except Exception:
