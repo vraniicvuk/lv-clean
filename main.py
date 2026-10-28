@@ -290,6 +290,8 @@ def get_user_shift(member):
 
 def taken_dates_for_shift(shift):
     out = set()
+    if shift == "staff":
+        return out  # staff off ne blokiraju ni chatterski ni međusobni dani
     today = _local_now().date()
     for e in off_days:
         if e.get("shift") == shift:
@@ -2061,6 +2063,21 @@ async def _tq_post(data, answer, take):
     except Exception as e:
         return web.json_response({"ok": False, "error": f"{type(e).__name__}: {e}"}, status=500)
     return web.json_response({"ok": True, "message_id": msgs[-1], "message_ids": msgs})
+
+
+async def handle_tq_channels(request):
+    """GET /channels?token=... → [{id, name}] svih ticket-*/tiket-* kanala."""
+    if not _tq_in_ok(request):
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
+    if not guild:
+        return web.json_response({"ok": False, "error": "guild not found"}, status=500)
+    chans = [
+        {"id": str(c.id), "name": c.name}
+        for c in guild.text_channels
+        if c.name.lower().startswith(("ticket-", "tiket-"))
+    ]
+    return web.json_response(chans)
 
 
 async def handle_tq_members(request):
@@ -3857,7 +3874,16 @@ async def book_off_days(interaction, start_date, end_date, shift):
         print("[OFF] dodavanje reakcija nije uspelo:", e, flush=True)
 
 
+STAFF_OFF_ROLE_IDS = {1504564869569970196, 1410962105749995591}  # VA / supervizori — poseban off, ne zavisi od chatterskih
+
+
+def _is_staff(member):
+    return any(r.id in STAFF_OFF_ROLE_IDS for r in getattr(member, "roles", []))
+
+
 async def _require_shift(interaction):
+    if _is_staff(interaction.user):
+        return "staff"
     shift = get_user_shift(interaction.user)
     if shift is None:
         await interaction.response.send_message(
@@ -4968,6 +4994,7 @@ async def start_bridge_server():
     app.router.add_post("/answer", handle_tq_answer)
     app.router.add_post("/post", handle_tq_post)
     app.router.add_get("/members", handle_tq_members)
+    app.router.add_get("/channels", handle_tq_channels)
     app.router.add_post("/roles", handle_roles)
     app.router.add_get("/reassigns_xlsx", handle_reassigns_xlsx)
     runner = web.AppRunner(app)
