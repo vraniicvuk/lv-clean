@@ -5607,12 +5607,25 @@ def find_ticket_channel(guild, user_id):
     m = guild.get_member(int(user_id)) if guild else None
     if not m:
         return None
-    want = f"ticket-{m.name}".lower()
-    cat = guild.get_channel(TICKET_CATEGORY_ID)
-    pool = cat.text_channels if cat else guild.text_channels
-    return discord.utils.find(lambda c: c.name.lower() == want, pool) or discord.utils.find(
-        lambda c: c.name.lower() == want, guild.text_channels
-    )
+    tickets = [c for c in guild.text_channels if c.name.lower().startswith(("ticket-", "tiket-"))]
+    # 1) po imenu: username, display name, global name i poslednja reč display name-a ("yyy fap" -> "fap")
+    def slug(s):
+        return re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")
+    names = {slug(m.name), slug(m.display_name), slug(getattr(m, "global_name", "") or "")}
+    for s in (m.display_name, getattr(m, "global_name", "") or "", m.name):
+        parts = slug(s).split("-")
+        if parts and parts[-1]:
+            names.add(parts[-1])
+    names.discard("")
+    for c in tickets:
+        suffix = c.name.lower().split("-", 1)[1] if "-" in c.name else ""
+        if suffix in names:
+            return c
+    # 3) kanal u kome korisnik ima lični permission overwrite (tako se tiket pravi)
+    for c in tickets:
+        if m in c.overwrites:
+            return c
+    return None
 
 
 async def _notify_partner_ticket(guild, partner_id, text):
