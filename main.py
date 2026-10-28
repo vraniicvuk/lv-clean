@@ -4008,7 +4008,31 @@ async def shiftchange(interaction: discord.Interaction, sa_kim: discord.Member, 
         f"**{sa_kim.display_name}** ({sa_kim.mention}): {partner_shift} → **{my_shift}**"
         + (f"\n**Napomena:** {napomena}" if napomena else ""),
     )
-    await interaction.edit_original_response(content="✅ Zahtev za zamenu smene poslat — čeka odobrenje menadžera.")
+    note_txt = (f"\n**Napomena:** {napomena}" if napomena else "")
+    partner_ok = await _notify_partner_ticket(
+        interaction.guild, sa_kim.id,
+        f"🔄 {sa_kim.mention} — **{interaction.user.display_name}** je poslao/la zahtev za **zamenu smene** sa tobom.\n"
+        f"**Datum:** {when}\n"
+        f"Ti: {partner_shift} → **{my_shift}** | {interaction.user.display_name}: {my_shift} → **{partner_shift}**{note_txt}\n"
+        f"Čeka odobrenje menadžera (zahtev je u tiketu {interaction.channel.mention}).",
+    )
+    ov = bot.get_channel(OFF_DAY_CHANNEL_ID)
+    if ov:
+        try:
+            await ov.send(
+                f"🔄 **SHIFT CHANGE — zahtev (čeka odobrenje)**\n"
+                f"**Datum:** {when}\n"
+                f"{interaction.user.mention}: {my_shift} → {partner_shift}\n"
+                f"{sa_kim.mention}: {partner_shift} → {my_shift}{note_txt}\n"
+                f"Zahtev: {interaction.channel.mention}",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except Exception as e:
+            print("[SHIFTCHANGE] overview fail:", e, flush=True)
+    await interaction.edit_original_response(
+        content="✅ Zahtev za zamenu smene poslat — čeka odobrenje menadžera."
+        + ("" if partner_ok else f"\n⚠️ Nisam našao tiket za {sa_kim.display_name} — javi mu/joj sam/a.")
+    )
 
 
 @tree.command(name="multioff", description="Rezerviši više uzastopnih dana (putovanje, svadba...)", guild=GUILD_OBJ)
@@ -4593,11 +4617,13 @@ async def off_day_reminder_loop():
     tomorrow_iso = tomorrow.isoformat()
     entries = [e for e in off_days if e.get("date") == tomorrow_iso]
     covers = approved_covers(tomorrow_iso, tomorrow_iso)
-    if entries or covers:
+    shiftchanges = approved_shiftchanges(tomorrow_iso)
+    if entries or covers or shiftchanges:
         lines = []
         for e in sorted(entries, key=lambda x: str(x.get("username", ""))):
             lines.append(f"• <@{e.get('user_id')}> — {e.get('shift')}")
         lines += ["• " + cover_line(r, with_tag=True) for r in covers]
+        lines += ["• " + shiftchange_line(r) for r in shiftchanges]
         date_str = tomorrow.strftime("%d.%m.%Y")
         try:
             await channel.send(
@@ -5556,6 +5582,51 @@ def approved_covers(date_from=None, date_to=None):
     return out
 
 
+def approved_shiftchanges(date_iso):
+    conn = _db()
+    rows = conn.execute(
+        "SELECT * FROM lv_requests WHERE kind='shiftchange' AND status='approved' AND date=?", (date_iso,)
+    ).fetchall()
+    conn.close()
+    return [dict(x) for x in rows]
+
+
+def shiftchange_line(r):
+    try:
+        sc = json.loads(r.get("reason") or "{}")
+    except Exception:
+        sc = {}
+    return (
+        f"🔄 SHIFT CHANGE: <@{r['user_id']}> {sc.get('my_shift', '?')} → {sc.get('partner_shift', '?')} | "
+        f"<@{sc.get('partner_id')}> {sc.get('partner_shift', '?')} → {sc.get('my_shift', '?')}"
+    )
+
+
+def find_ticket_channel(guild, user_id):
+    """Tiket kanal korisnika (ticket-<username>) — ili None."""
+    m = guild.get_member(int(user_id)) if guild else None
+    if not m:
+        return None
+    want = f"ticket-{m.name}".lower()
+    cat = guild.get_channel(TICKET_CATEGORY_ID)
+    pool = cat.text_channels if cat else guild.text_channels
+    return discord.utils.find(lambda c: c.name.lower() == want, pool) or discord.utils.find(
+        lambda c: c.name.lower() == want, guild.text_channels
+    )
+
+
+async def _notify_partner_ticket(guild, partner_id, text):
+    ch = find_ticket_channel(guild, partner_id)
+    if not ch:
+        return False
+    try:
+        await ch.send(text, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+        return True
+    except Exception as e:
+        print("[SHIFTCHANGE] partner ticket fail:", e, flush=True)
+        return False
+
+
 def cover_line(r, with_tag=False):
     who = f"<@{r['user_id']}>" if with_tag else (r.get("username") or str(r["user_id"]))
     typ = COVER_TYPES.get(r.get("cover_type"), r.get("cover_type") or "")
@@ -5611,6 +5682,12 @@ class ReqDecisionView(discord.ui.View):
             except Exception:
                 sc = {}
             _partner = sc.get("partner_id")
+            if _partner:
+                await _notify_partner_ticket(
+                    interaction.guild, _partner,
+                    f"✅ <@{_partner}> — zamena smene sa <@{req['user_id']}> za **{when}** je **odobrena** "
+                    f"({interaction.user.mention}). Tog dana radiš **{sc.get('my_shift', '?')}**.",
+                )
             title = "SHIFT CHANGE (zahtev odobren)"
             detail = (
                 f"**Datum:** {when}\n"
@@ -5718,6 +5795,23 @@ class ReqDecisionView(discord.ui.View):
             )
         except Exception:
             pass
+        if req.get("kind") == "shiftchange":
+            try:
+                pid = json.loads(req.get("reason") or "{}").get("partner_id")
+            except Exception:
+                pid = None
+            if pid:
+                await _notify_partner_ticket(
+                    interaction.guild, pid,
+                    f"❌ <@{pid}> — zamena smene sa <@{req['user_id']}> za {req['date']} je **odbijena**.",
+                )
+            ov = bot.get_channel(OFF_DAY_CHANNEL_ID)
+            if ov:
+                try:
+                    await ov.send(f"❌ SHIFT CHANGE <@{req['user_id']}> ⇄ <@{pid}> ({req['date']}) — odbijeno.",
+                                  allowed_mentions=discord.AllowedMentions.none())
+                except Exception:
+                    pass
 
 
 async def _post_request(interaction, req_id, text):
