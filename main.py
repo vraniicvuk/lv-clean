@@ -1628,8 +1628,6 @@ svaki od ostalih kanala koji je pod sekcijom LV start sluzi za smernice koje ti 
 
 Na discordu (vec sad u tiketu) mozes probati neke od komandi kako bi kasnije prilikom odgovaranja na pitanja iz testa, znao cemu sluze osnovne komande!
 
-https://t.me/addlist/s2nHCQZUNXI0OTY0
-
 Obavezno predji sve sekcije jer pre pocetka rada ces imati jos jedan "mini test" gde ces na osnovu prikupljenog znanja odgovoriti na par pitanja cisto da budemo sigurni da si sve procitao.
 
 Moze da zvuci dosadno, naporno itd ali znamo da neke od stvari su toliko detaljno objasnjene da ce ti ustedeli masu vremena i pomoci pri vecem broju prodaja pa samim tim i boljim prihodima.
@@ -1698,6 +1696,10 @@ async def on_member_join(member: discord.Member):
     try:
         for chunk in _welcome_chunks(guild, member):
             await ch.send(chunk, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+        await ch.send(
+            f"{member.mention} da li si spreman/na da uradiš test? Pokreni komandu **/test**",
+            allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+        )
     except Exception as e:
         print(f"[JOIN] welcome fail za {member}: {e}", flush=True)
     print(f"[JOIN] {member} → role={[r.name for r in roles]} ticket=#{ch.name}", flush=True)
