@@ -6149,7 +6149,7 @@ async def handle_reassigns_xlsx(request):
     )
 
 
-ALLOWED_RT_ROLES = {f"team {i}" for i in range(1, 13)} | {"cover team", "graveyard", "afternoon", "main"}
+ALLOWED_RT_ROLES = {f"team {i}" for i in range(1, 14)} | {"cover team", "graveyard", "afternoon", "main"}
 
 
 async def handle_roles(request):
