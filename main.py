@@ -4889,20 +4889,25 @@ async def handle_bridge_ticket_broadcast(request):
         if not guild:
             return web.json_response({"ok": False, "error": "guild not found"}, status=500)
         chans = [c for c in guild.text_channels if c.name.lower().startswith(("ticket-", "tiket-"))]
-        sent, failed = [], []
         body = f"<@&{TICKET_BROADCAST_ROLE_ID}>\n{text}"
-        for ch in chans:
-            try:
-                for i in range(0, len(body), 1900):
-                    await ch.send(
-                        body[i:i + 1900],
-                        allowed_mentions=discord.AllowedMentions(roles=True, users=True, everyone=False),
-                    )
-                sent.append(ch.name)
-            except Exception as e:
-                failed.append(f"{ch.name} ({type(e).__name__})")
-            await asyncio.sleep(0.4)
-        return web.json_response({"ok": True, "sent": sent, "failed": failed})
+
+        async def _run():
+            sent, failed = 0, []
+            for ch in chans:
+                try:
+                    for i in range(0, len(body), 1900):
+                        await ch.send(
+                            body[i:i + 1900],
+                            allowed_mentions=discord.AllowedMentions(roles=True, users=True, everyone=False),
+                        )
+                    sent += 1
+                except Exception as e:
+                    failed.append(f"{ch.name} ({type(e).__name__})")
+                await asyncio.sleep(0.4)
+            print(f"[TICKET-BROADCAST] poslato {sent}/{len(chans)}, greške: {failed}", flush=True)
+
+        asyncio.create_task(_run())
+        return web.json_response({"ok": True, "queued": len(chans)})
     except Exception as e:
         return web.json_response({"ok": False, "error": f"interna greška: {e}"}, status=500)
 
