@@ -4865,6 +4865,48 @@ def normalize_shift(s):
     return None
 
 
+TICKET_BROADCAST_ROLE_ID = 1410962215770656768  # LV chatter
+
+
+async def handle_bridge_ticket_broadcast(request):
+    """POST /ticket_broadcast {token, text} → poruka u svaki ticket-* kanal sa tagom chatter role."""
+    try:
+        if not BRIDGE_TOKEN:
+            return web.json_response({"ok": False, "error": "bridge disabled"}, status=403)
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"ok": False, "error": "invalid json"}, status=400)
+        if data.get("token") != BRIDGE_TOKEN:
+            return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+        text = (data.get("text") or "").strip()
+        if not text:
+            return web.json_response({"ok": False, "error": "empty text"}, status=400)
+        nr = _bridge_not_ready()
+        if nr:
+            return nr
+        guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
+        if not guild:
+            return web.json_response({"ok": False, "error": "guild not found"}, status=500)
+        chans = [c for c in guild.text_channels if c.name.lower().startswith(("ticket-", "tiket-"))]
+        sent, failed = [], []
+        body = f"<@&{TICKET_BROADCAST_ROLE_ID}>\n{text}"
+        for ch in chans:
+            try:
+                for i in range(0, len(body), 1900):
+                    await ch.send(
+                        body[i:i + 1900],
+                        allowed_mentions=discord.AllowedMentions(roles=True, users=True, everyone=False),
+                    )
+                sent.append(ch.name)
+            except Exception as e:
+                failed.append(f"{ch.name} ({type(e).__name__})")
+            await asyncio.sleep(0.4)
+        return web.json_response({"ok": True, "sent": sent, "failed": failed})
+    except Exception as e:
+        return web.json_response({"ok": False, "error": f"interna greška: {e}"}, status=500)
+
+
 async def handle_bridge_announcement(request):
     try:
         return await _bridge_announcement_impl(request)
@@ -4990,6 +5032,7 @@ async def start_bridge_server():
     app.router.add_get("/", handle_health)
     app.router.add_post("/as", handle_bridge_as)
     app.router.add_post("/announcement", handle_bridge_announcement)
+    app.router.add_post("/ticket_broadcast", handle_bridge_ticket_broadcast)
     app.router.add_get("/qc_inbox", handle_qc_inbox)
     app.router.add_post("/qc_inbox/ack", handle_qc_ack)
     app.router.add_get("/role_pings", handle_role_pings)
