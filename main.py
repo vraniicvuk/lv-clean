@@ -1205,7 +1205,7 @@ def _qc_render(d):
         mark = "✅" if val or n else "⬜"
         prev = (val[:70] + "…") if len(val) > 70 else val
         lines.append(f"{mark} **{label}** {('📎' + str(n)) if n else ''} {('— ' + prev) if prev else ''}")
-    lines += ["", "📎 Slike: dugme „Dodaj slike“ → izaberi sekciju → pošalji slike u kanal."]
+    lines += ["", "📎 Slike: samo ih pošalji u ovaj kanal (Add photo → izaberi iz foldera, može više odjednom) — bot ih sam ubacuje u BADs i briše tvoju poruku."]
     return "\n".join(lines)
 
 
@@ -1246,47 +1246,30 @@ class _QCSecButton(discord.ui.Button):
         await interaction.response.send_modal(QCSectionModal(self.uid, self.key))
 
 
-class QCImgSelect(discord.ui.Select):
-    def __init__(self, uid):
-        super().__init__(placeholder="Za koju sekciju su slike?",
-                         options=[discord.SelectOption(label=l.rstrip(":"), value=k) for k, l in QC_SECTIONS])
-        self.uid = uid
+QC_IMG_SECTION = "bads"
 
-    async def callback(self, interaction: discord.Interaction):
-        d = _qc_drafts.get(self.uid)
-        if not d:
-            return await interaction.response.send_message("❌ Draft je istekao.", ephemeral=True)
-        key = self.values[0]
-        await interaction.response.edit_message(
-            content=f"📎 Pošalji slike za **{QC_LABELS[key]}** u ovaj kanal (može više u jednoj poruci) — imaš 3 min.\n"
-                    f"Bot će ih pokupiti i obrisati tvoju poruku.", view=None)
 
-        def check(m):
-            return m.author.id == self.uid and m.channel.id == interaction.channel.id and m.attachments
-
-        try:
-            m = await bot.wait_for("message", check=check, timeout=180)
-        except asyncio.TimeoutError:
-            return await interaction.edit_original_response(content="⌛ Vreme za slike je isteklo.")
-        got = 0
-        for att in m.attachments[:10]:
+async def qc_capture_images(message):
+    """Dok je /qc otvoren: svaka slika koju autor pošalje u isti kanal ide u BADs (poruka se briše)."""
+    d = _qc_drafts.get(message.author.id)
+    if not d or not message.attachments or message.channel.id != d.get("channel_id"):
+        return False
+    got = 0
+    for att in message.attachments:
+        if (att.content_type or "").startswith("image") or att.filename.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
             try:
-                d["imgs"].setdefault(key, []).append((att.filename, await att.read()))
+                d["imgs"].setdefault(QC_IMG_SECTION, []).append((att.filename, await att.read()))
                 got += 1
             except Exception as e:
                 print("[QC] img read fail:", e, flush=True)
-        try:
-            await m.delete()
-        except Exception:
-            pass
-        await interaction.edit_original_response(content=f"✅ Dodato {got} slika u **{QC_LABELS[key]}**.")
-        await _qc_refresh(d)
-
-
-class QCImgView(discord.ui.View):
-    def __init__(self, uid):
-        super().__init__(timeout=600)
-        self.add_item(QCImgSelect(uid))
+    if not got:
+        return False
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    await _qc_refresh(d)
+    return True
 
 
 class QCEditorView(discord.ui.View):
@@ -1299,11 +1282,13 @@ class QCEditorView(discord.ui.View):
     def _mine(self, interaction):
         return interaction.user.id == self.uid and self.uid in _qc_drafts
 
-    @discord.ui.button(label="Dodaj slike", emoji="📎", style=discord.ButtonStyle.primary, row=2)
-    async def add_imgs(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="Obriši slike", emoji="🗑", style=discord.ButtonStyle.secondary, row=2)
+    async def clear_imgs(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self._mine(interaction):
             return await interaction.response.send_message("❌ Nema aktivnog QC-a.", ephemeral=True)
-        await interaction.response.send_message("Izaberi sekciju:", view=QCImgView(self.uid), ephemeral=True)
+        d = _qc_drafts[self.uid]
+        d["imgs"] = {}
+        await interaction.response.edit_message(content=_qc_render(d), view=QCEditorView(self.uid))
 
     @discord.ui.button(label="Pošalji", emoji="✅", style=discord.ButtonStyle.success, row=2)
     async def send(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1350,6 +1335,7 @@ class QCEditorView(discord.ui.View):
 async def qc_report(interaction: discord.Interaction, chatter: str, datum: str):
     d = {"uid": interaction.user.id, "chatter": chatter.strip(), "datum": datum.strip(), "text": {}, "imgs": {}}
     d["editor"] = interaction
+    d["channel_id"] = interaction.channel.id
     _qc_drafts[interaction.user.id] = d
     await interaction.response.send_message(_qc_render(d), view=QCEditorView(interaction.user.id), ephemeral=True)
 
@@ -2349,6 +2335,11 @@ async def handle_role_pings_ack(request):
 async def on_message(message: discord.Message):
     if message.author.bot:
         return
+    try:
+        if _qc_drafts and await qc_capture_images(message):
+            return
+    except Exception as e:
+        print("[QC] capture fail:", e, flush=True)
     try:
         await tq_forward_message(message)
     except Exception as e:
