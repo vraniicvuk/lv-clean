@@ -1110,7 +1110,7 @@ async def farm(interaction: discord.Interaction):
 
 
 # ========== QC - JEDNOSTAVNA VERZIJA SA ČUVANJEM PODATAKA ==========
-@tree.command(name="qc", description="Pošalji Daily QC listu chattera", guild=GUILD_OBJ)
+@tree.command(name="dailyqc", description="Pošalji Daily QC listu chattera", guild=GUILD_OBJ)
 async def qc(interaction: discord.Interaction):
     await interaction.response.send_message(
         "**Daily QC - Unos chattera**\n\n"
@@ -1170,6 +1170,98 @@ async def qc(interaction: discord.Interaction):
     except Exception as e:
         await interaction.followup.send(f"❌ Greška: {e}", ephemeral=True)
 
+
+
+# ========== /qc — QC REPORT TEMPLATE (2 forme, Discord dozvoljava max 5 polja po formi) ==========
+QC_FOOTER = "NAKON SVAKOG POSLATOG QC REPORTA NEOPHODNO JE DA REAGUJES NA PORUKU I DA DAS SVOJ FEEDBACK NA POSLAT QC REPORT"
+_qc_drafts = {}  # user_id -> {chatter, datum, mms, mmppv, bads, goods}
+
+
+async def qc_date_autocomplete(interaction: discord.Interaction, current: str):
+    today = _local_now().date()
+    out = []
+    for i in range(0, 8):
+        d = today - timedelta(days=i)
+        lab = "DANAS" if i == 0 else ("JUČE" if i == 1 else SR_WEEKDAYS[d.weekday()])
+        out.append(app_commands.Choice(name=f"{d.strftime('%d.%m.%Y')} — {lab}", value=d.strftime("%d.%m.%Y")))
+    return out
+
+
+def _qc_field(label, placeholder, required=False):
+    return discord.ui.TextInput(label=label, style=discord.TextStyle.paragraph, required=required,
+                                max_length=1800, placeholder=placeholder)
+
+
+class QCModalPart1(discord.ui.Modal, title="QC REPORT (1/2)"):
+    def __init__(self, chatter, datum):
+        super().__init__(timeout=1800)
+        self.chatter, self.datum = chatter, datum
+        self.mms = _qc_field("MMS", "mass messages")
+        self.mmppv = _qc_field("MMPPVS", "mmppv")
+        self.bads = _qc_field("BADs", "šta nije dobro")
+        self.goods = _qc_field("GOODs", "šta je dobro")
+        for f in (self.mms, self.mmppv, self.bads, self.goods):
+            self.add_item(f)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        _qc_drafts[interaction.user.id] = {
+            "chatter": self.chatter, "datum": self.datum,
+            "mms": self.mms.value, "mmppv": self.mmppv.value, "bads": self.bads.value, "goods": self.goods.value,
+        }
+        await interaction.response.send_message(
+            "✅ 1/2 sačuvano. Klikni dugme za drugi deo (ispravljeno, ponavlja se, zaključak).",
+            view=QCContinueView(interaction.user.id), ephemeral=True,
+        )
+
+
+class QCContinueView(discord.ui.View):
+    def __init__(self, uid):
+        super().__init__(timeout=1800)
+        self.uid = uid
+
+    @discord.ui.button(label="Nastavi (2/2)", emoji="➡️", style=discord.ButtonStyle.primary)
+    async def cont(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.uid or self.uid not in _qc_drafts:
+            return await interaction.response.send_message("❌ Nema sačuvanog dela 1 — pokreni /qc ponovo.", ephemeral=True)
+        await interaction.response.send_modal(QCModalPart2())
+
+
+class QCModalPart2(discord.ui.Modal, title="QC REPORT (2/2)"):
+    def __init__(self):
+        super().__init__(timeout=1800)
+        self.fixed = _qc_field("ISPRAVLJENO OD PROSLOG QC-A", "šta je ispravljeno")
+        self.repeat = _qc_field("PONAVLJA SE", "šta se ponavlja")
+        self.concl = _qc_field("ZAKLJUCAK", "zaključak", required=True)
+        for f in (self.fixed, self.repeat, self.concl):
+            self.add_item(f)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        d = _qc_drafts.pop(interaction.user.id, None)
+        if not d:
+            return await interaction.response.send_message("❌ Nema dela 1 — pokreni /qc ponovo.", ephemeral=True)
+
+        def sec(title, val):
+            return f"{title}\n\n{(val or '').strip() or '-'}\n\n"
+
+        text = (
+            f"QC ZA: {d['chatter']} {d['datum']}\n\n"
+            + sec("MMS:", d["mms"]) + sec("MMPPVS:", d["mmppv"])
+            + sec("BADs", d["bads"]) + sec("GOODs", d["goods"])
+            + sec("ISPRAVLJENO OD PROSLOG QC-A:", self.fixed.value)
+            + sec("PONAVLJA SE:", self.repeat.value)
+            + sec("ZAKLJUCAK", self.concl.value)
+            + QC_FOOTER
+        )
+        await interaction.response.send_message("✅ QC report poslat.", ephemeral=True)
+        for i in range(0, len(text), 1900):
+            await interaction.channel.send(text[i:i + 1900], allowed_mentions=discord.AllowedMentions.none())
+
+
+@tree.command(name="qc", description="QC report template (chatter + datum, pa forma)", guild=GUILD_OBJ)
+@app_commands.describe(chatter="Ime chattera (slovima)", datum="Datum QC-a (danas ili do 7 dana unazad)")
+@app_commands.autocomplete(datum=qc_date_autocomplete)
+async def qc_report(interaction: discord.Interaction, chatter: str, datum: str):
+    await interaction.response.send_modal(QCModalPart1(chatter.strip(), datum.strip()))
 
 
 @tree.command(name="qcurrent", description="Pregled QC reporta za trenutni mesec", guild=GUILD_OBJ)
