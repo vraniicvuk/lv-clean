@@ -1172,9 +1172,19 @@ async def qc(interaction: discord.Interaction):
 
 
 
-# ========== /qc — QC REPORT TEMPLATE (2 forme, Discord dozvoljava max 5 polja po formi) ==========
+# ========== /qc — QC REPORT (editor: svaka sekcija posebno, napred/nazad, slike po sekciji) ==========
 QC_FOOTER = "NAKON SVAKOG POSLATOG QC REPORTA NEOPHODNO JE DA REAGUJES NA PORUKU I DA DAS SVOJ FEEDBACK NA POSLAT QC REPORT"
-_qc_drafts = {}  # user_id -> {chatter, datum, mms, mmppv, bads, goods}
+QC_SECTIONS = [
+    ("mms", "MMS:"),
+    ("mmppv", "MMPPVS:"),
+    ("bads", "BADs"),
+    ("goods", "GOODs"),
+    ("fixed", "ISPRAVLJENO OD PROSLOG QC-A:"),
+    ("repeat", "PONAVLJA SE:"),
+    ("concl", "ZAKLJUCAK"),
+]
+QC_LABELS = dict(QC_SECTIONS)
+_qc_drafts = {}  # user_id -> {chatter, datum, text{}, imgs{}, editor}
 
 
 async def qc_date_autocomplete(interaction: discord.Interaction, current: str):
@@ -1187,81 +1197,161 @@ async def qc_date_autocomplete(interaction: discord.Interaction, current: str):
     return out
 
 
-def _qc_field(label, placeholder, required=False):
-    return discord.ui.TextInput(label=label, style=discord.TextStyle.paragraph, required=required,
-                                max_length=1800, placeholder=placeholder)
+def _qc_render(d):
+    lines = [f"📝 **QC ZA: {d['chatter']} {d['datum']}**", "Klikni sekciju da je upišeš ili izmeniš (možeš da se vraćaš koliko hoćeš).", ""]
+    for key, label in QC_SECTIONS:
+        val = (d["text"].get(key) or "").strip()
+        n = len(d["imgs"].get(key, []))
+        mark = "✅" if val or n else "⬜"
+        prev = (val[:70] + "…") if len(val) > 70 else val
+        lines.append(f"{mark} **{label}** {('📎' + str(n)) if n else ''} {('— ' + prev) if prev else ''}")
+    lines += ["", "📎 Slike: dugme „Dodaj slike“ → izaberi sekciju → pošalji slike u kanal."]
+    return "\n".join(lines)
 
 
-class QCModalPart1(discord.ui.Modal, title="QC REPORT (1/2)"):
-    def __init__(self, chatter, datum):
-        super().__init__(timeout=1800)
-        self.chatter, self.datum = chatter, datum
-        self.mms = _qc_field("MMS", "mass messages")
-        self.mmppv = _qc_field("MMPPVS", "mmppv")
-        self.bads = _qc_field("BADs", "šta nije dobro")
-        self.goods = _qc_field("GOODs", "šta je dobro")
-        for f in (self.mms, self.mmppv, self.bads, self.goods):
-            self.add_item(f)
+async def _qc_refresh(d):
+    try:
+        await d["editor"].edit_original_response(content=_qc_render(d), view=QCEditorView(d["uid"]))
+    except Exception:
+        pass
+
+
+class QCSectionModal(discord.ui.Modal):
+    def __init__(self, uid, key):
+        super().__init__(title=QC_LABELS[key][:45], timeout=1800)
+        self.uid, self.key = uid, key
+        cur = _qc_drafts.get(uid, {}).get("text", {}).get(key, "")
+        self.field = discord.ui.TextInput(
+            label=QC_LABELS[key][:45], style=discord.TextStyle.paragraph, required=False,
+            max_length=3500, default=cur or None,
+        )
+        self.add_item(self.field)
 
     async def on_submit(self, interaction: discord.Interaction):
-        _qc_drafts[interaction.user.id] = {
-            "chatter": self.chatter, "datum": self.datum,
-            "mms": self.mms.value, "mmppv": self.mmppv.value, "bads": self.bads.value, "goods": self.goods.value,
-        }
-        await interaction.response.send_message(
-            "✅ 1/2 sačuvano. Klikni dugme za drugi deo (ispravljeno, ponavlja se, zaključak).",
-            view=QCContinueView(interaction.user.id), ephemeral=True,
-        )
+        d = _qc_drafts.get(self.uid)
+        if not d:
+            return await interaction.response.send_message("❌ Draft je istekao — pokreni /qc ponovo.", ephemeral=True)
+        d["text"][self.key] = self.field.value
+        await interaction.response.edit_message(content=_qc_render(d), view=QCEditorView(self.uid))
 
 
-class QCContinueView(discord.ui.View):
+class _QCSecButton(discord.ui.Button):
+    def __init__(self, uid, key, row):
+        super().__init__(label=QC_LABELS[key].rstrip(":")[:30], style=discord.ButtonStyle.secondary, row=row)
+        self.uid, self.key = uid, key
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.uid:
+            return await interaction.response.send_message("❌ Nije tvoj QC.", ephemeral=True)
+        await interaction.response.send_modal(QCSectionModal(self.uid, self.key))
+
+
+class QCImgSelect(discord.ui.Select):
     def __init__(self, uid):
-        super().__init__(timeout=1800)
+        super().__init__(placeholder="Za koju sekciju su slike?",
+                         options=[discord.SelectOption(label=l.rstrip(":"), value=k) for k, l in QC_SECTIONS])
         self.uid = uid
 
-    @discord.ui.button(label="Nastavi (2/2)", emoji="➡️", style=discord.ButtonStyle.primary)
-    async def cont(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.uid or self.uid not in _qc_drafts:
-            return await interaction.response.send_message("❌ Nema sačuvanog dela 1 — pokreni /qc ponovo.", ephemeral=True)
-        await interaction.response.send_modal(QCModalPart2())
-
-
-class QCModalPart2(discord.ui.Modal, title="QC REPORT (2/2)"):
-    def __init__(self):
-        super().__init__(timeout=1800)
-        self.fixed = _qc_field("ISPRAVLJENO OD PROSLOG QC-A", "šta je ispravljeno")
-        self.repeat = _qc_field("PONAVLJA SE", "šta se ponavlja")
-        self.concl = _qc_field("ZAKLJUCAK", "zaključak", required=True)
-        for f in (self.fixed, self.repeat, self.concl):
-            self.add_item(f)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        d = _qc_drafts.pop(interaction.user.id, None)
+    async def callback(self, interaction: discord.Interaction):
+        d = _qc_drafts.get(self.uid)
         if not d:
-            return await interaction.response.send_message("❌ Nema dela 1 — pokreni /qc ponovo.", ephemeral=True)
+            return await interaction.response.send_message("❌ Draft je istekao.", ephemeral=True)
+        key = self.values[0]
+        await interaction.response.edit_message(
+            content=f"📎 Pošalji slike za **{QC_LABELS[key]}** u ovaj kanal (može više u jednoj poruci) — imaš 3 min.\n"
+                    f"Bot će ih pokupiti i obrisati tvoju poruku.", view=None)
 
-        def sec(title, val):
-            return f"{title}\n\n{(val or '').strip() or '-'}\n\n"
+        def check(m):
+            return m.author.id == self.uid and m.channel.id == interaction.channel.id and m.attachments
 
-        text = (
-            f"QC ZA: {d['chatter']} {d['datum']}\n\n"
-            + sec("MMS:", d["mms"]) + sec("MMPPVS:", d["mmppv"])
-            + sec("BADs", d["bads"]) + sec("GOODs", d["goods"])
-            + sec("ISPRAVLJENO OD PROSLOG QC-A:", self.fixed.value)
-            + sec("PONAVLJA SE:", self.repeat.value)
-            + sec("ZAKLJUCAK", self.concl.value)
-            + QC_FOOTER
-        )
-        await interaction.response.send_message("✅ QC report poslat.", ephemeral=True)
-        for i in range(0, len(text), 1900):
-            await interaction.channel.send(text[i:i + 1900], allowed_mentions=discord.AllowedMentions.none())
+        try:
+            m = await bot.wait_for("message", check=check, timeout=180)
+        except asyncio.TimeoutError:
+            return await interaction.edit_original_response(content="⌛ Vreme za slike je isteklo.")
+        got = 0
+        for att in m.attachments[:10]:
+            try:
+                d["imgs"].setdefault(key, []).append((att.filename, await att.read()))
+                got += 1
+            except Exception as e:
+                print("[QC] img read fail:", e, flush=True)
+        try:
+            await m.delete()
+        except Exception:
+            pass
+        await interaction.edit_original_response(content=f"✅ Dodato {got} slika u **{QC_LABELS[key]}**.")
+        await _qc_refresh(d)
 
 
-@tree.command(name="qc", description="QC report template (chatter + datum, pa forma)", guild=GUILD_OBJ)
+class QCImgView(discord.ui.View):
+    def __init__(self, uid):
+        super().__init__(timeout=600)
+        self.add_item(QCImgSelect(uid))
+
+
+class QCEditorView(discord.ui.View):
+    def __init__(self, uid):
+        super().__init__(timeout=3600)
+        self.uid = uid
+        for i, (key, _) in enumerate(QC_SECTIONS):
+            self.add_item(_QCSecButton(uid, key, row=0 if i < 4 else 1))
+
+    def _mine(self, interaction):
+        return interaction.user.id == self.uid and self.uid in _qc_drafts
+
+    @discord.ui.button(label="Dodaj slike", emoji="📎", style=discord.ButtonStyle.primary, row=2)
+    async def add_imgs(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._mine(interaction):
+            return await interaction.response.send_message("❌ Nema aktivnog QC-a.", ephemeral=True)
+        await interaction.response.send_message("Izaberi sekciju:", view=QCImgView(self.uid), ephemeral=True)
+
+    @discord.ui.button(label="Pošalji", emoji="✅", style=discord.ButtonStyle.success, row=2)
+    async def send(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._mine(interaction):
+            return await interaction.response.send_message("❌ Nema aktivnog QC-a.", ephemeral=True)
+        d = _qc_drafts[self.uid]
+        if not (d["text"].get("concl") or "").strip():
+            return await interaction.response.send_message("❌ Popuni ZAKLJUCAK pre slanja.", ephemeral=True)
+        _qc_drafts.pop(self.uid, None)
+        await interaction.response.edit_message(content="✅ QC report poslat.", view=None)
+        import io
+        ch = interaction.channel
+        buf = f"QC ZA: {d['chatter']} {d['datum']}\n\n"
+
+        async def flush(text):
+            for i in range(0, len(text), 1900):
+                part = text[i:i + 1900]
+                if part.strip():
+                    await ch.send(part, allowed_mentions=discord.AllowedMentions.none())
+
+        for key, label in QC_SECTIONS:
+            buf += f"{label}\n\n{(d['text'].get(key) or '').strip() or '-'}\n\n"
+            imgs = d["imgs"].get(key) or []
+            if imgs:
+                await flush(buf)
+                buf = ""
+                for j in range(0, len(imgs), 10):
+                    files = [discord.File(io.BytesIO(b), filename=fn) for fn, b in imgs[j:j + 10]]
+                    await ch.send(files=files)
+        buf += QC_FOOTER
+        await flush(buf)
+
+    @discord.ui.button(label="Otkaži", emoji="❌", style=discord.ButtonStyle.danger, row=2)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.uid:
+            return await interaction.response.send_message("❌ Nije tvoj QC.", ephemeral=True)
+        _qc_drafts.pop(self.uid, None)
+        await interaction.response.edit_message(content="❌ QC otkazan.", view=None)
+
+
+@tree.command(name="qc", description="QC report template (chatter + datum, sekcije, slike)", guild=GUILD_OBJ)
 @app_commands.describe(chatter="Ime chattera (slovima)", datum="Datum QC-a (danas ili do 7 dana unazad)")
 @app_commands.autocomplete(datum=qc_date_autocomplete)
 async def qc_report(interaction: discord.Interaction, chatter: str, datum: str):
-    await interaction.response.send_modal(QCModalPart1(chatter.strip(), datum.strip()))
+    d = {"uid": interaction.user.id, "chatter": chatter.strip(), "datum": datum.strip(), "text": {}, "imgs": {}}
+    d["editor"] = interaction
+    _qc_drafts[interaction.user.id] = d
+    await interaction.response.send_message(_qc_render(d), view=QCEditorView(interaction.user.id), ephemeral=True)
 
 
 @tree.command(name="qcurrent", description="Pregled QC reporta za trenutni mesec", guild=GUILD_OBJ)
