@@ -2235,6 +2235,51 @@ async def _tq_post(data, answer, take):
     return web.json_response({"ok": True, "message_id": msgs[-1], "message_ids": msgs})
 
 
+async def handle_tq_dayoffs(request):
+    """GET /dayoffs?date=YYYY-MM-DD → off dani, odobreni coveri i zamene smena za taj dan (isto što /checkoff), kao JSON."""
+    if not _tq_in_ok(request):
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    d = parse_date_str(request.query.get("date", "")) or _local_now().date()
+    iso = d.isoformat()
+    entries = []
+    for e in sorted((x for x in off_days if x.get("date") == iso),
+                    key=lambda x: (str(x.get("shift") or ""), str(x.get("username") or ""))):
+        typ = "approved" if e.get("approved_by") else ("confirmed" if e.get("confirmed") else "pending")
+        entries.append({
+            "discord_id": str(e.get("user_id") or ""),
+            "name": e.get("username") or "",
+            "shift": e.get("shift") or "",
+            "type": "off",
+            "status": typ,  # confirmed = ✅, approved = 🛡 (manager), pending = ⏳
+            "needs_cover": bool(e.get("needs_cover")),
+        })
+    for c in await asyncio.to_thread(approved_covers, iso, iso):
+        entries.append({
+            "discord_id": str(c.get("user_id") or ""),
+            "name": c.get("username") or "",
+            "shift": c.get("shift") or "",
+            "type": "cover",
+            "cover_type": c.get("cover_type"),  # late = kasniji ulazak, early = raniji izlazak
+            "minutes": c.get("minutes"),
+            "needs_cover": True,
+        })
+    for s in await asyncio.to_thread(approved_shiftchanges, iso):
+        try:
+            sc = json.loads(s.get("reason") or "{}")
+        except Exception:
+            sc = {}
+        entries.append({
+            "type": "shift_change",
+            "discord_id": str(s.get("user_id") or ""),
+            "name": s.get("username") or "",
+            "from": (sc.get("my_shift") or "").lower(),
+            "to": (sc.get("partner_shift") or "").lower(),
+            "with": sc.get("partner_name") or "",
+            "with_discord_id": str(sc.get("partner_id") or ""),
+        })
+    return web.json_response({"ok": True, "date": iso, "entries": entries})
+
+
 async def handle_tq_channels(request):
     """GET /channels?token=... → [{id, name}] svih ticket-*/tiket-* kanala."""
     if not _tq_in_ok(request):
@@ -5219,6 +5264,7 @@ async def start_bridge_server():
     app.router.add_post("/post", handle_tq_post)
     app.router.add_get("/members", handle_tq_members)
     app.router.add_get("/channels", handle_tq_channels)
+    app.router.add_get("/dayoffs", handle_tq_dayoffs)
     app.router.add_post("/roles", handle_roles)
     app.router.add_get("/reassigns_xlsx", handle_reassigns_xlsx)
     runner = web.AppRunner(app)
