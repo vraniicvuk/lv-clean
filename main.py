@@ -598,10 +598,17 @@ def why_blocked(bot_member: discord.Member, role: discord.Role):
 
 
 # ==================== PERMISSION CHECKS ====================
+SUPER_ROLE_ID = 1410962105749995591  # supervisor — sme sve što i admin/manager
+
+
+def _is_super(member):
+    return any(r.id == SUPER_ROLE_ID for r in getattr(member, "roles", []))
+
+
 def need_manage_roles():
     def predicate(interaction: discord.Interaction):
         gp = interaction.user.guild_permissions
-        if gp.manage_roles or gp.administrator:
+        if gp.manage_roles or gp.administrator or _is_super(interaction.user):
             return True
         raise app_commands.CheckFailure("treba ti Manage Roles.")
 
@@ -610,7 +617,7 @@ def need_manage_roles():
 
 def need_off_manager():
     async def predicate(interaction: discord.Interaction):
-        if any(r.id == OFF_CANCEL_ROLE_ID for r in interaction.user.roles):
+        if any(r.id == OFF_CANCEL_ROLE_ID for r in interaction.user.roles) or _is_super(interaction.user):
             return True
         await interaction.response.send_message("Samo manager rola može ovo.", ephemeral=True)
         return False
@@ -620,7 +627,7 @@ def need_off_manager():
 
 def need_manage_channels():
     async def predicate(interaction: discord.Interaction):
-        if not interaction.user.guild_permissions.manage_channels:
+        if not (interaction.user.guild_permissions.manage_channels or _is_super(interaction.user)):
             await interaction.response.send_message(
                 "Nemaš Manage Channels permisiju.", ephemeral=True
             )
@@ -4766,7 +4773,7 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     if payload.message_id in off_cancel_requests:
         info = off_cancel_requests.get(payload.message_id)
         if info and str(payload.emoji) == "✅":
-            has_role = any(r.id == OFF_CANCEL_ROLE_ID for r in member.roles)
+            has_role = any(r.id == OFF_CANCEL_ROLE_ID for r in member.roles) or _is_super(member)
             if has_role:
                 off_message_id = info["off_message_id"]
                 user_id = info["user_id"]
@@ -4815,8 +4822,8 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
                     print("[OFF] edit confirm fail:", e)
 
     elif emoji == "❌":
-        # admin (manage_roles) može direktno da obriše
-        if member.guild_permissions.manage_roles:
+        # admin / supervisor / sam chatter — briše odmah, bez potvrde managera
+        if member.guild_permissions.manage_roles or _is_super(member) or member.id == entries[0].get("user_id"):
             off_days[:] = [e for e in off_days if e.get("message_id") != payload.message_id]
             save_off_days()
             if channel:
@@ -5534,7 +5541,7 @@ class TeamPickSelect(discord.ui.Select):
         )
 
     async def callback(self, interaction: discord.Interaction):
-        if not any(r.id == REQ_MANAGER_ROLE_ID for r in getattr(interaction.user, "roles", [])):
+        if not (any(r.id == REQ_MANAGER_ROLE_ID for r in getattr(interaction.user, "roles", [])) or _is_super(interaction.user)):
             return await interaction.response.send_message("❌ Tim dodeljuje samo manager.", ephemeral=True)
         msg = interaction.message
         target = msg.mentions[0] if msg.mentions else None
@@ -5965,7 +5972,7 @@ class ReqDecisionView(discord.ui.View):
         super().__init__(timeout=None)
 
     async def _check(self, interaction):
-        if not any(r.id == REQ_MANAGER_ROLE_ID for r in getattr(interaction.user, "roles", [])):
+        if not (any(r.id == REQ_MANAGER_ROLE_ID for r in getattr(interaction.user, "roles", [])) or _is_super(interaction.user)):
             await interaction.response.send_message("❌ Samo manager rola može da odobri/odbije.", ephemeral=True)
             return None
         req = await asyncio.to_thread(_req_get_by_msg, interaction.message.id)
