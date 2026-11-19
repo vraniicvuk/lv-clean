@@ -6036,18 +6036,6 @@ class ReqDecisionView(discord.ui.View):
             title = "MULTI OFF (zahtev odobren)"
             detail = f"**Period:** {when}\n**Smena:** {req['shift']}\n⚠️ Treba cover za zauzete dane"
         elif req["kind"] == "off":
-            # ponovna provera — u međuvremenu je neko drugi možda odobren
-            if any(
-                e.get("date") == req["date"] and e.get("shift") == req["shift"]
-                and e.get("user_id") != req["user_id"] and e.get("approved_by")
-                for e in off_days
-            ):
-                await asyncio.to_thread(_req_set, req["id"], status="denied", decided_by=interaction.user.id)
-                await interaction.response.edit_message(
-                    content=interaction.message.content + "\n\n❌ **Automatski odbijeno** — taj dan je u međuvremenu odobren drugom kolegi.",
-                    view=None,
-                )
-                return
             if not any(e.get("user_id") == req["user_id"] and e.get("date") == req["date"] for e in off_days):
                 off_days.append({
                     "user_id": req["user_id"],
@@ -6159,18 +6147,6 @@ async def reqoff(interaction: discord.Interaction):
             e for e in off_days
             if e.get("date") == iso and e.get("shift") == shift and e.get("user_id") != i.user.id
         ]
-        approved_other = [e for e in others if e.get("approved_by")]
-        if approved_other:
-            return await i.response.send_message(
-                f"❌ Zahtev odbijen — {d.strftime('%d.%m.%Y')} je već **odobren** kolegi "
-                f"({', '.join(str(e.get('username')) for e in approved_other)}). Izaberi drugi dan.",
-                ephemeral=True,
-            )
-        if len(others) > 1:
-            return await i.response.send_message(
-                f"❌ Zahtev odbijen — {d.strftime('%d.%m.%Y')} je off već {len(others)} kolega u tvojoj smeni.",
-                ephemeral=True,
-            )
         await i.response.edit_message(content="⏳ Šaljem zahtev menadžerima...", view=None)
         used = count_month_off_days(i.user.id, d.strftime("%Y-%m"))
         req_id = await asyncio.to_thread(
@@ -6178,7 +6154,7 @@ async def reqoff(interaction: discord.Interaction):
             kind="off", user_id=i.user.id, username=i.user.display_name, shift=shift,
             date=iso, status="pending", channel_id=i.channel.id, created_at=_local_now().isoformat(),
         )
-        busy = f"{others[0].get('username')} je već off taj dan" if others else "dan je slobodan"
+        busy = (f"već off: {', '.join(str(e.get('username')) for e in others)}" if others else "dan je slobodan")
         await _post_request(
             i, req_id,
             f"📨 **ZAHTEV ZA OFF DAN**\n"
@@ -6192,7 +6168,7 @@ async def reqoff(interaction: discord.Interaction):
 
     note = ""
     if taken:
-        note = "\n\nZauzeti dani u tvojoj smeni su označeni sa „zauzeto” — i njih možeš da tražiš (ako nisu već odobreni drugom)."
+        note = "\n\nZauzeti dani u tvojoj smeni su označeni sa „zauzeto” — i njih možeš da tražiš, menadžer odlučuje."
     await interaction.response.send_message(
         f"📨 **Zahtev za off** — izaberi datum:{note}",
         view=OffDayPickerView(taken, dates, on_pick),
