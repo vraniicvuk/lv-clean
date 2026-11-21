@@ -4833,26 +4833,6 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
                     await msg.clear_reactions()
                 except Exception as e:
                     print("[OFF] edit delete fail:", e)
-        # chatter traži otkazivanje (čeka potvrdu role)
-        elif member.id == entries[0].get("user_id"):
-            dates = ", ".join(sorted({e.get("date") for e in entries if e.get("date")}))
-            # reply na originalnu poruku — taguje rolu
-            try:
-                orig_msg = await channel.fetch_message(payload.message_id)
-                cm = await orig_msg.reply(
-                    f"🔔 <@&{OFF_CANCEL_ROLE_ID}> — potvrdi brisanje off dana za <@{member.id}> ({dates}).",
-                    mention_author=False,
-                )
-                await cm.add_reaction("✅")
-                off_cancel_requests[cm.id] = {"off_message_id": payload.message_id, "user_id": member.id, "off_channel_id": payload.channel_id}
-            except Exception as e:
-                print("[OFF] cancel request send fail:", e)
-            # edit originalnu poruku
-            try:
-                msg = await channel.fetch_message(payload.message_id)
-                await msg.edit(content=f"{msg.content}\n\n⏳ Otkazivanje zatraženo — čeka potvrdu.")
-            except Exception as e:
-                print("[OFF] cancel edit fail:", e)
 
 
 @tasks.loop(minutes=1)
