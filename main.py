@@ -1327,6 +1327,10 @@ class QCEditorView(discord.ui.View):
                     await ch.send(files=files)
         buf += QC_FOOTER
         await flush(buf)
+        try:
+            await asyncio.to_thread(qc_log_insert, self.uid, d['chatter'], d['datum'], ch.id, getattr(ch, 'name', ''))
+        except Exception as e:
+            print('[QC] log fail:', e, flush=True)
 
     @discord.ui.button(label="Otkaži", emoji="❌", style=discord.ButtonStyle.danger, row=2)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1334,6 +1338,125 @@ class QCEditorView(discord.ui.View):
             return await interaction.response.send_message("❌ Nije tvoj QC.", ephemeral=True)
         _qc_drafts.pop(self.uid, None)
         await interaction.response.edit_message(content="❌ QC otkazan.", view=None)
+
+
+# ========== QC COMPLIANCE: svaki dan bar jedan /qc report u svom tiketu ==========
+QC_PEOPLE = {
+    424921277212393472: "ticket-rema",
+    410482844469821470: "ticket-razor",
+    198739070665359361: "ticket-ikachu",
+}
+QC_MIN_PER_DAY = 1
+QC_CHECK_HOUR = 10  # u 10h proverava prethodni dan (Beograd)
+
+
+def _qc_log_db():
+    conn = _db()
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS qc_log (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, chatter TEXT, "
+        "report_date TEXT, sent_day TEXT, sent_at TEXT, channel_id INTEGER, channel_name TEXT)"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS qc_miss (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, day TEXT, "
+        "kind TEXT, n_in_month INTEGER, created_at TEXT, UNIQUE(user_id, day))"
+    )
+    return conn
+
+
+def qc_log_insert(user_id, chatter, report_date, channel_id, channel_name):
+    now = _local_now()
+    conn = _qc_log_db()
+    conn.execute(
+        "INSERT INTO qc_log (user_id, chatter, report_date, sent_day, sent_at, channel_id, channel_name) VALUES (?,?,?,?,?,?,?)",
+        (user_id, chatter, report_date, now.date().isoformat(), now.isoformat(), channel_id, channel_name),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _qc_count(user_id, day_iso):
+    """Broj /qc reporta tog QC-a poslatih tog dana u NJEGOVOM tiketu."""
+    want = QC_PEOPLE.get(user_id, "").lower()
+    conn = _qc_log_db()
+    rows = conn.execute("SELECT channel_name FROM qc_log WHERE user_id=? AND sent_day=?", (user_id, day_iso)).fetchall()
+    conn.close()
+    return sum(1 for r in rows if (r["channel_name"] or "").lower() == want)
+
+
+def _qc_is_off(user_id, day_iso):
+    return any(e.get("user_id") == user_id and e.get("date") == day_iso for e in off_days)
+
+
+def _qc_ticket(guild, user_id):
+    want = QC_PEOPLE.get(user_id, "").lower()
+    return discord.utils.find(lambda c: c.name.lower() == want, guild.text_channels) if guild else None
+
+
+@tasks.loop(minutes=5)
+async def qc_compliance_loop():
+    now = _local_now()
+    if now.hour < QC_CHECK_HOUR:
+        return
+    day = (now.date() - timedelta(days=1)).isoformat()
+    if get_state("qc_compliance_last") == day:
+        return
+    set_state("qc_compliance_last", day)
+    guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
+    d_txt = datetime.strptime(day, "%Y-%m-%d").strftime("%d.%m.%Y")
+    for uid in QC_PEOPLE:
+        if _qc_is_off(uid, day):
+            continue
+        cnt = await asyncio.to_thread(_qc_count, uid, day)
+        if cnt >= QC_MIN_PER_DAY:
+            continue
+        month = day[:7]
+
+        def _miss():
+            conn = _qc_log_db()
+            n = conn.execute("SELECT COUNT(*) AS c FROM qc_miss WHERE user_id=? AND substr(day,1,7)=?", (uid, month)).fetchone()["c"] + 1
+            kind = "opomena" if n == 1 else "penal"
+            conn.execute("INSERT OR IGNORE INTO qc_miss (user_id, day, kind, n_in_month, created_at) VALUES (?,?,?,?,?)",
+                         (uid, day, kind, n, now.isoformat()))
+            conn.commit()
+            conn.close()
+            return n, kind
+
+        n, kind = await asyncio.to_thread(_miss)
+        ch = _qc_ticket(guild, uid)
+        txt = (
+            f"{'⚠️ OPOMENA' if kind == 'opomena' else '💸 PENAL'} — <@{uid}> nije poslat nijedan QC report za **{d_txt}** "
+            f"(propust #{n} ovog meseca).\n"
+            + ("Sledeći propušten dan ide penal." if kind == "opomena" else "Svaki sledeći propušten dan je novi penal.")
+        )
+        if ch:
+            try:
+                await ch.send(txt, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+            except Exception as e:
+                print("[QC] miss send fail:", e, flush=True)
+        print(f"[QC] miss {uid} {day} {kind} #{n}", flush=True)
+
+
+@qc_compliance_loop.before_loop
+async def _before_qc_compliance():
+    await bot.wait_until_ready()
+
+
+@tree.command(name="qcstat", description="QC: koliko je ko poslao reporta i propusta ovog meseca", guild=GUILD_OBJ)
+@need_off_manager()
+async def qcstat(interaction: discord.Interaction):
+    today = _local_now().date()
+    month = today.strftime("%Y-%m")
+    conn = _qc_log_db()
+    lines = [f"📊 **QC — {today.strftime('%m.%Y')}**", ""]
+    for uid, ticket in QC_PEOPLE.items():
+        sent = conn.execute("SELECT COUNT(*) AS c FROM qc_log WHERE user_id=? AND substr(sent_day,1,7)=? AND lower(channel_name)=?", (uid, month, ticket)).fetchone()["c"]
+        days = conn.execute("SELECT COUNT(DISTINCT sent_day) AS c FROM qc_log WHERE user_id=? AND substr(sent_day,1,7)=? AND lower(channel_name)=?", (uid, month, ticket)).fetchone()["c"]
+        miss = conn.execute("SELECT day, kind FROM qc_miss WHERE user_id=? AND substr(day,1,7)=? ORDER BY day", (uid, month)).fetchall()
+        today_cnt = conn.execute("SELECT COUNT(*) AS c FROM qc_log WHERE user_id=? AND sent_day=? AND lower(channel_name)=?", (uid, today.isoformat(), ticket)).fetchone()["c"]
+        miss_txt = ", ".join(f"{datetime.strptime(m['day'], '%Y-%m-%d').strftime('%d.%m')} ({m['kind']})" for m in miss) or "nema"
+        lines.append(f"<@{uid}> ({ticket}) — danas: {today_cnt} {'✅' if today_cnt >= QC_MIN_PER_DAY else '⏳'} · mesec: {sent} reporta u {days} dana · propusti: {miss_txt}")
+    conn.close()
+    await interaction.response.send_message("\n".join(lines), ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
 
 @tree.command(name="qc", description="QC report template (chatter + datum, sekcije, slike)", guild=GUILD_OBJ)
@@ -6900,6 +7023,8 @@ async def on_ready():
             test_timer_loop.start()
         if not dayoff_weekly_loop.is_running():
             dayoff_weekly_loop.start()
+        if not qc_compliance_loop.is_running():
+            qc_compliance_loop.start()
             print("✅ Test timer task pokrenut")
         guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
         if guild:
