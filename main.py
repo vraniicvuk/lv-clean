@@ -2402,7 +2402,7 @@ async def handle_tq_dayoffs(request):
         except Exception:
             sc = {}
         entries.append({
-            "type": "shift_change",
+            "type": "shift_swap" if s.get("kind") == "shiftswap" else "shift_change",
             "discord_id": str(s.get("user_id") or ""),
             "name": s.get("username") or "",
             "from": (sc.get("my_shift") or "").lower(),
@@ -4415,6 +4415,61 @@ async def shiftchange(interaction: discord.Interaction, sa_kim: discord.Member, 
     )
 
 
+@tree.command(name="shiftswap", description="Promena SVOJE smene za jedan dan (bez kolege) — samo u tiketu, odobrava supervisor/manager", guild=GUILD_OBJ)
+@app_commands.describe(
+    datum="Kog dana menjaš smenu",
+    nova_smena="U kojoj smeni radiš tog dana",
+    napomena="Opciono — razlog",
+)
+@app_commands.choices(nova_smena=[
+    app_commands.Choice(name="MAIN", value="MAIN"),
+    app_commands.Choice(name="AFTERNOON", value="AFTERNOON"),
+    app_commands.Choice(name="GRAVEYARD", value="GRAVEYARD"),
+])
+@app_commands.autocomplete(datum=shiftchange_date_autocomplete)
+async def shiftswap(interaction: discord.Interaction, datum: str, nova_smena: app_commands.Choice[str], napomena: str = ""):
+    if not _in_ticket(interaction):
+        return await _deny_outside_ticket(interaction)
+    d = parse_date_str(datum)
+    if not d:
+        return await interaction.response.send_message("❌ Izaberi datum iz liste.", ephemeral=True)
+    if d < _local_now().date():
+        return await interaction.response.send_message("❌ Datum je u prošlosti.", ephemeral=True)
+    my_shift = _member_shift(interaction.user)
+    if not my_shift:
+        return await interaction.response.send_message("❌ Nemaš rolu smene (MAIN / AFTERNOON / GRAVEYARD).", ephemeral=True)
+    to_shift = nova_smena.value
+    if to_shift == my_shift:
+        return await interaction.response.send_message(f"❌ Već si u smeni {my_shift}.", ephemeral=True)
+    await interaction.response.send_message("⏳ Šaljem zahtev...", ephemeral=True)
+    req_id = await asyncio.to_thread(
+        _req_insert,
+        kind="shiftswap", user_id=interaction.user.id, username=interaction.user.display_name, shift=my_shift,
+        date=d.isoformat(), status="pending", channel_id=interaction.channel.id, created_at=_local_now().isoformat(),
+        reason=json.dumps({"my_shift": my_shift, "partner_shift": to_shift, "note": napomena}),
+    )
+    when = f"{d.strftime('%d.%m.%Y')} ({SR_WEEKDAYS[d.weekday()]})"
+    note_txt = (f"\n**Napomena:** {napomena}" if napomena else "")
+    await _post_request(
+        interaction, req_id,
+        f"🔁 **ZAHTEV ZA PROMENU SMENE (shiftswap)**\n"
+        f"**Datum:** {when}\n"
+        f"**{interaction.user.display_name}** ({interaction.user.mention}): {my_shift} → **{to_shift}**{note_txt}\n"
+        f"Odobrava supervisor ili manager.",
+    )
+    ov = bot.get_channel(OFF_DAY_CHANNEL_ID)
+    if ov:
+        try:
+            await ov.send(
+                f"🔁 **SHIFT SWAP — zahtev (čeka odobrenje)**\n**Datum:** {when}\n"
+                f"{interaction.user.mention}: {my_shift} → {to_shift}{note_txt}\nZahtev: {interaction.channel.mention}",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except Exception as e:
+            print("[SHIFTSWAP] overview fail:", e, flush=True)
+    await interaction.edit_original_response(content="✅ Zahtev za promenu smene poslat — čeka odobrenje supervisora/managera.")
+
+
 @tree.command(name="multioff", description="Rezerviši više uzastopnih dana (putovanje, svadba...)", guild=GUILD_OBJ)
 async def multioff(interaction: discord.Interaction):
     shift = await _require_shift(interaction)
@@ -5995,7 +6050,7 @@ def approved_covers(date_from=None, date_to=None):
 def approved_shiftchanges(date_iso):
     conn = _db()
     rows = conn.execute(
-        "SELECT * FROM lv_requests WHERE kind='shiftchange' AND status='approved' AND date=?", (date_iso,)
+        "SELECT * FROM lv_requests WHERE kind IN ('shiftchange','shiftswap') AND status='approved' AND date=?", (date_iso,)
     ).fetchall()
     conn.close()
     return [dict(x) for x in rows]
@@ -6006,6 +6061,8 @@ def shiftchange_line(r):
         sc = json.loads(r.get("reason") or "{}")
     except Exception:
         sc = {}
+    if r.get("kind") == "shiftswap":
+        return f"🔁 SHIFT SWAP: <@{r['user_id']}> {sc.get('my_shift', '?')} → {sc.get('partner_shift', '?')}"
     return (
         f"🔄 SHIFT CHANGE: <@{r['user_id']}> {sc.get('my_shift', '?')} → {sc.get('partner_shift', '?')} | "
         f"<@{sc.get('partner_id')}> {sc.get('partner_shift', '?')} → {sc.get('my_shift', '?')}"
@@ -6116,6 +6173,17 @@ class ReqDecisionView(discord.ui.View):
                 f"**Datum:** {when}\n"
                 f"<@{req['user_id']}>: {sc.get('my_shift', '?')} → {sc.get('partner_shift', '?')}\n"
                 f"<@{_partner}>: {sc.get('partner_shift', '?')} → {sc.get('my_shift', '?')}"
+            )
+        elif req["kind"] == "shiftswap":
+            try:
+                sc = json.loads(req.get("reason") or "{}")
+            except Exception:
+                sc = {}
+            title = "SHIFT SWAP (zahtev odobren)"
+            detail = (
+                f"**Datum:** {when}\n"
+                f"<@{req['user_id']}>: {sc.get('my_shift', '?')} → {sc.get('partner_shift', '?')}"
+                + (f"\n**Napomena:** {sc.get('note')}" if sc.get("note") else "")
             )
         elif req["kind"] == "multioff":
             d_end = datetime.strptime(req["reason"], "%Y-%m-%d").date()
@@ -6987,6 +7055,7 @@ CHELP_TEXT = (
     "`/reqcover` — upit za cover do 4h za kašnjenje ili raniji odlazak (samo u tiketu, menadžer odobrava)\n"
     "`/multioff` — više uzastopnih off dana; ako je neki zauzet, šalješ zahtev menadžeru\n"
     "`/shiftchange` — zamena smene sa kolegom za jedan dan (samo u tiketu, menadžer odobrava)\n"
+    "`/shiftswap` — promena SVOJE smene za jedan dan, bez kolege (samo u tiketu, odobrava supervisor/manager)\n"
     "`/reassign` — prijava reassign prodaje (samo u reassign kanalima)\n"
     "`/farm` — forma za farm unos\n"
     "`/test` — pokreće test (45 min, radi se odmah)\n"
