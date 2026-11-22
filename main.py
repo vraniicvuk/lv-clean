@@ -1348,6 +1348,7 @@ QC_PEOPLE = {
 }
 QC_MIN_PER_DAY = 1
 QC_CHECK_HOUR = 10  # u 10h proverava prethodni dan (Beograd)
+QC_TRACK_FROM = "2026-11-23"  # brojanje kreće od ovog dana (pre toga nije bilo loga)
 
 
 def _qc_log_db():
@@ -1398,6 +1399,8 @@ async def qc_compliance_loop():
     if now.hour < QC_CHECK_HOUR:
         return
     day = (now.date() - timedelta(days=1)).isoformat()
+    if day < QC_TRACK_FROM:
+        return
     if get_state("qc_compliance_last") == day:
         return
     set_state("qc_compliance_last", day)
