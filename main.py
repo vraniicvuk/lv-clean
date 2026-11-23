@@ -4450,11 +4450,20 @@ async def shiftswap(interaction: discord.Interaction, datum: str, nova_smena: ap
     )
     when = f"{d.strftime('%d.%m.%Y')} ({SR_WEEKDAYS[d.weekday()]})"
     note_txt = (f"\n**Napomena:** {napomena}" if napomena else "")
+    iso = d.isoformat()
+
+    def _offs(sh):
+        names = [str(e.get("username") or e.get("user_id")) for e in off_days
+                 if e.get("date") == iso and str(e.get("shift") or "").upper() == sh.upper()
+                 and e.get("user_id") != interaction.user.id]
+        return ", ".join(names) if names else "niko"
     await _post_request(
         interaction, req_id,
         f"🔁 **ZAHTEV ZA PROMENU SMENE (shiftswap)**\n"
         f"**Datum:** {when}\n"
         f"**{interaction.user.display_name}** ({interaction.user.mention}): {my_shift} → **{to_shift}**{note_txt}\n"
+        f"📴 **Off tog dana u {my_shift}** (smena koju napušta): {_offs(my_shift)}\n"
+        f"📴 **Off tog dana u {to_shift}** (smena u koju ide): {_offs(to_shift)}\n"
         f"Odobrava supervisor ili manager.",
     )
     ov = bot.get_channel(OFF_DAY_CHANNEL_ID)
