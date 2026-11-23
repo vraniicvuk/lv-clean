@@ -290,7 +290,7 @@ def get_user_shift(member):
 
 # Praznici: neograničen broj ljudi može biti off (dan se nikad ne vodi kao "zauzet")
 HOLIDAY_DATES = {"2026-12-31", "2027-01-01", "2027-01-02", "2027-01-03", "2027-01-04", "2027-01-07"}
-HOLIDAY_COUNT_IN_LIMIT = False   # False = praznični off se ne računa u MAX_OFF_PER_MONTH
+HOLIDAY_COUNT_IN_LIMIT = True    # praznični off SE RAČUNA u MAX_OFF_PER_MONTH (4)
 HOLIDAY_EXCLUSIVE = [("2027-01-01", "2027-01-07")]  # ista osoba ne može oba
 
 
