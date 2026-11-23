@@ -5275,7 +5275,34 @@ async def handle_bridge_ticket_broadcast(request):
         if not guild:
             return web.json_response({"ok": False, "error": "guild not found"}, status=500)
         chans = [c for c in guild.text_channels if c.name.lower().startswith(("ticket-", "tiket-"))]
-        body = f"<@&{TICKET_BROADCAST_ROLE_ID}>\n{text}"
+        # prvi red = target (kao !announcement): main / afternoon / grave → samo tiketi ljudi sa tom shift rolom
+        first, _, rest = text.partition("\n")
+        key = first.strip().lower().strip("*_:#!. ")
+        shift_key = {"main": "main", "afternoon": "afternoon", "after": "afternoon",
+                     "grave": "graveyard", "graveyard": "graveyard"}.get(key)
+        target = "all"
+        role_id = TICKET_BROADCAST_ROLE_ID
+        if shift_key:
+            if not rest.strip():
+                return web.json_response({"ok": False, "error": "posle prvog reda (smena) nema teksta"}, status=400)
+            text = rest.strip()
+            target = shift_key
+            role_id = SHIFT_ROLES[shift_key]
+            role = guild.get_role(role_id)
+            members = list(role.members) if role else []
+            picked, missing = {}, []
+            for m in members:
+                ch = find_ticket_channel(guild, m.id)
+                if ch:
+                    picked[ch.id] = ch
+                else:
+                    missing.append(m.display_name)
+            chans = list(picked.values())
+            print(f"[TICKET-BROADCAST] target={shift_key} članova={len(members)} tiketa={len(chans)} bez tiketa={missing}", flush=True)
+        elif key in ("all", "svi", "sve"):
+            if rest.strip():
+                text = rest.strip()
+        body = f"<@&{role_id}>\n{text}"
 
         async def _run():
             sent, failed = 0, []
@@ -5293,7 +5320,7 @@ async def handle_bridge_ticket_broadcast(request):
             print(f"[TICKET-BROADCAST] poslato {sent}/{len(chans)}, greške: {failed}", flush=True)
 
         asyncio.create_task(_run())
-        return web.json_response({"ok": True, "queued": len(chans)})
+        return web.json_response({"ok": True, "queued": len(chans), "target": target})
     except Exception as e:
         return web.json_response({"ok": False, "error": f"interna greška: {e}"}, status=500)
 
