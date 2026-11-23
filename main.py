@@ -288,13 +288,30 @@ def get_user_shift(member):
     return "multiple"
 
 
+# Praznici: neograničen broj ljudi može biti off (dan se nikad ne vodi kao "zauzet")
+HOLIDAY_DATES = {"2026-12-31", "2027-01-01", "2027-01-02", "2027-01-03", "2027-01-04", "2027-01-07"}
+HOLIDAY_COUNT_IN_LIMIT = False   # False = praznični off se ne računa u MAX_OFF_PER_MONTH
+HOLIDAY_EXCLUSIVE = [("2027-01-01", "2027-01-07")]  # ista osoba ne može oba
+
+
+def holiday_conflict(user_id, new_isos):
+    """Vrati poruku greške ako bi osoba imala oba datuma iz nekog HOLIDAY_EXCLUSIVE para."""
+    have = {e.get("date") for e in off_days if e.get("user_id") == user_id} | set(new_isos)
+    for a, b in HOLIDAY_EXCLUSIVE:
+        if a in have and b in have:
+            fa = datetime.strptime(a, "%Y-%m-%d").strftime("%d.%m.")
+            fb = datetime.strptime(b, "%Y-%m-%d").strftime("%d.%m.")
+            return f"❌ Ne možeš uzeti off i {fa} i {fb} — za praznike možeš samo jedan od ta dva dana."
+    return None
+
+
 def taken_dates_for_shift(shift):
     out = set()
     if shift == "staff":
         return out  # staff off ne blokiraju ni chatterski ni međusobni dani
     today = _local_now().date()
     for e in off_days:
-        if e.get("shift") == shift:
+        if e.get("shift") == shift and e.get("date") not in HOLIDAY_DATES:
             try:
                 d = datetime.strptime(e["date"], "%Y-%m-%d").date()
                 if d >= today:
@@ -318,6 +335,7 @@ def month_off_dates(user_id, month):
     return sorted({
         e.get("date") for e in off_days
         if e.get("user_id") == user_id and (e.get("date") or "").startswith(month)
+        and (HOLIDAY_COUNT_IN_LIMIT or e.get("date") not in HOLIDAY_DATES)
     })
 
 
@@ -4139,8 +4157,14 @@ async def book_off_days(interaction, start_date, end_date, shift):
         return
 
     # limit: maksimalno MAX_OFF_PER_MONTH off dana po KALENDARSKOM mesecu u kom je off dan
+    hc = holiday_conflict(interaction.user.id, [x.isoformat() for x in days])
+    if hc:
+        await interaction.response.send_message(hc, ephemeral=True)
+        return
     per_month = {}
     for day in days:
+        if not HOLIDAY_COUNT_IN_LIMIT and day.isoformat() in HOLIDAY_DATES:
+            continue
         per_month[day.strftime("%Y-%m")] = per_month.get(day.strftime("%Y-%m"), 0) + 1
     for month, cnt in sorted(per_month.items()):
         used = count_month_off_days(interaction.user.id, month)
@@ -6353,6 +6377,9 @@ async def reqoff(interaction: discord.Interaction):
         iso = d.isoformat()
         if any(e.get("user_id") == i.user.id and e.get("date") == iso for e in off_days):
             return await i.response.send_message("❌ Već imaš off taj dan.", ephemeral=True)
+        hc = holiday_conflict(i.user.id, [iso])
+        if hc:
+            return await i.response.send_message(hc, ephemeral=True)
         others = [
             e for e in off_days
             if e.get("date") == iso and e.get("shift") == shift and e.get("user_id") != i.user.id
