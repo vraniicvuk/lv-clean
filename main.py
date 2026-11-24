@@ -145,7 +145,7 @@ def init_db():
         )
         """
     )
-    for col in ["done INTEGER DEFAULT 0", "channel_id INTEGER", "user_id INTEGER", "ticket_msg_id INTEGER", "overview_msg_id INTEGER"]:
+    for col in ["done INTEGER DEFAULT 0", "channel_id INTEGER", "user_id INTEGER", "ticket_msg_id INTEGER", "overview_msg_id INTEGER", "kind TEXT DEFAULT 'sale'"]:
         try:
             conn.execute(f"ALTER TABLE reassigns ADD COLUMN {col}")
         except sqlite3.OperationalError:
@@ -2959,7 +2959,7 @@ def load_reassign_msg_ids():
 def save_reassign(data, channel_id=None, user_id=None):
     conn = _db()
     cur = conn.execute(
-        "INSERT INTO reassigns (model, date, chatter, fans, created_at, channel_id, user_id) VALUES (?,?,?,?,?,?,?)",
+        "INSERT INTO reassigns (model, date, chatter, fans, created_at, channel_id, user_id, kind) VALUES (?,?,?,?,?,?,?,?)",
         (
             data["model"],
             data["date"],
@@ -2968,6 +2968,7 @@ def save_reassign(data, channel_id=None, user_id=None):
             _local_now().isoformat(),
             channel_id,
             user_id,
+            data.get("kind") or "sale",
         ),
     )
     conn.commit()
@@ -3072,11 +3073,13 @@ def delete_reassign(rid):
     conn.close()
 
 
-def get_reassigns(done=False):
+def get_reassigns(done=False, kind="sale"):
+    """kind: 'sale' = obični /reassign (default svuda), 'tip' = /tipreassign."""
     conn = _db()
     rows = conn.execute(
-        "SELECT id, model, date, chatter, fans, channel_id, ticket_msg_id, overview_msg_id, user_id FROM reassigns WHERE done=? ORDER BY created_at DESC, id DESC",
-        (1 if done else 0,),
+        "SELECT id, model, date, chatter, fans, channel_id, ticket_msg_id, overview_msg_id, user_id FROM reassigns "
+        "WHERE done=? AND COALESCE(kind, 'sale')=? ORDER BY created_at DESC, id DESC",
+        (1 if done else 0, kind),
     ).fetchall()
     conn.close()
     out = []
@@ -3130,7 +3133,7 @@ def format_reassign(data):
     lines = [f"MODEL: {data['model']}"]
     for name, sale in data["fans"]:
         lines.append(f"FAN'S NAME (ne fan's @): {name}")
-        lines.append(f"SALE: ${sale}")
+        lines.append(f"{'TIP' if data.get('kind') == 'tip' else 'SALE'}: ${sale}")
     lines.append(f"DATE: {format_date_str(data['date'])}")
     lines.append(f"REASSIGN TO: {data['reassign_to']}")
     return "\n".join(lines)
@@ -3153,7 +3156,7 @@ class ReassignActionsView(discord.ui.View):
         await interaction.response.defer(ephemeral=True)
 
         original_channel = interaction.channel
-        info_text = f"🔄 **REASSIGN**\n\n{format_reassign(data)}"
+        info_text = ("💸 **TIP REASSIGN**" if data.get("kind") == "tip" else "🔄 **REASSIGN**") + f"\n\n{format_reassign(data)}"
 
         rid = save_reassign(
             data,
@@ -3190,12 +3193,13 @@ class ReassignActionsView(discord.ui.View):
 
 
 class ReassignModal(Modal, title="Reassign unos"):
-    def __init__(self, model, date):
-        super().__init__(timeout=None)
+    def __init__(self, model, date, kind="sale"):
+        super().__init__(timeout=None, title=("Tip reassign unos" if kind == "tip" else "Reassign unos"))
         self.model = model
         self.date = date
+        self.kind = kind
         self.fan = TextInput(label="Fan's name (ne @)", required=True, max_length=100)
-        self.sale = TextInput(label="Sale ($)", required=True, max_length=20)
+        self.sale = TextInput(label=("Tip ($)" if kind == "tip" else "Sale ($)"), required=True, max_length=20)
         self.add_item(self.fan)
         self.add_item(self.sale)
 
@@ -3208,6 +3212,7 @@ class ReassignModal(Modal, title="Reassign unos"):
             "date": self.date,
             "reassign_to": interaction.user.display_name,
             "fans": [(self.fan.value.strip(), self.sale.value.strip())],
+            "kind": self.kind,
         }
         pending_reassigns[interaction.user.id] = data
         await interaction.response.send_message(
@@ -3336,6 +3341,25 @@ async def reassign_cmd(interaction: discord.Interaction, model: str):
     )
 
 
+@tree.command(name="tipreassign", description="Prijavi reassign TIPA (isto kao /reassign, samo za tipove)", guild=GUILD_OBJ)
+@app_commands.autocomplete(model=model_autocomplete)
+async def tipreassign_cmd(interaction: discord.Interaction, model: str):
+    if not _is_reassign_channel(interaction.channel):
+        ch = interaction.channel
+        return await interaction.response.send_message(
+            f"❌ /tipreassign se koristi samo u reassigns kanalima "
+            f"(npr. #{REASSIGN_CHANNEL_PREFIX}team-1).\n"
+            f"-# kanal: `{getattr(ch, 'name', '?')}` / id `{getattr(ch, 'id', '?')}`",
+            ephemeral=True,
+        )
+    dates = build_reassign_dates()
+    await interaction.response.send_message(
+        f"💸 Tip reassign — izaberi datum za **{model}**:",
+        view=ReassignDateView(model, dates, kind="tip"),
+        ephemeral=True,
+    )
+
+
 def build_reassign_dates():
     today = _local_now().date()
     return [today - timedelta(days=i) for i in range(0, 3)]
@@ -3356,12 +3380,13 @@ class ReassignDateSelect(discord.ui.Select):
         super().__init__(placeholder="Izaberi datum", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(ReassignModal(self.view.model, self.values[0]))
+        await interaction.response.send_modal(ReassignModal(self.view.model, self.values[0], getattr(self.view, "kind", "sale")))
 
 
 class ReassignDateView(discord.ui.View):
-    def __init__(self, model, dates):
+    def __init__(self, model, dates, kind="sale"):
         super().__init__(timeout=600)
+        self.kind = kind
         self.model = model
         self.dates = dates
         self.page = 0
@@ -3803,7 +3828,7 @@ async def listr_date_autocomplete(interaction: discord.Interaction, current: str
     return [choice(d) for d in matches[:25]]
 
 
-async def _list_reassigns_range(interaction, od, do_, status, group_by, model_q=""):
+async def _list_reassigns_range(interaction, od, do_, status, group_by, model_q="", kind="sale"):
     """Zajednička logika za /listr (po modelu) i /listch (po chatteru) u opsegu datuma."""
     await interaction.response.defer(ephemeral=True)
     today = _local_now().date()
@@ -3820,15 +3845,15 @@ async def _list_reassigns_range(interaction, od, do_, status, group_by, model_q=
     if end > today:
         end = today
 
-    open_reassigns = get_reassigns(done=False)
-    done_reassigns = get_reassigns(done=True)
+    open_reassigns = get_reassigns(done=False, kind=kind)
+    done_reassigns = get_reassigns(done=True, kind=kind)
     for r in open_reassigns:
         r["done"] = False
     for r in done_reassigns:
         r["done"] = True
     reassigns = open_reassigns + done_reassigns
     if not reassigns:
-        return await interaction.followup.send("Nema reassignova.", ephemeral=True)
+        return await interaction.followup.send("Nema tip reassignova." if kind == "tip" else "Nema reassignova.", ephemeral=True)
 
     mq = (model_q or "").strip().lower()
     filtered = []
@@ -3899,6 +3924,22 @@ async def _list_reassigns_range(interaction, od, do_, status, group_by, model_q=
 @app_commands.autocomplete(od=listr_date_autocomplete, do_=listr_date_autocomplete)
 async def listr(interaction: discord.Interaction, od: str, do_: str = "", status: str = "open"):
     await _list_reassigns_range(interaction, od, do_, status, "model")
+
+
+@tree.command(name="listtip", description="Team: svi TIP reassignovi poređani po modelu (A–Z) u opsegu datuma", guild=GUILD_OBJ)
+@app_commands.rename(do_="do")
+@app_commands.describe(
+    od="Od datuma — izaberi iz poslednjih 30 dana ili ukucaj (DD.MM.YYYY)",
+    do_="Do datuma — prazno = danas",
+)
+@app_commands.choices(status=[
+    app_commands.Choice(name="Samo nerešeni", value="open"),
+    app_commands.Choice(name="Svi (nerešeni + urađeni)", value="all"),
+    app_commands.Choice(name="Samo urađeni", value="done"),
+])
+@app_commands.autocomplete(od=listr_date_autocomplete, do_=listr_date_autocomplete)
+async def listtip(interaction: discord.Interaction, od: str, do_: str = "", status: str = "open"):
+    await _list_reassigns_range(interaction, od, do_, status, "model", kind="tip")
 
 
 @tree.command(name="exportr", description="Export reassignova u .xlsx (creator/fan/date/sale)", guild=GUILD_OBJ)
@@ -7176,6 +7217,7 @@ CHELP_TEXT = (
     "`/shiftchange` — zamena smene sa kolegom za jedan dan (samo u tiketu, menadžer odobrava)\n"
     "`/shiftswap` — promena SVOJE smene za jedan dan, bez kolege (samo u tiketu, odobrava supervisor/manager)\n"
     "`/reassign` — prijava reassign prodaje (samo u reassign kanalima)\n"
+    "`/tipreassign` — prijava reassign TIPA, isto kao /reassign (samo u reassign kanalima)\n"
     "`/farm` — forma za farm unos\n"
     "`/test` — pokreće test (45 min, radi se odmah)\n"
     "`/chelp` — ova lista (Telegram: `!chelp`)"
