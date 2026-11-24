@@ -1358,7 +1358,7 @@ class QCEditorView(discord.ui.View):
         await interaction.response.edit_message(content="❌ QC otkazan.", view=None)
 
 
-# ========== QC COMPLIANCE: svaki dan bar jedan /qc report u svom tiketu ==========
+# ========== QC COMPLIANCE: svaki radni dan bar jedan /qc report (bilo koji kanal) ==========
 QC_PEOPLE = {
     424921277212393472: "ticket-rema",
     410482844469821470: "ticket-razor",
@@ -1367,6 +1367,7 @@ QC_PEOPLE = {
 QC_MIN_PER_DAY = 1
 QC_CHECK_HOUR = 10  # u 10h proverava prethodni dan (Beograd)
 QC_TRACK_FROM = "2026-11-23"  # brojanje kreće od ovog dana (pre toga nije bilo loga)
+QC_DAY_CUTOFF_H = 3  # radni dan traje do 03:00 sledećeg dana (after smena se završava u 02:00)
 
 
 def _qc_log_db():
@@ -1394,12 +1395,51 @@ def qc_log_insert(user_id, chatter, report_date, channel_id, channel_name):
 
 
 def _qc_count(user_id, day_iso):
-    """Broj /qc reporta tog QC-a poslatih tog dana u NJEGOVOM tiketu."""
-    want = QC_PEOPLE.get(user_id, "").lower()
+    """Broj /qc reporta tog QC-a za radni dan day_iso (od 03:00 tog dana do 03:00 sledećeg), u BILO KOM kanalu."""
+    start = datetime.strptime(day_iso, "%Y-%m-%d") + timedelta(hours=QC_DAY_CUTOFF_H)
+    end = start + timedelta(days=1)
     conn = _qc_log_db()
-    rows = conn.execute("SELECT channel_name FROM qc_log WHERE user_id=? AND sent_day=?", (user_id, day_iso)).fetchall()
+    rows = conn.execute("SELECT sent_at FROM qc_log WHERE user_id=? AND sent_day IN (?, ?)",
+                        (user_id, day_iso, end.date().isoformat())).fetchall()
     conn.close()
-    return sum(1 for r in rows if (r["channel_name"] or "").lower() == want)
+    n = 0
+    for r in rows:
+        try:
+            t = datetime.fromisoformat(r["sent_at"]).replace(tzinfo=None)
+        except Exception:
+            continue
+        if start <= t < end:
+            n += 1
+    return n
+
+
+async def qc_recheck_misses():
+    """Jednokratno posle izmene pravila: povuci opomene/penale za dane koji po novom pravilu imaju report."""
+    if get_state("qc_recheck_v2") == "done":
+        return
+    guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
+    conn = _qc_log_db()
+    misses = conn.execute("SELECT id, user_id, day, kind FROM qc_miss").fetchall()
+    conn.close()
+    for m in misses:
+        cnt = await asyncio.to_thread(_qc_count, m["user_id"], m["day"])
+        if cnt < QC_MIN_PER_DAY:
+            continue
+        c2 = _qc_log_db()
+        c2.execute("DELETE FROM qc_miss WHERE id=?", (m["id"],))
+        c2.commit()
+        c2.close()
+        ch = _qc_ticket(guild, m["user_id"])
+        d_txt = datetime.strptime(m["day"], "%Y-%m-%d").strftime("%d.%m.%Y")
+        if ch:
+            try:
+                await ch.send(f"✅ <@{m['user_id']}> — {m['kind']} za **{d_txt}** je **povučen/a**. "
+                              f"Report se sada računa u bilo kom kanalu, a radni dan traje do {QC_DAY_CUTOFF_H}:00 sledećeg dana.",
+                              allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+            except Exception as e:
+                print("[QC] recheck send fail:", e, flush=True)
+        print(f"[QC] recheck: povučen {m['kind']} {m['user_id']} {m['day']}", flush=True)
+    set_state("qc_recheck_v2", "done")
 
 
 def _qc_is_off(user_id, day_iso):
@@ -1414,6 +1454,10 @@ def _qc_ticket(guild, user_id):
 @tasks.loop(minutes=5)
 async def qc_compliance_loop():
     now = _local_now()
+    try:
+        await qc_recheck_misses()
+    except Exception as e:
+        print("[QC] recheck fail:", e, flush=True)
     if now.hour < QC_CHECK_HOUR:
         return
     day = (now.date() - timedelta(days=1)).isoformat()
@@ -1445,7 +1489,7 @@ async def qc_compliance_loop():
         n, kind = await asyncio.to_thread(_miss)
         ch = _qc_ticket(guild, uid)
         txt = (
-            f"{'⚠️ OPOMENA' if kind == 'opomena' else '💸 PENAL'} — <@{uid}> nije poslat nijedan QC report za **{d_txt}** "
+            f"{'⚠️ OPOMENA' if kind == 'opomena' else '💸 PENAL'} — <@{uid}> nije poslat nijedan /qc report za radni dan **{d_txt}** (do {QC_DAY_CUTOFF_H}:00 sledećeg dana) "
             f"(propust #{n} ovog meseca).\n"
             + ("Sledeći propušten dan ide penal." if kind == "opomena" else "Svaki sledeći propušten dan je novi penal.")
         )
@@ -1470,10 +1514,10 @@ async def qcstat(interaction: discord.Interaction):
     conn = _qc_log_db()
     lines = [f"📊 **QC — {today.strftime('%m.%Y')}**", ""]
     for uid, ticket in QC_PEOPLE.items():
-        sent = conn.execute("SELECT COUNT(*) AS c FROM qc_log WHERE user_id=? AND substr(sent_day,1,7)=? AND lower(channel_name)=?", (uid, month, ticket)).fetchone()["c"]
-        days = conn.execute("SELECT COUNT(DISTINCT sent_day) AS c FROM qc_log WHERE user_id=? AND substr(sent_day,1,7)=? AND lower(channel_name)=?", (uid, month, ticket)).fetchone()["c"]
+        sent = conn.execute("SELECT COUNT(*) AS c FROM qc_log WHERE user_id=? AND substr(sent_day,1,7)=? AND ?<>''", (uid, month, ticket)).fetchone()["c"]
+        days = conn.execute("SELECT COUNT(DISTINCT sent_day) AS c FROM qc_log WHERE user_id=? AND substr(sent_day,1,7)=? AND ?<>''", (uid, month, ticket)).fetchone()["c"]
         miss = conn.execute("SELECT day, kind FROM qc_miss WHERE user_id=? AND substr(day,1,7)=? ORDER BY day", (uid, month)).fetchall()
-        today_cnt = conn.execute("SELECT COUNT(*) AS c FROM qc_log WHERE user_id=? AND sent_day=? AND lower(channel_name)=?", (uid, today.isoformat(), ticket)).fetchone()["c"]
+        today_cnt = conn.execute("SELECT COUNT(*) AS c FROM qc_log WHERE user_id=? AND sent_day=? AND ?<>''", (uid, today.isoformat(), ticket)).fetchone()["c"]
         miss_txt = ", ".join(f"{datetime.strptime(m['day'], '%Y-%m-%d').strftime('%d.%m')} ({m['kind']})" for m in miss) or "nema"
         lines.append(f"<@{uid}> ({ticket}) — danas: {today_cnt} {'✅' if today_cnt >= QC_MIN_PER_DAY else '⏳'} · mesec: {sent} reporta u {days} dana · propusti: {miss_txt}")
     conn.close()
