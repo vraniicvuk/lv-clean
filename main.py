@@ -7136,6 +7136,7 @@ async def reqfeature(interaction: discord.Interaction, team: str, slika: discord
 # ========== slobodni off dani — #day-off-team-N, ponedeljak i četvrtak u 12h ==========
 DAYOFF_WEEKLY_DAYS = (0, 3)  # ponedeljak, četvrtak
 DAYOFF_WEEKLY_HOUR = 12
+DAYOFF_WEEKLY_PING_ROLE_ID = 1410962215770656768  # tag na kraju nedeljnog podsetnika (LV chatter)
 DAYOFF_CHANNEL_RE = re.compile(r"^day-?off-team-?\d+$")
 SHIFT_ORDER = [("graveyard", "GRAVEYARD"), ("afternoon", "AFTERNOON"), ("main", "MAIN")]
 
@@ -7164,7 +7165,7 @@ def build_free_days_text(today):
             lines.append(f"**{label}:** " + ", ".join(parts))
         else:
             lines.append(f"**{label}:** nema slobodnih dana")
-    lines += ["", "Rezervacija: `/off` (od prekosutra) ili `/reqoff` u tiketu (i za sutra)."]
+    lines += ["", "Rezervacija: `/off` (od prekosutra) ili `/reqoff` u tiketu (i za sutra).", "", f"<@&{DAYOFF_WEEKLY_PING_ROLE_ID}>"]
     return "\n".join(lines)
 
 
@@ -7185,7 +7186,7 @@ async def dayoff_weekly_loop():
     for ch in guild.text_channels:
         if DAYOFF_CHANNEL_RE.match(ch.name.lower()):
             try:
-                await ch.send(text)
+                await ch.send(text, allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False))
                 sent += 1
             except Exception as e:
                 print(f"[DAYOFF-WEEKLY] {ch.name} fail: {e}", flush=True)
