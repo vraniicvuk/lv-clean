@@ -4836,7 +4836,8 @@ async def checkoff(interaction: discord.Interaction):
         )
         title = f"📅 {d.strftime('%d.%m.%Y')} ({SR_WEEKDAYS[d.weekday()]})"
         covers = await asyncio.to_thread(approved_covers, iso, iso)
-        if not entries and not covers:
+        swaps = await asyncio.to_thread(approved_shiftchanges, iso)
+        if not entries and not covers and not swaps:
             return await i.response.send_message(f"{title}\nNiko nije off tog dana. ✅", ephemeral=True)
         lines = []
         for e in entries:
@@ -4846,8 +4847,19 @@ async def checkoff(interaction: discord.Interaction):
             extra = " ⚠️ treba cover" if e.get("needs_cover") else ""
             lines.append(f"{mark} <@{e.get('user_id')}> — {e.get('username') or ''} ({e.get('shift')}){extra}")
         lines += [cover_line(r, with_tag=True) for r in covers]
+        for r in swaps:
+            try:
+                sc = json.loads(r.get("reason") or "{}")
+            except Exception:
+                sc = {}
+            a, b = sc.get("my_shift", "?"), sc.get("partner_shift", "?")
+            if r.get("kind") == "shiftswap":
+                lines.append(f"🔁 <@{r['user_id']}> — {r.get('username') or ''} — off u **{a}**, shift swap **{a} → {b}**")
+            else:
+                lines.append(f"🔄 <@{r['user_id']}> — off u **{a}**, shift change **{a} → {b}** (sa <@{sc.get('partner_id')}>)")
+                lines.append(f"🔄 <@{sc.get('partner_id')}> — off u **{b}**, shift change **{b} → {a}** (sa <@{r['user_id']}>)")
         embed = discord.Embed(title=title, description="\n".join(lines), color=0x00b0f4)
-        embed.set_footer(text=f"Off: {len(entries)}  •  ✅ potvrđen  ⏳ čeka  🛡 odobren")
+        embed.set_footer(text=f"Off: {len(entries)}  •  Swap/change: {len(swaps)}  •  ✅ potvrđen  ⏳ čeka  🛡 odobren  🔁 shift swap  🔄 shift change")
         await i.response.send_message(embed=embed, ephemeral=True)
 
     view = OffDayPickerView(busy, dates, on_pick)
