@@ -4158,8 +4158,13 @@ async def rtotaltotal(interaction: discord.Interaction, mesec: str = None):
 
 # ========== OFF DAYS ==========
 class DayPickSelect(discord.ui.Select):
-    def __init__(self, dates, taken):
+    def __init__(self, dates, taken, has_prev=False, next_from=None, page_txt=""):
         options = []
+        if has_prev:
+            options.append(discord.SelectOption(
+                label="⬅️ PRETHODNI DATUMI", value="__prev__",
+                description="Vrati se na ranije datume",
+            ))
         for d in dates:
             options.append(
                 discord.SelectOption(
@@ -4168,14 +4173,25 @@ class DayPickSelect(discord.ui.Select):
                     description="zauzeto" if d in taken else SR_WEEKDAYS[d.weekday()],
                 )
             )
+        if next_from:
+            options.append(discord.SelectOption(
+                label=f"➡️ SLEDEĆI DATUMI (od {next_from.strftime('%d.%m.')}) — KLIKNI OVDE",
+                value="__next__",
+                description="Kasniji datumi nisu na ovoj listi — klikni da ih vidiš",
+            ))
+        rng = f"{dates[0].strftime('%d.%m.')}–{dates[-1].strftime('%d.%m.')}" if dates else ""
         super().__init__(
-            placeholder="🗓 Izaberi datum",
+            placeholder=f"🗓 Izaberi datum ({rng}{page_txt}) — za KASNIJE datume skroluj do dna liste",
             min_values=1,
             max_values=1,
             options=options,
         )
 
     async def callback(self, interaction: discord.Interaction):
+        if self.values[0] == "__next__":
+            return await self.view._next(interaction)
+        if self.values[0] == "__prev__":
+            return await self.view._prev(interaction)
         d = datetime.strptime(self.values[0], "%Y-%m-%d").date()
         await self.view.handle_date(interaction, d)
 
@@ -4189,23 +4205,28 @@ class OffDayPickerView(discord.ui.View):
         self.page = 0
         self._render()
 
+    PAGE = 23  # 23 datuma + opcije PRETHODNI/SLEDEĆI u istoj listi (max 25)
+
     @property
     def total_pages(self):
-        return (len(self.all_dates) + 24) // 25
+        return (len(self.all_dates) + self.PAGE - 1) // self.PAGE
 
     def _page_dates(self):
-        return self.all_dates[self.page * 25:(self.page + 1) * 25]
+        return self.all_dates[self.page * self.PAGE:(self.page + 1) * self.PAGE]
 
     def _render(self):
         self.clear_items()
-        self.add_item(DayPickSelect(self._page_dates(), self.taken))
+        has_next = self.page < self.total_pages - 1
+        next_from = self.all_dates[(self.page + 1) * self.PAGE] if has_next else None
+        self.add_item(DayPickSelect(self._page_dates(), self.taken, has_prev=self.page > 0, next_from=next_from,
+                                    page_txt=f", strana {self.page + 1}/{self.total_pages}"))
         prev_btn = discord.ui.Button(
-            style=discord.ButtonStyle.secondary, emoji="◀", row=1, disabled=(self.page == 0)
+            style=discord.ButtonStyle.secondary, label="◀ PRETHODNI DATUMI", row=1, disabled=(self.page == 0)
         )
         prev_btn.callback = self._prev
         next_btn = discord.ui.Button(
-            style=discord.ButtonStyle.secondary, emoji="▶", row=1,
-            disabled=(self.page >= self.total_pages - 1),
+            style=discord.ButtonStyle.primary, label="SLEDEĆI DATUMI ▶", row=1,
+            disabled=not has_next,
         )
         next_btn.callback = self._next
         self.add_item(prev_btn)
