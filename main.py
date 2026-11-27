@@ -7169,9 +7169,67 @@ def build_free_days_text(today):
     return "\n".join(lines)
 
 
+DAYOFF_WEEKLY_ENABLED = False  # zamenjeno dnevnim obaveštenjem u tikete (dayoff_daily_ticket_loop)
+
+# ========== slobodno mesto za off SUTRA — svaki dan u 14h, u tikete članova te smene ==========
+DAYOFF_DAILY_HOUR = 14
+DAYOFF_DAILY_DEADLINE = {"main": "19:00", "afternoon": "21:00", "graveyard": None}  # do kada javljaju (danas)
+
+
+@tasks.loop(minutes=1)
+async def dayoff_daily_ticket_loop():
+    now = _local_now()
+    if now.hour != DAYOFF_DAILY_HOUR:
+        return
+    key = f"dayoff_daily_{now.date().isoformat()}"
+    if get_state(key):
+        return
+    set_state(key, "1")
+    guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
+    if not guild:
+        return
+    tomorrow = now.date() + timedelta(days=1)
+    t_iso = tomorrow.isoformat()
+    t_txt = f"{SR_WEEKDAYS[tomorrow.weekday()]} {tomorrow.strftime('%d.%m.%Y')}"
+    for code, label in SHIFT_ORDER:
+        if tomorrow in taken_dates_for_shift(code):
+            print(f"[DAYOFF-DAILY] {label} {t_iso} zauzeto — ne šaljem", flush=True)
+            continue
+        role = guild.get_role(SHIFT_ROLES.get(code, 0))
+        members = [m for m in (role.members if role else []) if not m.bot]
+        dl = DAYOFF_DAILY_DEADLINE.get(code)
+        dl_txt = f"Javi **danas do {dl}**" if dl else "Javi **što pre**"
+        sent, missing = 0, []
+        for m in members:
+            if any(e.get("user_id") == m.id and e.get("date") == t_iso for e in off_days):
+                continue
+            ch = find_ticket_channel(guild, m.id)
+            if not ch:
+                missing.append(m.display_name)
+                continue
+            try:
+                await ch.send(
+                    f"🟢 {m.mention} — **sutra ({t_txt}) ima slobodno mesto za off u {label} smeni.**\n"
+                    f"{dl_txt} — pokreni `/reqoff` ovde u tiketu i izaberi sutrašnji datum (prvi koji pošalje ima prednost).",
+                    allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+                )
+                sent += 1
+            except Exception as e:
+                print(f"[DAYOFF-DAILY] {ch.name} fail: {e}", flush=True)
+            await asyncio.sleep(0.4)
+        print(f"[DAYOFF-DAILY] {label} {t_iso}: poslato {sent}, bez tiketa {missing}", flush=True)
+
+
+@dayoff_daily_ticket_loop.before_loop
+async def _before_dayoff_daily():
+    await bot.wait_until_ready()
+
+
 @tasks.loop(minutes=1)
 async def dayoff_weekly_loop():
     now = _local_now()
+    if not DAYOFF_WEEKLY_ENABLED:
+        return
     if now.weekday() not in DAYOFF_WEEKLY_DAYS or now.hour != DAYOFF_WEEKLY_HOUR:
         return
     key = f"dayoff_weekly_{now.date().isoformat()}"
@@ -7257,6 +7315,8 @@ async def on_ready():
             test_timer_loop.start()
         if not dayoff_weekly_loop.is_running():
             dayoff_weekly_loop.start()
+        if not dayoff_daily_ticket_loop.is_running():
+            dayoff_daily_ticket_loop.start()
         if not qc_compliance_loop.is_running():
             qc_compliance_loop.start()
             print("✅ Test timer task pokrenut")
