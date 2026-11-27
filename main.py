@@ -5383,6 +5383,100 @@ def normalize_shift(s):
 
 TICKET_BROADCAST_ROLE_ID = 1410962215770656768  # LV chatter
 
+# ========== BROADCAST CAPTURE (za !withdraw sa Telegrama) ==========
+# Sve poruke koje bot pošalje dok traje bridge zahtev (/as, /announcement, /ticket_broadcast)
+# beleže se pod broadcast_id, pa /withdraw može da ih obriše.
+import contextvars
+import uuid as _uuid
+_BC_SINK = contextvars.ContextVar("_BC_SINK", default=None)
+
+
+def _bc_db():
+    conn = _db()
+    conn.execute("CREATE TABLE IF NOT EXISTS bc_msgs (bid TEXT, channel_id INTEGER, msg_id INTEGER, created_at TEXT)")
+    return conn
+
+
+def _bc_store(bid, channel_id, msg_id):
+    try:
+        conn = _bc_db()
+        conn.execute("INSERT INTO bc_msgs (bid, channel_id, msg_id, created_at) VALUES (?,?,?,?)",
+                     (bid, channel_id, msg_id, _local_now().isoformat()))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print("[BC] store fail:", e, flush=True)
+
+
+if not getattr(discord.abc.Messageable, "_bc_patched", False):
+    _bc_orig_send = discord.abc.Messageable.send
+
+    async def _bc_send(self, *args, **kwargs):
+        m = await _bc_orig_send(self, *args, **kwargs)
+        bid = _BC_SINK.get()
+        if bid and m is not None:
+            _bc_store(bid, m.channel.id, m.id)
+        return m
+
+    discord.abc.Messageable.send = _bc_send
+    discord.abc.Messageable._bc_patched = True
+
+
+def _bc_wrap(handler):
+    async def wrapped(request):
+        bid = _uuid.uuid4().hex[:12]
+        tok = _BC_SINK.set(bid)
+        try:
+            resp = await handler(request)
+        finally:
+            _BC_SINK.reset(tok)
+        try:
+            if getattr(resp, "content_type", "") == "application/json":
+                body = json.loads(resp.text)
+                if isinstance(body, dict) and body.get("ok"):
+                    body["broadcast_id"] = bid
+                    return web.json_response(body, status=resp.status)
+        except Exception as e:
+            print("[BC] wrap fail:", e, flush=True)
+        return resp
+    return wrapped
+
+
+async def handle_bridge_withdraw(request):
+    """POST /withdraw {token, broadcast_id} → briše sve Discord poruke tog slanja."""
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid json"}, status=400)
+    if not BRIDGE_TOKEN or data.get("token") != BRIDGE_TOKEN:
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    bid = (data.get("broadcast_id") or "").strip()
+    if not bid:
+        return web.json_response({"ok": False, "error": "nema broadcast_id"}, status=400)
+    conn = _bc_db()
+    rows = conn.execute("SELECT channel_id, msg_id FROM bc_msgs WHERE bid=?", (bid,)).fetchall()
+    conn.close()
+    if not rows:
+        return web.json_response({"ok": False, "error": "nema zabeleženih poruka za to slanje (ili su već obrisane)"}, status=404)
+    deleted, failed = 0, 0
+    for r in rows:
+        try:
+            ch = bot.get_channel(int(r["channel_id"])) or await bot.fetch_channel(int(r["channel_id"]))
+            await ch.get_partial_message(int(r["msg_id"])).delete()
+            deleted += 1
+        except discord.NotFound:
+            deleted += 1
+        except Exception as e:
+            failed += 1
+            print(f"[BC] delete fail {r['channel_id']}/{r['msg_id']}: {e}", flush=True)
+        await asyncio.sleep(0.3)
+    conn = _bc_db()
+    conn.execute("DELETE FROM bc_msgs WHERE bid=?", (bid,))
+    conn.commit()
+    conn.close()
+    print(f"[BC] withdraw {bid}: obrisano {deleted}, greške {failed}", flush=True)
+    return web.json_response({"ok": True, "deleted": deleted, "failed": failed})
+
 
 async def handle_bridge_ticket_broadcast(request):
     """POST /ticket_broadcast {token, text} → poruka u svaki ticket-* kanal sa tagom chatter role."""
@@ -5578,9 +5672,10 @@ async def start_bridge_server():
     _bridge_started = True
     app = web.Application()
     app.router.add_get("/", handle_health)
-    app.router.add_post("/as", handle_bridge_as)
-    app.router.add_post("/announcement", handle_bridge_announcement)
-    app.router.add_post("/ticket_broadcast", handle_bridge_ticket_broadcast)
+    app.router.add_post("/as", _bc_wrap(handle_bridge_as))
+    app.router.add_post("/announcement", _bc_wrap(handle_bridge_announcement))
+    app.router.add_post("/ticket_broadcast", _bc_wrap(handle_bridge_ticket_broadcast))
+    app.router.add_post("/withdraw", handle_bridge_withdraw)
     app.router.add_get("/qc_inbox", handle_qc_inbox)
     app.router.add_post("/qc_inbox/ack", handle_qc_ack)
     app.router.add_get("/role_pings", handle_role_pings)
