@@ -2571,10 +2571,148 @@ async def handle_role_pings_ack(request):
     return web.json_response({"ok": True, "acked": len(ids)})
 
 
+# ========== VUK VAN RADNOG VREMENA — auto-odgovor + podsetnik ==========
+VUK_DISCORD_ID = 886983698321391667
+VUK_SUPER_ROLE_ID = 1410962105749995591
+VUK_WORK_HOURS = [(9, 14), (17, 22)]
+VUK_AWAY_COOLDOWN_MIN = 30  # isti autor u istom kanalu ne dobija ponovo auto-odgovor 30 min
+_vuk_away_last = {}
+
+
+def _vuk_available(now=None):
+    h = (now or _local_now()).hour
+    return any(a <= h < b for a, b in VUK_WORK_HOURS)
+
+
+def _vuk_next_start(now=None):
+    now = now or _local_now()
+    base = now.replace(minute=0, second=0, microsecond=0)
+    for a, _b in VUK_WORK_HOURS:
+        if now.hour < a:
+            return base.replace(hour=a)
+    return (base + timedelta(days=1)).replace(hour=VUK_WORK_HOURS[0][0])
+
+
+def _va_db():
+    conn = _db()
+    conn.execute("CREATE TABLE IF NOT EXISTS vuk_away (bot_msg_id INTEGER PRIMARY KEY, channel_id INTEGER, src_msg_id INTEGER, "
+                 "author_id INTEGER, excerpt TEXT, due TEXT, status TEXT DEFAULT 'asked', created_at TEXT)")
+    return conn
+
+
+class VukAwayView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _get(self, interaction):
+        conn = _va_db()
+        row = conn.execute("SELECT * FROM vuk_away WHERE bot_msg_id=?", (interaction.message.id,)).fetchone()
+        conn.close()
+        if not row:
+            await interaction.response.send_message("❌ Ne nalazim ovaj upit.", ephemeral=True)
+            return None
+        if interaction.user.id != row["author_id"]:
+            await interaction.response.send_message("Ovo pitanje je za osobu koja je tagovala Vuka.", ephemeral=True)
+            return None
+        if row["status"] != "asked":
+            await interaction.response.send_message("Već si odgovorio/la.", ephemeral=True)
+            return None
+        return row
+
+    @discord.ui.button(label="DA — podseti Vuka", emoji="✅", style=discord.ButtonStyle.success, custom_id="vukaway_yes")
+    async def yes(self, interaction: discord.Interaction, button: discord.ui.Button):
+        row = await self._get(interaction)
+        if not row:
+            return
+        due = _vuk_next_start()
+        conn = _va_db()
+        conn.execute("UPDATE vuk_away SET status='pending', due=? WHERE bot_msg_id=?", (due.isoformat(), row["bot_msg_id"]))
+        conn.commit()
+        conn.close()
+        await interaction.response.edit_message(
+            content=interaction.message.content + f"\n\n✅ Važi — podsetiću Vuka čim uđe u radne sate ({due.strftime('%d.%m. %H:%M')}).",
+            view=None,
+        )
+
+    @discord.ui.button(label="NE", emoji="❌", style=discord.ButtonStyle.secondary, custom_id="vukaway_no")
+    async def no(self, interaction: discord.Interaction, button: discord.ui.Button):
+        row = await self._get(interaction)
+        if not row:
+            return
+        conn = _va_db()
+        conn.execute("UPDATE vuk_away SET status='no' WHERE bot_msg_id=?", (row["bot_msg_id"],))
+        conn.commit()
+        conn.close()
+        await interaction.response.edit_message(content=interaction.message.content + "\n\n👍 U redu, bez podsetnika.", view=None)
+
+
+async def vuk_away_check(message):
+    """Neko (ne bot) taguje Vuka ili supervisor rolu van radnog vremena → odgovor u njegovo ime + DA/NE."""
+    if not message.guild or message.author.id == VUK_DISCORD_ID:
+        return
+    tagged = any(u.id == VUK_DISCORD_ID for u in message.mentions) or any(r.id == VUK_SUPER_ROLE_ID for r in message.role_mentions)
+    if not tagged or _vuk_available():
+        return
+    k = (message.channel.id, message.author.id)
+    now_ts = _local_now().timestamp()
+    if now_ts - _vuk_away_last.get(k, 0) < VUK_AWAY_COOLDOWN_MIN * 60:
+        return
+    _vuk_away_last[k] = now_ts
+    nxt = _vuk_next_start()
+    day = "danas" if nxt.date() == _local_now().date() else "sutra"
+    m = await message.reply(
+        f"🌙 {message.author.mention} — Vuk je trenutno **van radnog vremena** (radi 9–14h i 17–22h), ponovo je dostupan **{day} u {nxt.strftime('%H:%M')}**.\n"
+        f"Da li misliš da će ti Vuk biti od pomoći kada ponovo uđe u radne sate? Ako klikneš **DA**, podsetiću ga čim počne smena.\n"
+        f"⚠️ Ako ti je hitno, molim te kontaktiraj **management u tiketu** ili **VA tim u svojoj radnoj grupi**.",
+        view=VukAwayView(),
+        allowed_mentions=discord.AllowedMentions(users=[message.author], roles=False, everyone=False, replied_user=False),
+    )
+    conn = _va_db()
+    conn.execute("INSERT OR REPLACE INTO vuk_away (bot_msg_id, channel_id, src_msg_id, author_id, excerpt, status, created_at) VALUES (?,?,?,?,?,?,?)",
+                 (m.id, message.channel.id, message.id, message.author.id, (message.content or "")[:300], "asked", _local_now().isoformat()))
+    conn.commit()
+    conn.close()
+
+
+@tasks.loop(minutes=1)
+async def vuk_away_loop():
+    if not _vuk_available():
+        return
+    now = _local_now()
+    conn = _va_db()
+    rows = conn.execute("SELECT * FROM vuk_away WHERE status='pending' AND due<=?", (now.isoformat(),)).fetchall()
+    conn.close()
+    for r in rows:
+        ch = bot.get_channel(int(r["channel_id"]))
+        try:
+            if ch:
+                ref = ch.get_partial_message(int(r["src_msg_id"]))
+                await ch.send(
+                    f"⏰ <@{VUK_DISCORD_ID}> — podsetnik: <@{r['author_id']}> te je tražio/la dok si bio van radnog vremena:\n> {r['excerpt'][:300]}",
+                    reference=ref, mention_author=False,
+                    allowed_mentions=discord.AllowedMentions(users=[discord.Object(VUK_DISCORD_ID)], roles=False, everyone=False),
+                )
+        except Exception as e:
+            print("[VUK-AWAY] remind fail:", e, flush=True)
+        conn = _va_db()
+        conn.execute("UPDATE vuk_away SET status='done' WHERE bot_msg_id=?", (r["bot_msg_id"],))
+        conn.commit()
+        conn.close()
+
+
+@vuk_away_loop.before_loop
+async def _before_vuk_away():
+    await bot.wait_until_ready()
+
+
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
         return
+    try:
+        await vuk_away_check(message)
+    except Exception as e:
+        print("[VUK-AWAY] check fail:", e, flush=True)
     try:
         if _qc_drafts and await qc_capture_images(message):
             return
@@ -7433,6 +7571,8 @@ async def on_ready():
             dayoff_weekly_loop.start()
         if not dayoff_daily_ticket_loop.is_running():
             dayoff_daily_ticket_loop.start()
+        if not vuk_away_loop.is_running():
+            vuk_away_loop.start()
         if not qc_compliance_loop.is_running():
             qc_compliance_loop.start()
             print("✅ Test timer task pokrenut")
@@ -7468,6 +7608,7 @@ async def _setup_hook():
     bot.add_view(TestDoneView())
     bot.add_view(TestReviewView())
     bot.add_view(ReqDecisionView())
+    bot.add_view(VukAwayView())
     bot.add_view(ShiftPickView())
     bot.add_view(TeamPickView())
     bot.add_view(TicketAnswerFullView())
