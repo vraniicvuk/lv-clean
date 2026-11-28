@@ -6554,8 +6554,24 @@ class ReqDecisionView(discord.ui.View):
             await interaction.response.send_message("❌ Ne nalazim zahtev u bazi.", ephemeral=True)
             return None
         if req["status"] != "pending":
-            await interaction.response.send_message(f"Zahtev je već rešen ({req['status']}).", ephemeral=True)
+            # self-heal: status je upisan, ali poruka nije ažurirana (npr. istekao Discord interaction) → sredi poruku
+            lbl = "✅ **Odobreno**" if req["status"] == "approved" else "❌ **Odbijeno**"
+            who = f"<@{req['decided_by']}>" if req.get("decided_by") else ""
+            try:
+                await interaction.response.edit_message(
+                    content=interaction.message.content + f"\n\n{lbl} — {who}", view=None,
+                )
+                await interaction.channel.send(
+                    f"{'✅' if req['status'] == 'approved' else '❌'} <@{req['user_id']}> tvoj zahtev je **{'odobren' if req['status'] == 'approved' else 'odbijen'}**.",
+                    allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+                )
+            except Exception:
+                try:
+                    await interaction.response.send_message(f"Zahtev je već rešen ({req['status']}).", ephemeral=True)
+                except Exception:
+                    pass
             return None
+        await interaction.response.defer()  # Discord daje 3s — sve ostalo (tiketi, overview) ide posle
         return req
 
     @discord.ui.button(label="Odobri", emoji="✅", style=discord.ButtonStyle.success, custom_id="lvreq_ok")
@@ -6646,7 +6662,7 @@ class ReqDecisionView(discord.ui.View):
                 detail += f"\n**Razlog:** {req['reason']}"
 
         await asyncio.to_thread(_req_set, req["id"], status="approved", decided_by=interaction.user.id)
-        await interaction.response.edit_message(
+        await interaction.message.edit(
             content=interaction.message.content + f"\n\n✅ **Odobreno** — {interaction.user.mention}",
             view=None,
         )
@@ -6674,7 +6690,7 @@ class ReqDecisionView(discord.ui.View):
         if not req:
             return
         await asyncio.to_thread(_req_set, req["id"], status="denied", decided_by=interaction.user.id)
-        await interaction.response.edit_message(
+        await interaction.message.edit(
             content=interaction.message.content + f"\n\n❌ **Odbijeno** — {interaction.user.mention}",
             view=None,
         )
